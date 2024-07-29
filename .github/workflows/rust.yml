@@ -12,26 +12,30 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
-
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
     steps:
-    - uses: actions/checkout@v3
+    - name: Install packages
+      run: |
+        apt-get update && apt-get install -y curl \
+          wget unzip pkg-config libssl-dev cmake build-essential
+    - uses: actions/checkout@v4
     - name: Install rust toolchain
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@v1
       with:
         toolchain: stable
-        override: true
         components: rustfmt, clippy
     - name: Install protoc
       run: |
         PROTOC_VERSION=27.2
         PROTOC_ZIP=protoc-$PROTOC_VERSION-linux-x86_64.zip
         wget https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/$PROTOC_ZIP
-        sudo unzip -o $PROTOC_ZIP -d /usr/local bin/protoc
-        sudo unzip -o $PROTOC_ZIP -d /usr/local 'include/*'
+        unzip -o $PROTOC_ZIP -d /usr/local bin/protoc
+        unzip -o $PROTOC_ZIP -d /usr/local 'include/*'
     - name: Run clippy
       run: cargo clippy
-    - name: Build tomis
+    - name: Build opal
       run: cargo build
     - name: Run tests
       run: cargo test
