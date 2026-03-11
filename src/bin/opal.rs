@@ -2,7 +2,7 @@ use anyhow::Result;
 #[cfg(target_os = "macos")]
 use opal::executor::ContainerExecutor;
 #[cfg(target_os = "linux")]
-use opal::executor::NerdExecutor;
+use opal::executor::PDExecutor;
 use opal::{Cli, Commands};
 use structopt::StructOpt;
 use tracing_subscriber::EnvFilter;
@@ -25,10 +25,10 @@ async fn main() -> Result<()> {
     match opts.commands {
         Commands::Run(args) => {
             #[cfg(target_os = "linux")]
-            let _nerd_executor = NerdExecutor::new(args.base_image);
+            let _nerd_executor = PDExecutor::new(args.base_image, args.workdir);
 
             #[cfg(target_os = "macos")]
-            let _container_executor = ContainerExecutor::new(args.base_image);
+            let _container_executor = ContainerExecutor::new(args.base_image, args.workdir);
         }
     }
 

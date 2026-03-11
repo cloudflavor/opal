@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use structopt::StructOpt;
 
 pub mod executor;
@@ -23,6 +25,9 @@ pub enum Commands {
 
 #[derive(StructOpt)]
 pub struct RunArgs {
-    #[structopt(long, short)]
+    #[structopt(short, long)]
+    pub workdir: PathBuf,
+
+    #[structopt(short, long)]
     pub base_image: String,
 }
