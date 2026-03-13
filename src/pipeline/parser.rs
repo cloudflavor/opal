@@ -1,0 +1,660 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use petgraph::graph::{DiGraph, NodeIndex};
+use serde::Deserialize;
+use serde_yaml::{Mapping, Value};
+
+#[derive(Debug, Clone)]
+pub struct PipelineGraph {
+    pub graph: DiGraph<Job, ()>,
+    pub stages: Vec<StageGroup>,
+    pub defaults: PipelineDefaults,
+}
+
+#[derive(Debug, Clone)]
+pub struct StageGroup {
+    pub name: String,
+    pub jobs: Vec<NodeIndex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Job {
+    pub name: String,
+    pub stage: String,
+    pub commands: Vec<String>,
+    pub needs: Vec<JobDependency>,
+    pub artifacts: Vec<PathBuf>,
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PipelineDefaults {
+    pub image: Option<String>,
+    pub before_script: Vec<String>,
+    pub after_script: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct JobDependency {
+    pub job: String,
+    pub needs_artifacts: bool,
+}
+
+impl PipelineGraph {
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let content = fs::read_to_string(path.as_ref())
+            .with_context(|| format!("failed to read {:?}", path.as_ref()))?;
+        Self::from_str(&content)
+    }
+
+    pub fn from_str(contents: &str) -> Result<Self> {
+        let root: Mapping = serde_yaml::from_str(contents)?;
+        let mut raw_jobs = Vec::new();
+        let mut stage_names: Vec<String> = Vec::new();
+        let mut defaults = PipelineDefaults::default();
+
+        for (key, value) in root {
+            match key {
+                Value::String(name) if name == "stages" => {
+                    stage_names = parse_stages(value)?;
+                }
+                Value::String(name) if name == "image" => {
+                    defaults.image = Some(parse_image(value)?);
+                }
+                Value::String(name) if name == "default" => {
+                    parse_default_block(&mut defaults, value)?;
+                }
+                Value::String(name) => {
+                    if name.starts_with('.') || is_reserved_keyword(&name) {
+                        continue;
+                    }
+
+                    match value {
+                        Value::Mapping(map) => {
+                            if !mapping_has_script(&map) {
+                                bail!("job '{name}' must define a script");
+                            }
+                            raw_jobs.push((name, Value::Mapping(map)));
+                        }
+                        other => bail!("job '{name}' must be defined as a mapping, got {other:?}"),
+                    }
+                }
+                other => bail!("expected string keys in pipeline, got {other:?}"),
+            }
+        }
+
+        build_graph(defaults, stage_names, raw_jobs)
+    }
+}
+
+fn parse_stages(value: Value) -> Result<Vec<String>> {
+    match value {
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(|val| match val {
+                Value::String(name) => Ok(name),
+                other => bail!("stage value must be string, got {other:?}"),
+            })
+            .collect(),
+        other => bail!("stages must be a sequence, got {other:?}"),
+    }
+}
+
+fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<()> {
+    let mapping = match value {
+        Value::Mapping(map) => map,
+        other => bail!("default section must be a mapping, got {other:?}"),
+    };
+
+    for (key, value) in mapping {
+        match key {
+            Value::String(name) if name == "before_script" => {
+                defaults.before_script = parse_string_list(value, "before_script")?;
+            }
+            Value::String(name) if name == "after_script" => {
+                defaults.after_script = parse_string_list(value, "after_script")?;
+            }
+            Value::String(name) if name == "image" => {
+                defaults.image = Some(parse_image(value)?);
+            }
+            Value::String(_) => {
+                // ignore other default keywords for now
+            }
+            other => bail!("default keys must be strings, got {other:?}"),
+        }
+    }
+
+    Ok(())
+}
+
+fn is_reserved_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "stages"
+            | "default"
+            | "include"
+            | "variables"
+            | "workflow"
+            | "spec"
+            | "image"
+            | "services"
+            | "before_script"
+            | "after_script"
+            | "cache"
+    )
+}
+
+fn mapping_has_script(entries: &Mapping) -> bool {
+    entries
+        .keys()
+        .any(|key| matches!(key, Value::String(name) if name == "script"))
+}
+
+fn parse_image(value: Value) -> Result<String> {
+    match value {
+        Value::String(name) => Ok(name),
+        Value::Mapping(mut map) => {
+            if let Some(val) = map.remove(&Value::String("name".to_string())) {
+                extract_string(val, "image name")
+            } else {
+                bail!("image mapping must include 'name'")
+            }
+        }
+        other => bail!("image must be a string or mapping, got {other:?}"),
+    }
+}
+
+fn extract_string(value: Value, what: &str) -> Result<String> {
+    match value {
+        Value::String(text) => Ok(text),
+        other => bail!("{what} must be a string, got {other:?}"),
+    }
+}
+
+fn parse_job(value: Value) -> Result<(RawJob, Option<String>)> {
+    match value {
+        Value::Mapping(mut map) => {
+            let image_value = map.remove(&Value::String("image".to_string()));
+            let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
+            let image = image_value.map(parse_image).transpose()?;
+            Ok((job_spec, image))
+        }
+        other => bail!("job definition must be a mapping, got {other:?}"),
+    }
+}
+
+fn parse_string_list(value: Value, field: &str) -> Result<Vec<String>> {
+    match value {
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(|val| match val {
+                Value::String(text) => Ok(text),
+                other => bail!("{field} entries must be strings, got {other:?}"),
+            })
+            .collect(),
+        Value::String(text) => Ok(vec![text]),
+        Value::Null => Ok(Vec::new()),
+        other => bail!("{field} must be a string or sequence, got {other:?}"),
+    }
+}
+
+fn build_graph(
+    defaults: PipelineDefaults,
+    stage_names: Vec<String>,
+    raw_jobs: Vec<(String, Value)>,
+) -> Result<PipelineGraph> {
+    let mut graph = DiGraph::<Job, ()>::new();
+    let mut stages: Vec<StageGroup> = stage_names
+        .into_iter()
+        .map(|name| StageGroup {
+            name,
+            jobs: Vec::new(),
+        })
+        .collect();
+    let mut name_to_index: HashMap<String, NodeIndex> = HashMap::new();
+    let mut pending_needs: Vec<(String, NodeIndex, Vec<JobDependency>)> = Vec::new();
+
+    if stages.is_empty() {
+        stages.push(StageGroup {
+            name: "default".to_string(),
+            jobs: Vec::new(),
+        });
+    }
+
+    for (job_name, job_value) in raw_jobs {
+        let (job_spec, job_image) = parse_job(job_value)?;
+        let stage_name = job_spec.stage.unwrap_or_else(|| {
+            stages
+                .first()
+                .map(|stage| stage.name.as_str())
+                .unwrap_or("default")
+                .to_string()
+        });
+        let stage_index = ensure_stage(&mut stages, &stage_name);
+        let commands = job_spec.script.into_commands();
+        let needs: Vec<JobDependency> = job_spec
+            .needs
+            .into_iter()
+            .map(Need::into_dependency)
+            .collect();
+        let artifacts = job_spec.artifacts.paths;
+
+        let node = graph.add_node(Job {
+            name: job_name.clone(),
+            stage: stage_name,
+            commands,
+            needs: needs.clone(),
+            artifacts,
+            image: job_image,
+        });
+
+        name_to_index.insert(job_name.clone(), node);
+        pending_needs.push((job_name, node, needs));
+
+        stages
+            .get_mut(stage_index)
+            .expect("stage index must exist")
+            .jobs
+            .push(node);
+    }
+
+    for (job_name, job_idx, needs) in pending_needs {
+        for dependency in needs {
+            let dependency_idx = name_to_index.get(&dependency.job).copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "job '{}' declared unknown dependency '{}'",
+                    job_name,
+                    dependency.job
+                )
+            })?;
+
+            graph.add_edge(dependency_idx, job_idx, ());
+        }
+    }
+
+    Ok(PipelineGraph {
+        graph,
+        stages,
+        defaults,
+    })
+}
+
+fn ensure_stage(stages: &mut Vec<StageGroup>, stage_name: &str) -> usize {
+    if let Some(pos) = stages.iter().position(|stage| stage.name == stage_name) {
+        pos
+    } else {
+        stages.push(StageGroup {
+            name: stage_name.to_string(),
+            jobs: Vec::new(),
+        });
+        stages.len() - 1
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawJob {
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    script: Script,
+    #[serde(default)]
+    needs: Vec<Need>,
+    #[serde(default)]
+    artifacts: RawArtifacts,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Script {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawArtifacts {
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Need {
+    Name(String),
+    Config {
+        job: String,
+        #[serde(default = "default_artifacts_true")]
+        artifacts: bool,
+    },
+}
+
+impl Need {
+    fn into_dependency(self) -> JobDependency {
+        match self {
+            Need::Name(job) => JobDependency {
+                job,
+                needs_artifacts: true,
+            },
+            Need::Config { job, artifacts } => JobDependency {
+                job,
+                needs_artifacts: artifacts,
+            },
+        }
+    }
+}
+
+fn default_artifacts_true() -> bool {
+    true
+}
+
+impl Default for Script {
+    fn default() -> Self {
+        Script::Multiple(Vec::new())
+    }
+}
+
+impl Script {
+    fn into_commands(self) -> Vec<String> {
+        match self {
+            Script::Single(line) => vec![line],
+            Script::Multiple(lines) => lines,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_stage_and_job_order() {
+        let yaml = r#"
+    stages:
+      - build
+      - test
+
+    build-job:
+      stage: build
+      script:
+        - echo build
+
+    second-build:
+      stage: build
+      script: echo build 2
+
+    test-job:
+      stage: test
+      script:
+        - echo test
+    "#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(pipeline.stages.len(), 2);
+        assert_eq!(pipeline.stages[0].name, "build");
+        assert_eq!(pipeline.stages[1].name, "test");
+
+        let build_jobs: Vec<&Job> = pipeline.stages[0]
+            .jobs
+            .iter()
+            .map(|idx| &pipeline.graph[*idx])
+            .collect();
+        assert_eq!(build_jobs.len(), 2);
+        assert_eq!(build_jobs[0].name, "build-job");
+        assert_eq!(build_jobs[1].name, "second-build");
+
+        let test_jobs: Vec<&Job> = pipeline.stages[1]
+            .jobs
+            .iter()
+            .map(|idx| &pipeline.graph[*idx])
+            .collect();
+        assert_eq!(test_jobs.len(), 1);
+        assert_eq!(test_jobs[0].name, "test-job");
+    }
+
+    #[test]
+    fn records_needs_dependencies() {
+        let yaml = r#"
+stages:
+  - build
+  - deploy
+
+build-job:
+  stage: build
+  script:
+    - echo build
+
+deploy-job:
+  stage: deploy
+  needs:
+    - build-job
+  script:
+    - echo deploy
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let deploy_idx = find_job(&pipeline, "deploy-job");
+
+        assert_eq!(
+            pipeline.graph[deploy_idx].needs[0].job,
+            "build-job".to_string()
+        );
+        assert!(pipeline.graph[deploy_idx].needs[0].needs_artifacts);
+        assert!(pipeline.graph.contains_edge(build_idx, deploy_idx));
+    }
+
+    #[test]
+    fn parses_needs_without_artifacts() {
+        let yaml = r#"
+stages:
+  - build
+  - test
+
+build-job:
+  stage: build
+  script:
+    - echo build
+
+test-job:
+  stage: test
+  needs:
+    - job: build-job
+      artifacts: false
+  script:
+    - echo test
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let test_idx = find_job(&pipeline, "test-job");
+        assert_eq!(pipeline.graph[test_idx].needs.len(), 1);
+        let need = &pipeline.graph[test_idx].needs[0];
+        assert_eq!(need.job, "build-job");
+        assert!(!need.needs_artifacts);
+    }
+
+    #[test]
+    fn parses_artifacts_paths() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  artifacts:
+    paths:
+      - vendor/
+      - output/report.txt
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert_eq!(job.artifacts.len(), 2);
+        assert_eq!(job.artifacts[0], PathBuf::from("vendor"));
+        assert_eq!(job.artifacts[1], PathBuf::from("output/report.txt"));
+    }
+
+    #[test]
+    fn parses_pipeline_and_job_images() {
+        let yaml = r#"
+image: rust:latest
+stages:
+  - build
+  - test
+
+build-job:
+  stage: build
+  image: rust:slim
+  script:
+    - echo build
+
+test-job:
+  stage: test
+  script:
+    - echo test
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(pipeline.defaults.image.as_deref(), Some("rust:latest"));
+        let build_idx = find_job(&pipeline, "build-job");
+        assert_eq!(
+            pipeline.graph[build_idx].image.as_deref(),
+            Some("rust:slim")
+        );
+        let test_idx = find_job(&pipeline, "test-job");
+        assert!(pipeline.graph[test_idx].image.is_none());
+    }
+
+    #[test]
+    fn ignores_default_section_as_job() {
+        let yaml = r#"
+stages:
+  - build
+
+default:
+  image: alpine:latest
+  before_script:
+    - echo before
+  after_script:
+    - echo after
+
+build-job:
+  stage: build
+  script:
+    - echo build
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(pipeline.stages.len(), 1);
+        assert_eq!(pipeline.stages[0].jobs.len(), 1);
+        assert_eq!(
+            pipeline.defaults.before_script,
+            vec!["echo before".to_string()]
+        );
+        assert_eq!(
+            pipeline.defaults.after_script,
+            vec!["echo after".to_string()]
+        );
+        let job_idx = pipeline.stages[0].jobs[0];
+        assert_eq!(pipeline.graph[job_idx].name, "build-job");
+    }
+
+    #[test]
+    fn parses_global_hooks() {
+        let yaml = r#"
+stages:
+  - build
+
+default:
+  before_script:
+    - echo before-one
+    - echo before-two
+  after_script: echo after
+
+build-job:
+  stage: build
+  script: echo body
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(
+            pipeline.defaults.before_script,
+            vec!["echo before-one".to_string(), "echo before-two".to_string()]
+        );
+        assert_eq!(
+            pipeline.defaults.after_script,
+            vec!["echo after".to_string()]
+        );
+    }
+
+    #[test]
+    fn ignores_non_job_sections_without_scripts() {
+        let yaml = r#"
+stages:
+  - build
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+
+build-job:
+  stage: build
+  script:
+    - echo build
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(pipeline.stages.len(), 1);
+        assert_eq!(pipeline.stages[0].jobs.len(), 1);
+        let job_idx = pipeline.stages[0].jobs[0];
+        assert_eq!(pipeline.graph[job_idx].name, "build-job");
+    }
+
+    #[test]
+    fn errors_when_job_missing_script() {
+        let yaml = r#"
+stages:
+  - build
+
+broken-job:
+  stage: build
+"#;
+
+        let err = PipelineGraph::from_str(yaml).expect_err("missing script should error");
+        assert!(err.to_string().contains("must define a script"));
+    }
+
+    #[test]
+    fn ignores_hidden_jobs_starting_with_dot() {
+        let yaml = r#"
+stages:
+  - build
+
+.template:
+  script:
+    - echo template
+
+build-job:
+  stage: build
+  script:
+    - echo build
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(pipeline.stages[0].jobs.len(), 1);
+        let job_idx = pipeline.stages[0].jobs[0];
+        assert_eq!(pipeline.graph[job_idx].name, "build-job");
+    }
+
+    fn find_job(graph: &PipelineGraph, name: &str) -> NodeIndex {
+        graph
+            .graph
+            .node_indices()
+            .find(|&idx| graph.graph[idx].name == name)
+            .expect("job must exist")
+    }
+}
