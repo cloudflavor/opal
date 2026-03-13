@@ -3,6 +3,7 @@ stages:
   - test
   - build
   - package
+  - release
   - publish
 
 default:
@@ -69,14 +70,55 @@ package-crate:
     paths:
       - target/package/
 
+release-artifacts:
+  stage: release
+  needs:
+    - build-release
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: on_success
+    - when: never
+  script:
+    - |
+      set -euo pipefail
+      VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_REF_NAME}"
+      ARCH_RAW="$(uname -m)"
+      OS_RAW="$(uname -s)"
+      case "${ARCH_RAW}" in
+        x86_64|amd64) ARCH="x86_64" ;;
+        arm64|aarch64) ARCH="aarch64" ;;
+        *) ARCH="${ARCH_RAW}" ;;
+      esac
+      case "${OS_RAW}" in
+        Darwin) OS="apple-darwin" ;;
+        Linux) OS="unknown-linux-gnu" ;;
+        *) OS="$(echo "${OS_RAW}" | tr '[:upper:]' '[:lower:]')" ;;
+      esac
+      PLATFORM="${ARCH}-${OS}"
+      ARCHIVE="target/release/opal-${VERSION}-${PLATFORM}.tar.gz"
+      NOTES="target/release/release-notes-${PLATFORM}.txt"
+      mkdir -p target/release
+      tar -czf "${ARCHIVE}" -C target/release opal
+      SHA=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
+      {
+        echo "Release archive: ${ARCHIVE}"
+        echo "SHA-256: ${SHA}"
+        echo "Target: ${PLATFORM}"
+      } > "${NOTES}"
+  artifacts:
+    paths:
+      - target/release/*.tar.gz
+      - target/release/release-notes-*.txt
+
 publish-crate:
   stage: publish
   needs:
     - package-crate
+    - release-artifacts
   rules:
-    - if: '$CARGO_REGISTRY_TOKEN'
+    - if: '$CI_COMMIT_TAG && $CARGO_REGISTRY_TOKEN'
       when: manual
     - when: never
   script:
     - echo "publishing opal $CI_COMMIT_SHA"
-    - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+    # - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"

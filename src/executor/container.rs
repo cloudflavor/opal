@@ -1,4 +1,5 @@
 use super::log::{LogFormatter, sanitize_fragments};
+use super::secrets::SecretsStore;
 use super::ui::{UiBridge, UiHandle, UiJobInfo, UiJobStatus};
 use crate::pipeline::{Job, PipelineGraph};
 use crate::{EngineKind, ExecutorConfig};
@@ -47,6 +48,7 @@ pub struct ContainerExecutor {
     env_vars: Vec<(String, String)>,
     stage_positions: HashMap<String, usize>,
     stage_states: Arc<Mutex<HashMap<String, StageState>>>,
+    secrets: SecretsStore,
 }
 
 impl ContainerExecutor {
@@ -105,6 +107,8 @@ impl ContainerExecutor {
             stage_states.insert(stage.name.clone(), StageState::new(stage.jobs.len()));
         }
 
+        let secrets = SecretsStore::load(&config.workdir)?;
+
         Ok(Self {
             config,
             g,
@@ -117,6 +121,7 @@ impl ContainerExecutor {
             env_vars,
             stage_positions,
             stage_states: Arc::new(Mutex::new(stage_states)),
+            secrets,
         })
     }
 
@@ -532,7 +537,14 @@ impl ContainerExecutor {
         let ui_ref = ui.as_deref();
 
         let result = (|| -> Result<()> {
-            let mounts = self.build_volume_mounts(&job)?;
+            let mut mounts = self.build_volume_mounts(&job)?;
+            if let Some((host, container_path)) = self.secrets.volume_mount() {
+                mounts.push(VolumeMount {
+                    host,
+                    container: container_path,
+                    read_only: true,
+                });
+            }
             let job_image = self.resolve_job_image(&job);
             let container_name = self.job_container_name(&stage_name, &job);
             let script_commands = self.expanded_commands(&job);
@@ -815,9 +827,11 @@ impl ContainerExecutor {
                 .format(TIMESTAMP_FORMAT)
                 .unwrap_or_else(|_| "??????????".to_string());
             for fragment in sanitize_fragments(&line) {
-                let decorated = formatter.format(&timestamp, display_line_no, &fragment);
+                let masked = self.secrets.mask_fragment(&fragment);
+                let masked_ref = masked.as_ref();
+                let decorated = formatter.format(&timestamp, display_line_no, masked_ref);
                 if let Some(ui) = ui {
-                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, fragment);
+                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, masked_ref);
                     ui.job_log_line(&job.name, &raw_line);
                 } else {
                     println!("{} {}", line_prefix, decorated);
@@ -825,7 +839,7 @@ impl ContainerExecutor {
                 writeln!(
                     log_file,
                     "[{} {:04}] {}",
-                    timestamp, display_line_no, fragment
+                    timestamp, display_line_no, masked_ref
                 )?;
                 display_line_no += 1;
             }
@@ -1030,6 +1044,10 @@ impl ContainerExecutor {
         }
         for (key, value) in &job.variables {
             push(key, value);
+        }
+
+        if self.secrets.has_secrets() {
+            self.secrets.extend_env(&mut env);
         }
 
         env

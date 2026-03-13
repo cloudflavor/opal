@@ -79,12 +79,11 @@ fn detect_orbstack() -> bool {
     if std::env::var_os("ORBSTACK").is_some() {
         return true;
     }
-    if let Some(host) = std::env::var_os("DOCKER_HOST") {
-        if let Ok(host_str) = host.into_string() {
-            if host_str.contains(".orbstack") {
-                return true;
-            }
-        }
+    if let Some(host) = std::env::var_os("DOCKER_HOST")
+        && let Ok(host_str) = host.into_string()
+        && host_str.contains(".orbstack")
+    {
+        return true;
     }
     false
 }

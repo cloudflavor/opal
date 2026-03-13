@@ -2,6 +2,7 @@ pub mod container;
 pub use container::ContainerExecutor;
 
 mod log;
+mod secrets;
 mod ui;
 
 #[cfg(target_os = "linux")]
