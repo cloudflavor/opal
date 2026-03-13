@@ -47,13 +47,20 @@ pub struct JobDependency {
 
 impl PipelineGraph {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .with_context(|| format!("failed to read {:?}", path.as_ref()))?;
-        Self::from_str(&content)
+        let path = path.as_ref();
+        let canonical =
+            fs::canonicalize(path).with_context(|| format!("failed to resolve {:?}", path))?;
+        let mut stack = Vec::new();
+        let root = load_pipeline_file(&canonical, &mut stack)?;
+        Self::from_mapping(root)
     }
 
     pub fn from_str(contents: &str) -> Result<Self> {
         let root: Mapping = serde_yaml::from_str(contents)?;
+        Self::from_mapping(root)
+    }
+
+    fn from_mapping(root: Mapping) -> Result<Self> {
         let mut stage_names: Vec<String> = Vec::new();
         let mut defaults = PipelineDefaults::default();
 
@@ -96,6 +103,37 @@ impl PipelineGraph {
 
         build_graph(defaults, stage_names, job_names, job_defs)
     }
+}
+
+fn load_pipeline_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Mapping> {
+    if stack.iter().any(|p| p == path) {
+        bail!("include cycle detected involving {:?}", path);
+    }
+    stack.push(path.to_path_buf());
+
+    let content = fs::read_to_string(path).with_context(|| format!("failed to read {:?}", path))?;
+    let mut root: Mapping = serde_yaml::from_str(&content)?;
+    let include_key = Value::String("include".to_string());
+    let mut combined = Mapping::new();
+
+    if let Some(include_value) = root.remove(&include_key) {
+        let includes = parse_include_entries(include_value)?;
+        for include in includes {
+            let resolved = if include.is_absolute() {
+                include
+            } else {
+                path.parent().unwrap_or(Path::new(".")).join(include)
+            };
+            let canonical = fs::canonicalize(&resolved)
+                .with_context(|| format!("failed to resolve include {:?}", resolved))?;
+            let included = load_pipeline_file(&canonical, stack)?;
+            combined = merge_mappings(combined, included);
+        }
+    }
+
+    combined = merge_mappings(combined, root);
+    stack.pop();
+    Ok(combined)
 }
 
 fn parse_stages(value: Value) -> Result<Vec<String>> {
@@ -394,6 +432,28 @@ fn merge_mappings(mut base: Mapping, addition: Mapping) -> Mapping {
     base
 }
 
+fn parse_include_entries(value: Value) -> Result<Vec<PathBuf>> {
+    match value {
+        Value::String(path) => Ok(vec![PathBuf::from(path)]),
+        Value::Sequence(entries) => entries.into_iter().map(parse_include_entry).collect(),
+        other => bail!("include must be a string or list, got {other:?}"),
+    }
+}
+
+fn parse_include_entry(value: Value) -> Result<PathBuf> {
+    match value {
+        Value::String(path) => Ok(PathBuf::from(path)),
+        Value::Mapping(map) => {
+            if let Some(Value::String(local)) = map.get(&Value::String("local".to_string())) {
+                Ok(PathBuf::from(local))
+            } else {
+                bail!("only 'local' includes are supported");
+            }
+        }
+        other => bail!("unsupported include entry {other:?}"),
+    }
+}
+
 fn ensure_stage(stages: &mut Vec<StageGroup>, stage_name: &str) -> usize {
     if let Some(pos) = stages.iter().position(|stage| stage.name == stage_name) {
         pos
@@ -479,6 +539,8 @@ impl Script {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn parses_stage_and_job_order() {
@@ -523,6 +585,93 @@ mod tests {
             .collect();
         assert_eq!(test_jobs.len(), 1);
         assert_eq!(test_jobs[0].name, "test-job");
+    }
+
+    #[test]
+    fn includes_local_fragment() {
+        let dir = tempdir().expect("tempdir");
+        let fragment_path = dir.path().join("fragment.yml");
+        fs::write(
+            &fragment_path,
+            r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+        )
+        .expect("write fragment");
+
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - local: fragment.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )
+        .expect("write main");
+
+        let pipeline = PipelineGraph::from_path(&main_path).expect("pipeline parses");
+        assert_eq!(pipeline.stages.len(), 1);
+        assert_eq!(pipeline.stages[0].jobs.len(), 2);
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "fragment-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+    }
+
+    #[test]
+    fn include_cycle_errors() {
+        let dir = tempdir().expect("tempdir");
+        let a_path = dir.path().join("a.yml");
+        let b_path = dir.path().join("b.yml");
+        fs::write(
+            &a_path,
+            format!(
+                "
+include:
+  - local: {}
+job-a:
+  stage: build
+  script: echo a
+",
+                b_path.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .expect("write a");
+        fs::write(
+            &b_path,
+            format!(
+                "
+include:
+  - local: {}
+job-b:
+  stage: build
+  script: echo b
+",
+                a_path.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .expect("write b");
+
+        let err = PipelineGraph::from_path(&a_path).expect_err("cycle must error");
+        assert!(err.to_string().contains("include cycle"));
     }
 
     #[test]

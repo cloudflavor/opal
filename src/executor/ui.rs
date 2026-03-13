@@ -17,10 +17,10 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 const LOG_CAPACITY: usize = 1024;
@@ -187,23 +187,29 @@ impl UiRunner {
     }
 
     fn draw(&mut self) -> Result<()> {
-        let split = self.state.split_ratio();
         self.terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Percentage(split),
-                    Constraint::Percentage(100 - split),
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                    Constraint::Min(0),
+                    Constraint::Length(2),
                 ])
                 .split(frame.size());
 
-            let jobs = self.state.jobs_list();
-            let mut list_state = ListState::default();
-            list_state.select(Some(self.state.selected));
-            frame.render_stateful_widget(jobs, chunks[0], &mut list_state);
+            let tabs = self.state.tabs(layout[0].width.saturating_sub(2).max(1));
+            frame.render_widget(tabs, layout[0]);
 
-            let log_widget = self.state.log_view(self.pipeline_finished);
-            frame.render_widget(log_widget, chunks[1]);
+            let info = self.state.info_panel();
+            frame.render_widget(info, layout[1]);
+
+            let log_height = layout[2].height;
+            let log_widget = self.state.log_view(self.pipeline_finished, log_height);
+            frame.render_widget(log_widget, layout[2]);
+
+            let hint = self.state.key_hint_widget();
+            frame.render_widget(hint, layout[3]);
         })?;
         Ok(())
     }
@@ -249,8 +255,6 @@ impl UiRunner {
             KeyCode::Char('k') | KeyCode::Char('K') => self.state.previous_job(),
             KeyCode::Char('h') => self.state.previous_job(),
             KeyCode::Char('l') => self.state.next_job(),
-            KeyCode::Char('H') => self.state.adjust_split(-5),
-            KeyCode::Char('L') => self.state.adjust_split(5),
             KeyCode::Left => self.state.previous_job(),
             KeyCode::Right => self.state.next_job(),
             KeyCode::Tab => self.state.next_job(),
@@ -355,7 +359,6 @@ struct UiState {
     jobs: Vec<UiJobState>,
     order: HashMap<String, usize>,
     selected: usize,
-    split_ratio: u16,
 }
 
 impl UiState {
@@ -374,57 +377,142 @@ impl UiState {
             jobs: job_states,
             order,
             selected: 0,
-            split_ratio: 40,
         }
     }
 
-    fn split_ratio(&self) -> u16 {
-        self.split_ratio
+    fn tabs(&self, width: u16) -> Paragraph<'static> {
+        let lines = self.tab_lines(width as usize);
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Jobs"))
+            .wrap(Wrap { trim: false })
     }
 
-    fn jobs_list(&self) -> List<'_> {
-        let items: Vec<ListItem> = self
-            .jobs
-            .iter()
-            .map(|job| {
-                let (icon, color) = job.status.icon();
-                let spans = vec![
-                    Span::styled(
-                        icon,
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(format!(" {}", job.name)),
-                    Span::styled(
-                        format!(" [{}]", job.stage),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        format!(" ({})", job.log_hash),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                ];
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
+    fn tab_lines(&self, available: usize) -> Vec<Line<'static>> {
+        if self.jobs.is_empty() {
+            return vec![Line::raw("")];
+        }
 
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Jobs"))
-            .highlight_style(
+        let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+        let mut current: Vec<Span<'static>> = Vec::new();
+        let mut width = 0usize;
+
+        for (idx, job) in self.jobs.iter().enumerate() {
+            let label_spans = self.build_label_spans(job, idx == self.selected);
+            let label_width = Line::from(label_spans.clone()).width();
+            let separator_width = if current.is_empty() { 0 } else { 3 };
+
+            if !current.is_empty() && width + separator_width + label_width > available {
+                rows.push(current);
+                current = Vec::new();
+                width = 0;
+            }
+
+            if !current.is_empty() {
+                current.push(Span::raw(" │ ".to_string()));
+                width += 3;
+            }
+
+            width += label_width;
+            current.extend(label_spans);
+        }
+
+        if !current.is_empty() {
+            rows.push(current);
+        }
+
+        if rows.is_empty() {
+            rows.push(Vec::new());
+        }
+
+        rows.into_iter().map(Line::from).collect()
+    }
+
+    fn build_label_spans(&self, job: &UiJobState, selected: bool) -> Vec<Span<'static>> {
+        let (icon_char, icon_color) = job.status.icon();
+        let highlight = if selected {
+            Some(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .bg(Color::Black)
+                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol("» ")
+        } else {
+            None
+        };
+
+        let mut spans = Vec::new();
+        spans.push(Span::styled(
+            icon_char.to_string(),
+            Self::apply_highlight(
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+                highlight,
+            ),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", job.name),
+            Self::apply_highlight(Style::default(), highlight),
+        ));
+        spans.push(Span::styled(
+            format!(" [{}]", job.stage),
+            Self::apply_highlight(Style::default().fg(Color::DarkGray), highlight),
+        ));
+        spans.push(Span::styled(
+            format!(" ({})", job.log_hash),
+            Self::apply_highlight(Style::default().fg(Color::Yellow), highlight),
+        ));
+
+        spans
     }
 
-    fn log_view(&self, pipeline_finished: bool) -> Paragraph<'_> {
+    fn apply_highlight(base: Style, highlight: Option<Style>) -> Style {
+        if let Some(highlight_style) = highlight {
+            base.patch(highlight_style)
+        } else {
+            base
+        }
+    }
+
+    fn key_hint_widget(&self) -> Paragraph<'static> {
+        Paragraph::new(self.key_hint_line())
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false })
+    }
+
+    fn key_hint_line(&self) -> Line<'static> {
+        Line::from(vec![
+            Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "j/k/h/l arrows switch tabs • Shift/Ctrl+↑/↓ PgUp/PgDn Ctrl+u/d/f/b g/G wheel scroll logs • o opens log • q exits",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    }
+
+    fn info_panel(&self) -> Paragraph<'_> {
+        let job = &self.jobs[self.selected];
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
+                Span::raw(job.stage.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled("Log: ", Style::default().fg(Color::Cyan)),
+                Span::raw(job.log_path.display().to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Status: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{} ({:.2}s)", job.status.label(), job.duration)),
+            ]),
+        ];
+
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Details"))
+            .wrap(Wrap { trim: true })
+    }
+
+    fn log_view(&self, pipeline_finished: bool, height: u16) -> Paragraph<'_> {
         let job = &self.jobs[self.selected];
         let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(Span::styled(
-            format!("Stage: {}  Log: {}", job.stage, job.log_path.display()),
-            Style::default().fg(Color::Cyan),
-        )));
-        lines.push(Line::from(Span::raw(" ")));
         let status_span = Span::styled(
             format!("Status: {} ({:.2}s)", job.status.label(), job.duration),
             Style::default().fg(job.status.icon().1),
@@ -438,12 +526,6 @@ impl UiState {
         }
         lines.push(Line::from(Span::raw(" ")));
 
-        lines.push(Line::from(Span::styled(
-            "Keys: j/k/h/l or arrows change job • Shift/Ctrl+↑/↓, PgUp/PgDn, Ctrl+u/d/f/b, g/G, mouse wheel scroll logs • o opens log in $PAGER",
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(Span::raw(" ")));
-
         if pipeline_finished {
             lines.push(Line::from(Span::styled(
                 "Pipeline complete – press q to exit",
@@ -454,9 +536,8 @@ impl UiState {
             lines.push(Line::from(Span::raw(" ")));
         }
 
-        for line in job.visible_logs() {
-            lines.push(line);
-        }
+        let max_lines = height.saturating_sub(2).max(1) as usize;
+        lines.extend(job.visible_logs(max_lines));
 
         let mut title = "Logs".to_string();
         if job.status.is_done() {
@@ -519,12 +600,6 @@ impl UiState {
             self.selected -= 1;
         }
         self.jobs[self.selected].auto_follow();
-    }
-
-    fn adjust_split(&mut self, delta: i16) {
-        let mut ratio = self.split_ratio as i16 + delta;
-        ratio = ratio.clamp(20, 80);
-        self.split_ratio = ratio as u16;
     }
 
     fn scroll_logs_line_up(&mut self) {
@@ -651,18 +726,19 @@ impl UiJobState {
         self.follow_logs = true;
     }
 
-    fn visible_logs(&self) -> Vec<Line<'_>> {
+    fn visible_logs(&self, max_lines: usize) -> Vec<Line<'static>> {
         if self.logs.is_empty() {
             return vec![Line::from("(no output yet)")];
         }
 
         let end = self.logs.len().saturating_sub(self.scroll_offset);
-        let start = end.saturating_sub(200);
+        let window = max_lines.max(1);
+        let start = end.saturating_sub(window);
         self.logs
             .iter()
             .skip(start)
             .take(end - start)
-            .map(|line| Line::from(line.as_str()))
+            .map(|line| format_log_entry(line))
             .collect()
     }
 }
@@ -699,4 +775,27 @@ impl UiJobStatus {
             UiJobStatus::Skipped => "skipped",
         }
     }
+}
+
+fn format_log_entry(line: &str) -> Line<'static> {
+    if let Some(rest) = line.strip_prefix('[') {
+        if let Some(idx) = rest.find("] ") {
+            let meta = &rest[..idx];
+            let remainder = &rest[idx + 2..];
+            if let Some(space_idx) = meta.rfind(' ') {
+                let (timestamp, number) = meta.split_at(space_idx);
+                let number = number.trim();
+                return Line::from(vec![
+                    Span::raw("[".to_string()),
+                    Span::styled(timestamp.to_string(), Style::default().fg(Color::Blue)),
+                    Span::raw(" ".to_string()),
+                    Span::styled(number.to_string(), Style::default().fg(Color::Green)),
+                    Span::raw("] ".to_string()),
+                    Span::raw(remainder.to_string()),
+                ]);
+            }
+        }
+    }
+
+    Line::from(line.to_string())
 }

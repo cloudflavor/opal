@@ -713,16 +713,20 @@ impl ContainerExecutor {
                 .unwrap_or_else(|_| "??????????".to_string());
             let fragments = Self::expand_carriage_returns(&line);
             for fragment in &fragments {
+                let ts_colored = timestamp_style(&timestamp);
+                let no_colored = line_no_style(&format!("{:04}", display_line_no));
+                let decorated = format!("[{} {}] {}", ts_colored, no_colored, fragment);
                 if !self.config.enable_tui {
-                    let ts_colored = timestamp_style(&timestamp);
-                    let no_colored = line_no_style(&format!("{:04}", display_line_no));
                     println!(
                         "{} [{} {}] {}",
                         line_prefix, ts_colored, no_colored, fragment
                     );
                 }
                 if let Some(ui) = ui {
-                    ui.job_log_line(&job.name, fragment);
+                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, fragment);
+                    ui.job_log_line(&job.name, &raw_line);
+                } else {
+                    println!("{} {}", line_prefix, decorated);
                 }
                 display_line_no += 1;
             }
