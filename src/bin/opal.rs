@@ -40,6 +40,9 @@ async fn main() -> Result<()> {
                     workdir,
                     base_image,
                     env_includes,
+                    max_parallel_jobs,
+                    log_dir,
+                    no_tui,
                 } = args;
 
                 ContainerExecutor::new(ExecutorConfig {
@@ -47,12 +50,16 @@ async fn main() -> Result<()> {
                     workdir,
                     pipeline,
                     env_includes,
+                    max_parallel_jobs,
+                    log_dir,
+                    enable_tui: !no_tui,
                 })
                 .with_context(|| "failed create new exeecutor")?
             };
 
             container_executor
                 .run()
+                .await
                 .with_context(|| "failed to run pipeline")
         }
     }

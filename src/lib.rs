@@ -47,6 +47,18 @@ pub struct RunArgs {
         help = "Include host env vars matching this glob (e.g. APP_*). Repeat to add more."
     )]
     pub env_includes: Vec<String>,
+
+    #[structopt(long = "max-parallel-jobs", default_value = "5")]
+    /// Maximum number of jobs to run concurrently
+    pub max_parallel_jobs: usize,
+
+    #[structopt(long = "log-dir")]
+    /// Optional directory to store job logs (default: .opal/logs/<run_id>)
+    pub log_dir: Option<PathBuf>,
+
+    #[structopt(long = "no-tui")]
+    /// Disable the Ratatui interface
+    pub no_tui: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -55,4 +67,7 @@ pub struct ExecutorConfig {
     pub workdir: PathBuf,
     pub pipeline: PathBuf,
     pub env_includes: Vec<String>,
+    pub max_parallel_jobs: usize,
+    pub log_dir: Option<PathBuf>,
+    pub enable_tui: bool,
 }
