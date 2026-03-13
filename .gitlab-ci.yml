@@ -6,7 +6,7 @@ stages:
   - publish
 
 default:
-  image: rustlang/rust:nightly
+  image: docker.io/rustlang/rust:nightly
   before_script:
     - rustc --version
     - cargo --version

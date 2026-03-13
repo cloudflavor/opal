@@ -59,11 +59,34 @@ async fn main() -> Result<()> {
 #[cfg(target_os = "macos")]
 fn resolve_engine(choice: EngineChoice) -> EngineKind {
     match choice {
-        EngineChoice::Auto | EngineChoice::Container => EngineKind::ContainerCli,
+        EngineChoice::Auto => {
+            if detect_orbstack() {
+                EngineKind::Docker
+            } else {
+                EngineKind::ContainerCli
+            }
+        }
+        EngineChoice::Container => EngineKind::ContainerCli,
         EngineChoice::Docker => EngineKind::Docker,
+        EngineChoice::Orbstack => EngineKind::Docker,
         EngineChoice::Podman => EngineKind::Podman,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_orbstack() -> bool {
+    if std::env::var_os("ORBSTACK").is_some() {
+        return true;
+    }
+    if let Some(host) = std::env::var_os("DOCKER_HOST") {
+        if let Ok(host_str) = host.into_string() {
+            if host_str.contains(".orbstack") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -72,6 +95,7 @@ fn resolve_engine(choice: EngineChoice) -> EngineKind {
         EngineChoice::Auto | EngineChoice::Docker => EngineKind::Docker,
         EngineChoice::Podman => EngineKind::Podman,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
+        EngineChoice::Orbstack => EngineKind::Docker,
         EngineChoice::Container => {
             eprintln!("'container' engine is unavailable on Linux; falling back to docker");
             EngineKind::Docker

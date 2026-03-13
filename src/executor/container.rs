@@ -871,9 +871,16 @@ impl ContainerExecutor {
                 continue;
             }
             let container = self.container_path(relative);
+            let (host_mount, container_mount) = volume_mount_paths(&host, &container);
+            if mounts
+                .iter()
+                .any(|m| m.host == host_mount && m.container == container_mount)
+            {
+                continue;
+            }
             mounts.push(VolumeMount {
-                host,
-                container,
+                host: host_mount,
+                container: container_mount,
                 read_only: true,
             });
         }
@@ -1102,6 +1109,22 @@ impl VolumeMount {
             arg.push(":ro");
         }
         arg
+    }
+}
+
+fn volume_mount_paths(host: &Path, container: &Path) -> (PathBuf, PathBuf) {
+    if host.is_dir() {
+        (host.to_path_buf(), container.to_path_buf())
+    } else {
+        let host_parent = host
+            .parent()
+            .expect("artifact path should have a parent directory")
+            .to_path_buf();
+        let container_parent = container
+            .parent()
+            .expect("artifact container path should have a parent directory")
+            .to_path_buf();
+        (host_parent, container_parent)
     }
 }
 

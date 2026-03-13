@@ -61,7 +61,7 @@ pub struct RunArgs {
         long = "engine",
         default_value = "auto",
         possible_values = EngineChoice::VARIANTS,
-        help = "Container runtime to use (auto, container, docker, podman, nerdctl)"
+        help = "Container runtime to use (auto, container, docker, podman, nerdctl, orbstack)"
     )]
     pub engine: EngineChoice,
 
@@ -77,11 +77,18 @@ pub enum EngineChoice {
     Docker,
     Podman,
     Nerdctl,
+    Orbstack,
 }
 
 impl EngineChoice {
-    pub const VARIANTS: &'static [&'static str] =
-        &["auto", "container", "docker", "podman", "nerdctl"];
+    pub const VARIANTS: &'static [&'static str] = &[
+        "auto",
+        "container",
+        "docker",
+        "podman",
+        "nerdctl",
+        "orbstack",
+    ];
 }
 
 impl FromStr for EngineChoice {
@@ -94,6 +101,7 @@ impl FromStr for EngineChoice {
             "docker" => Ok(Self::Docker),
             "podman" => Ok(Self::Podman),
             "nerdctl" => Ok(Self::Nerdctl),
+            "orbstack" => Ok(Self::Orbstack),
             other => Err(format!("unknown engine '{other}'")),
         }
     }
