@@ -54,9 +54,11 @@ impl PipelineGraph {
 
     pub fn from_str(contents: &str) -> Result<Self> {
         let root: Mapping = serde_yaml::from_str(contents)?;
-        let mut raw_jobs = Vec::new();
         let mut stage_names: Vec<String> = Vec::new();
         let mut defaults = PipelineDefaults::default();
+
+        let mut job_defs: HashMap<String, Value> = HashMap::new();
+        let mut job_names: Vec<String> = Vec::new();
 
         for (key, value) in root {
             match key {
@@ -74,16 +76,16 @@ impl PipelineGraph {
                     parse_default_block(&mut defaults, value)?;
                 }
                 Value::String(name) => {
-                    if name.starts_with('.') || is_reserved_keyword(&name) {
+                    if is_reserved_keyword(&name) {
                         continue;
                     }
 
                     match value {
                         Value::Mapping(map) => {
-                            if !mapping_has_script(&map) {
-                                bail!("job '{name}' must define a script");
+                            job_defs.insert(name.clone(), Value::Mapping(map.clone()));
+                            if !name.starts_with('.') {
+                                job_names.push(name);
                             }
-                            raw_jobs.push((name, Value::Mapping(map)));
                         }
                         other => bail!("job '{name}' must be defined as a mapping, got {other:?}"),
                     }
@@ -92,7 +94,7 @@ impl PipelineGraph {
             }
         }
 
-        build_graph(defaults, stage_names, raw_jobs)
+        build_graph(defaults, stage_names, job_names, job_defs)
     }
 }
 
@@ -155,12 +157,6 @@ fn is_reserved_keyword(name: &str) -> bool {
             | "after_script"
             | "cache"
     )
-}
-
-fn mapping_has_script(entries: &Mapping) -> bool {
-    entries
-        .keys()
-        .any(|key| matches!(key, Value::String(name) if name == "script"))
 }
 
 fn parse_image(value: Value) -> Result<String> {
@@ -238,7 +234,8 @@ fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
 fn build_graph(
     defaults: PipelineDefaults,
     stage_names: Vec<String>,
-    raw_jobs: Vec<(String, Value)>,
+    job_names: Vec<String>,
+    job_defs: HashMap<String, Value>,
 ) -> Result<PipelineGraph> {
     let mut graph = DiGraph::<Job, ()>::new();
     let mut stages: Vec<StageGroup> = stage_names
@@ -258,8 +255,12 @@ fn build_graph(
         });
     }
 
-    for (job_name, job_value) in raw_jobs {
-        let (job_spec, job_image, job_variables) = parse_job(job_value)?;
+    let mut resolved_defs: HashMap<String, Mapping> = HashMap::new();
+
+    for job_name in job_names {
+        let merged_map =
+            resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
+        let (job_spec, job_image, job_variables) = parse_job(Value::Mapping(merged_map))?;
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
                 .first()
@@ -269,6 +270,12 @@ fn build_graph(
         });
         let stage_index = ensure_stage(&mut stages, &stage_name);
         let commands = job_spec.script.into_commands();
+        if commands.is_empty() {
+            bail!(
+                "job '{}' must define a script (directly or via extends)",
+                job_name
+            );
+        }
         let needs: Vec<JobDependency> = job_spec
             .needs
             .into_iter()
@@ -315,6 +322,76 @@ fn build_graph(
         stages,
         defaults,
     })
+}
+
+fn resolve_job_definition(
+    name: &str,
+    job_defs: &HashMap<String, Value>,
+    cache: &mut HashMap<String, Mapping>,
+    stack: &mut Vec<String>,
+) -> Result<Mapping> {
+    if let Some(resolved) = cache.get(name) {
+        return Ok(resolved.clone());
+    }
+
+    if stack.iter().any(|entry| entry == name) {
+        bail!("job '{}' has cyclical extends", name);
+    }
+
+    let value = match job_defs.get(name) {
+        Some(v) => v,
+        None => {
+            let requester = stack.last().cloned().unwrap_or_else(|| name.to_string());
+            bail!("job '{requester}' extends unknown job/template '{name}'");
+        }
+    };
+
+    let map = match value {
+        Value::Mapping(map) => map.clone(),
+        other => bail!("job '{name}' must be defined as mapping, got {other:?}"),
+    };
+
+    stack.push(name.to_string());
+
+    let extends_key = Value::String("extends".to_string());
+    let extends = map.get(&extends_key).map(parse_extends_list).transpose()?;
+
+    let mut merged = Mapping::new();
+    if let Some(parents) = extends {
+        for parent_name in parents {
+            let parent_map = resolve_job_definition(&parent_name, job_defs, cache, stack)?;
+            merged = merge_mappings(merged, parent_map);
+        }
+    }
+
+    let mut child_map = map;
+    child_map.remove(&extends_key);
+    merged = merge_mappings(merged, child_map);
+
+    stack.pop();
+    cache.insert(name.to_string(), merged.clone());
+    Ok(merged)
+}
+
+fn parse_extends_list(value: &Value) -> Result<Vec<String>> {
+    match value {
+        Value::String(name) => Ok(vec![name.clone()]),
+        Value::Sequence(seq) => seq
+            .iter()
+            .map(|val| match val {
+                Value::String(name) => Ok(name.clone()),
+                other => bail!("extends entries must be strings, got {other:?}"),
+            })
+            .collect(),
+        other => bail!("extends must be string or sequence, got {other:?}"),
+    }
+}
+
+fn merge_mappings(mut base: Mapping, addition: Mapping) -> Mapping {
+    for (key, value) in addition {
+        base.insert(key, value);
+    }
+    base
 }
 
 fn ensure_stage(stages: &mut Vec<StageGroup>, stage_name: &str) -> usize {
@@ -741,6 +818,106 @@ build-job:
         assert_eq!(pipeline.stages[0].jobs.len(), 1);
         let job_idx = pipeline.stages[0].jobs[0];
         assert_eq!(pipeline.graph[job_idx].name, "build-job");
+    }
+
+    #[test]
+    fn job_can_extend_hidden_template() {
+        let yaml = r#"
+stages:
+  - build
+
+.base-template:
+  stage: build
+  script:
+    - echo from template
+  artifacts:
+    paths:
+      - template.txt
+
+child-job:
+  extends: .base-template
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let job_idx = find_job(&pipeline, "child-job");
+        let job = &pipeline.graph[job_idx];
+        assert_eq!(job.stage, "build");
+        assert_eq!(job.commands, vec!["echo from template"]);
+        assert_eq!(job.artifacts, vec![PathBuf::from("template.txt")]);
+    }
+
+    #[test]
+    fn job_merges_multiple_extends_in_order() {
+        let yaml = r#"
+stages:
+  - test
+
+.lint-template:
+  script:
+    - echo lint
+  artifacts:
+    paths:
+      - lint.txt
+
+.test-template:
+  stage: test
+  script:
+    - echo tests
+  artifacts:
+    paths:
+      - tests.txt
+
+combined:
+  extends:
+    - .lint-template
+    - .test-template
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let job_idx = find_job(&pipeline, "combined");
+        let job = &pipeline.graph[job_idx];
+        assert_eq!(job.commands, vec!["echo tests"]);
+        assert_eq!(job.artifacts, vec![PathBuf::from("tests.txt")]);
+        assert_eq!(job.stage, "test");
+    }
+
+    #[test]
+    fn errors_on_extends_cycle() {
+        let yaml = r#"
+stages:
+  - build
+
+.a:
+  extends: .b
+  script:
+    - echo a
+
+.b:
+  extends: .a
+  script:
+    - echo b
+
+job:
+  extends: .a
+"#;
+
+        let err = PipelineGraph::from_str(yaml).expect_err("cycle must error");
+        assert!(err.to_string().contains("cyclical extends"));
+    }
+
+    #[test]
+    fn errors_on_unknown_extended_template() {
+        let yaml = r#"
+stages:
+  - build
+
+job:
+  stage: build
+  extends: .missing
+"#;
+
+        let err = PipelineGraph::from_str(yaml).expect_err("unknown template must error");
+        assert!(err.to_string().contains("unknown job/template '.missing'"));
     }
 
     fn find_job(graph: &PipelineGraph, name: &str) -> NodeIndex {
