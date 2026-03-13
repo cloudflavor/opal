@@ -28,6 +28,7 @@ pub struct Job {
     pub needs: Vec<JobDependency>,
     pub artifacts: Vec<PathBuf>,
     pub image: Option<String>,
+    pub variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,6 +36,7 @@ pub struct PipelineDefaults {
     pub image: Option<String>,
     pub before_script: Vec<String>,
     pub after_script: Vec<String>,
+    pub variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +65,10 @@ impl PipelineGraph {
                 }
                 Value::String(name) if name == "image" => {
                     defaults.image = Some(parse_image(value)?);
+                }
+                Value::String(name) if name == "variables" => {
+                    let vars = parse_variables_map(value)?;
+                    defaults.variables.extend(vars);
                 }
                 Value::String(name) if name == "default" => {
                     parse_default_block(&mut defaults, value)?;
@@ -120,6 +126,10 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
             Value::String(name) if name == "image" => {
                 defaults.image = Some(parse_image(value)?);
             }
+            Value::String(name) if name == "variables" => {
+                let vars = parse_variables_map(value)?;
+                defaults.variables.extend(vars);
+            }
             Value::String(_) => {
                 // ignore other default keywords for now
             }
@@ -174,13 +184,18 @@ fn extract_string(value: Value, what: &str) -> Result<String> {
     }
 }
 
-fn parse_job(value: Value) -> Result<(RawJob, Option<String>)> {
+fn parse_job(value: Value) -> Result<(RawJob, Option<String>, HashMap<String, String>)> {
     match value {
         Value::Mapping(mut map) => {
             let image_value = map.remove(&Value::String("image".to_string()));
+            let variables_value = map.remove(&Value::String("variables".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
-            Ok((job_spec, image))
+            let variables = variables_value
+                .map(parse_variables_map)
+                .transpose()?
+                .unwrap_or_default();
+            Ok((job_spec, image, variables))
         }
         other => bail!("job definition must be a mapping, got {other:?}"),
     }
@@ -199,6 +214,25 @@ fn parse_string_list(value: Value, field: &str) -> Result<Vec<String>> {
         Value::Null => Ok(Vec::new()),
         other => bail!("{field} must be a string or sequence, got {other:?}"),
     }
+}
+
+fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
+    let mapping = match value {
+        Value::Mapping(map) => map,
+        other => bail!("variables must be a mapping, got {other:?}"),
+    };
+
+    let mut vars = HashMap::new();
+    for (key, val) in mapping {
+        let name = match key {
+            Value::String(s) => s,
+            other => bail!("variable names must be strings, got {other:?}"),
+        };
+        let value = extract_string(val, &format!("variable '{name}'"))?;
+        vars.insert(name, value);
+    }
+
+    Ok(vars)
 }
 
 fn build_graph(
@@ -225,7 +259,7 @@ fn build_graph(
     }
 
     for (job_name, job_value) in raw_jobs {
-        let (job_spec, job_image) = parse_job(job_value)?;
+        let (job_spec, job_image, job_variables) = parse_job(job_value)?;
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
                 .first()
@@ -249,6 +283,7 @@ fn build_graph(
             needs: needs.clone(),
             artifacts,
             image: job_image,
+            variables: job_variables,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -541,6 +576,8 @@ default:
     - echo before
   after_script:
     - echo after
+  variables:
+    GLOBAL_DEFAULT: foo
 
 build-job:
   stage: build
@@ -558,6 +595,14 @@ build-job:
         assert_eq!(
             pipeline.defaults.after_script,
             vec!["echo after".to_string()]
+        );
+        assert_eq!(
+            pipeline
+                .defaults
+                .variables
+                .get("GLOBAL_DEFAULT")
+                .map(String::as_str),
+            Some("foo")
         );
         let job_idx = pipeline.stages[0].jobs[0];
         assert_eq!(pipeline.graph[job_idx].name, "build-job");
@@ -588,6 +633,54 @@ build-job:
         assert_eq!(
             pipeline.defaults.after_script,
             vec!["echo after".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_variable_scopes() {
+        let yaml = r#"
+variables:
+  GLOBAL_VAR: foo
+
+default:
+  variables:
+    DEFAULT_VAR: bar
+
+stages:
+  - build
+
+build-job:
+  stage: build
+  variables:
+    JOB_VAR: baz
+  script:
+    - echo job
+"#;
+
+        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        assert_eq!(
+            pipeline
+                .defaults
+                .variables
+                .get("GLOBAL_VAR")
+                .map(String::as_str),
+            Some("foo")
+        );
+        assert_eq!(
+            pipeline
+                .defaults
+                .variables
+                .get("DEFAULT_VAR")
+                .map(String::as_str),
+            Some("bar")
+        );
+        let job_idx = find_job(&pipeline, "build-job");
+        assert_eq!(
+            pipeline.graph[job_idx]
+                .variables
+                .get("JOB_VAR")
+                .map(String::as_str),
+            Some("baz")
         );
     }
 

@@ -116,7 +116,7 @@ impl ContainerExecutor {
                     let job_start = Instant::now();
                     let script_commands = self.expanded_commands(job);
                     let script_path = self.write_job_script(job, &script_commands)?;
-                    self.execute(&script_path, &mounts, &job_image, &container_name)?;
+                    self.execute(&script_path, &mounts, &job_image, &container_name, job)?;
                     self.emit_line(format!("    script stored at {}", script_path.display()));
                     let finish_label =
                         self.colorize("    ✓ finished in", |t| format!("{}", t.bold().green()));
@@ -147,6 +147,7 @@ impl ContainerExecutor {
         mounts: &[VolumeMount],
         image: &str,
         container_name: &str,
+        job: &Job,
     ) -> Result<()> {
         self.emit_line(self.format_mounts(mounts));
         self.emit_line(self.logs_header());
@@ -181,7 +182,7 @@ impl ContainerExecutor {
             command.arg("--volume").arg(mount.to_arg());
         }
 
-        for (key, value) in &self.env_vars {
+        for (key, value) in self.job_env(job) {
             command.arg("--env").arg(format!("{}={}", key, value));
         }
 
@@ -407,6 +408,29 @@ impl ContainerExecutor {
         cmds.extend(job.commands.iter().cloned());
         cmds.extend(self.g.defaults.after_script.iter().cloned());
         cmds
+    }
+
+    fn job_env(&self, job: &Job) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        let mut push = |key: &str, value: &str| {
+            if let Some(existing) = env.iter_mut().find(|(k, _)| k == key) {
+                existing.1 = value.to_string();
+            } else {
+                env.push((key.to_string(), value.to_string()));
+            }
+        };
+
+        for (key, value) in &self.env_vars {
+            push(key, value);
+        }
+        for (key, value) in &self.g.defaults.variables {
+            push(key, value);
+        }
+        for (key, value) in &job.variables {
+            push(key, value);
+        }
+
+        env
     }
 
     fn write_job_script(&self, job: &Job, commands: &[String]) -> Result<PathBuf> {
