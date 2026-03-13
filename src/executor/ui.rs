@@ -1,8 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::env;
-use std::io::{self, Stdout};
-use std::path::PathBuf;
-use std::process::Command;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Stdout, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use owo_colors::OwoColorize;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
@@ -23,7 +25,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-const LOG_CAPACITY: usize = 1024;
 const LOG_SCROLL_STEP: usize = 3;
 const LOG_SCROLL_HALF: usize = 20;
 const LOG_SCROLL_PAGE: usize = 60;
@@ -188,24 +189,27 @@ impl UiRunner {
 
     fn draw(&mut self) -> Result<()> {
         self.terminal.draw(|frame| {
+            let tab_width = frame.size().width.saturating_sub(2).max(1);
+            let (tabs, tab_height) = self.state.tabs(tab_width);
+
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),
+                    Constraint::Length(tab_height),
                     Constraint::Length(4),
                     Constraint::Min(0),
                     Constraint::Length(2),
                 ])
                 .split(frame.size());
 
-            let tabs = self.state.tabs(layout[0].width.saturating_sub(2).max(1));
             frame.render_widget(tabs, layout[0]);
 
             let info = self.state.info_panel();
             frame.render_widget(info, layout[1]);
 
-            let log_height = layout[2].height;
-            let log_widget = self.state.log_view(self.pipeline_finished, log_height);
+            let log_widget =
+                self.state
+                    .log_view(self.pipeline_finished, layout[2].width, layout[2].height);
             frame.render_widget(log_widget, layout[2]);
 
             let hint = self.state.key_hint_widget();
@@ -326,17 +330,7 @@ impl UiRunner {
 
     fn view_current_log(&mut self) -> Result<()> {
         let path = self.state.current_log_path();
-        self.suspend_terminal(|| {
-            let pager = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-            let status = Command::new(&pager).arg(&path).status();
-            match status {
-                Ok(status) if status.success() => Ok(()),
-                Ok(_) | Err(_) => {
-                    let _ = Command::new("cat").arg(&path).status();
-                    Ok(())
-                }
-            }
-        })
+        self.suspend_terminal(|| page_log_with_colors(&path))
     }
 
     fn suspend_terminal<F>(&mut self, action: F) -> Result<()>
@@ -380,16 +374,20 @@ impl UiState {
         }
     }
 
-    fn tabs(&self, width: u16) -> Paragraph<'static> {
-        let lines = self.tab_lines(width as usize);
-        Paragraph::new(lines)
+    fn tabs(&self, width: u16) -> (Paragraph<'static>, u16) {
+        let (lines, rows) = self.tab_lines(width as usize);
+        let paragraph = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("Jobs"))
-            .wrap(Wrap { trim: false })
+            .wrap(Wrap { trim: false });
+
+        let content_height = rows.saturating_add(2); // account for top/bottom borders
+
+        (paragraph, content_height)
     }
 
-    fn tab_lines(&self, available: usize) -> Vec<Line<'static>> {
+    fn tab_lines(&self, available: usize) -> (Vec<Line<'static>>, u16) {
         if self.jobs.is_empty() {
-            return vec![Line::raw("")];
+            return (vec![Line::raw("")], 1);
         }
 
         let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
@@ -424,7 +422,10 @@ impl UiState {
             rows.push(Vec::new());
         }
 
-        rows.into_iter().map(Line::from).collect()
+        let row_count: u16 = rows.len().try_into().unwrap_or(u16::MAX);
+        let lines = rows.into_iter().map(Line::from).collect();
+
+        (lines, row_count)
     }
 
     fn build_label_spans(&self, job: &UiJobState, selected: bool) -> Vec<Span<'static>> {
@@ -434,6 +435,20 @@ impl UiState {
                 Style::default()
                     .bg(Color::Black)
                     .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if job.status == UiJobStatus::Running {
+            Some(
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if job.status == UiJobStatus::Pending {
+            Some(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
@@ -460,6 +475,31 @@ impl UiState {
             format!(" ({})", job.log_hash),
             Self::apply_highlight(Style::default().fg(Color::Yellow), highlight),
         ));
+        match job.status {
+            UiJobStatus::Running => {
+                spans.push(Span::styled(
+                    " • RUNNING",
+                    Self::apply_highlight(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                        highlight,
+                    ),
+                ));
+            }
+            UiJobStatus::Pending => {
+                spans.push(Span::styled(
+                    " • WAITING ON DEPS",
+                    Self::apply_highlight(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                        highlight,
+                    ),
+                ));
+            }
+            _ => {}
+        }
 
         spans
     }
@@ -510,7 +550,7 @@ impl UiState {
             .wrap(Wrap { trim: true })
     }
 
-    fn log_view(&self, pipeline_finished: bool, height: u16) -> Paragraph<'_> {
+    fn log_view(&self, pipeline_finished: bool, width: u16, height: u16) -> Paragraph<'_> {
         let job = &self.jobs[self.selected];
         let mut lines: Vec<Line> = Vec::new();
         let status_span = Span::styled(
@@ -536,8 +576,11 @@ impl UiState {
             lines.push(Line::from(Span::raw(" ")));
         }
 
-        let max_lines = height.saturating_sub(2).max(1) as usize;
-        lines.extend(job.visible_logs(max_lines));
+        let inner_height = height.saturating_sub(2);
+        let inner_width = width.saturating_sub(2).max(1) as usize;
+        let header_rows = total_rows(&lines, inner_width);
+        let available_rows = inner_height.saturating_sub(header_rows as u16) as usize;
+        lines.extend(job.visible_logs(inner_width, available_rows));
 
         let mut title = "Logs".to_string();
         if job.status.is_done() {
@@ -556,9 +599,6 @@ impl UiState {
     fn set_status(&mut self, name: &str, status: UiJobStatus) {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].status = status;
-            if status == UiJobStatus::Running && self.selected == 0 {
-                self.selected = idx;
-            }
         }
     }
 
@@ -651,7 +691,7 @@ struct UiJobState {
     status: UiJobStatus,
     duration: f32,
     error: Option<String>,
-    logs: VecDeque<String>,
+    logs: Vec<String>,
     scroll_offset: usize,
     follow_logs: bool,
 }
@@ -666,17 +706,14 @@ impl UiJobState {
             status: UiJobStatus::Pending,
             duration: 0.0,
             error: None,
-            logs: VecDeque::new(),
+            logs: Vec::new(),
             scroll_offset: 0,
             follow_logs: true,
         }
     }
 
     fn push_log(&mut self, line: String) {
-        if self.logs.len() == LOG_CAPACITY {
-            self.logs.pop_front();
-        }
-        self.logs.push_back(line);
+        self.logs.push(line);
         if self.follow_logs {
             self.scroll_offset = 0;
         }
@@ -726,20 +763,39 @@ impl UiJobState {
         self.follow_logs = true;
     }
 
-    fn visible_logs(&self, max_lines: usize) -> Vec<Line<'static>> {
+    fn visible_logs(&self, wrap_width: usize, max_rows: usize) -> Vec<Line<'static>> {
         if self.logs.is_empty() {
             return vec![Line::from("(no output yet)")];
         }
 
-        let end = self.logs.len().saturating_sub(self.scroll_offset);
-        let window = max_lines.max(1);
-        let start = end.saturating_sub(window);
-        self.logs
-            .iter()
-            .skip(start)
-            .take(end - start)
-            .map(|line| format_log_entry(line))
-            .collect()
+        let wrap_width = wrap_width.max(1);
+        let mut remaining_rows = max_rows.max(1);
+        let total = self.logs.len();
+        let offset = self.scroll_offset.min(total.saturating_sub(1));
+        let mut end = total.saturating_sub(offset);
+        if end == 0 {
+            end = total;
+        }
+
+        let mut collected: Vec<Line<'static>> = Vec::new();
+        while end > 0 {
+            let idx = end - 1;
+            let line = format_log_entry(&self.logs[idx]);
+            let line_rows = rows_for_line(&line, wrap_width);
+            if line_rows > remaining_rows && !collected.is_empty() {
+                break;
+            }
+            let consumed = line_rows.min(remaining_rows);
+            collected.push(line);
+            remaining_rows = remaining_rows.saturating_sub(consumed);
+            end -= 1;
+            if remaining_rows == 0 {
+                break;
+            }
+        }
+
+        collected.reverse();
+        collected
     }
 }
 
@@ -778,24 +834,131 @@ impl UiJobStatus {
 }
 
 fn format_log_entry(line: &str) -> Line<'static> {
-    if let Some(rest) = line.strip_prefix('[') {
-        if let Some(idx) = rest.find("] ") {
-            let meta = &rest[..idx];
-            let remainder = &rest[idx + 2..];
-            if let Some(space_idx) = meta.rfind(' ') {
-                let (timestamp, number) = meta.split_at(space_idx);
-                let number = number.trim();
-                return Line::from(vec![
-                    Span::raw("[".to_string()),
-                    Span::styled(timestamp.to_string(), Style::default().fg(Color::Blue)),
-                    Span::raw(" ".to_string()),
-                    Span::styled(number.to_string(), Style::default().fg(Color::Green)),
-                    Span::raw("] ".to_string()),
-                    Span::raw(remainder.to_string()),
-                ]);
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some(idx) = rest.find("] ")
+    {
+        let meta = &rest[..idx];
+        let remainder = &rest[idx + 2..];
+        if let Some(space_idx) = meta.rfind(' ') {
+            let (timestamp, number) = meta.split_at(space_idx);
+            let number = number.trim();
+            let mut spans = vec![
+                Span::raw("[".to_string()),
+                Span::styled(timestamp.to_string(), Style::default().fg(Color::Blue)),
+                Span::raw(" ".to_string()),
+                Span::styled(number.to_string(), Style::default().fg(Color::Yellow)),
+                Span::raw("] ".to_string()),
+                Span::raw(remainder.to_string()),
+            ];
+            if let Some(style) = diff_style(remainder) {
+                apply_line_style(&mut spans, style);
             }
+            return Line::from(spans);
         }
     }
 
-    Line::from(line.to_string())
+    let mut spans = vec![Span::raw(line.to_string())];
+    if let Some(style) = diff_style(line) {
+        apply_line_style(&mut spans, style);
+    }
+    Line::from(spans)
+}
+
+fn page_log_with_colors(path: &Path) -> Result<()> {
+    let file =
+        File::open(path).with_context(|| format!("failed to open log {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let pager = env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+    let (cmd, args) = parse_pager_command(&pager);
+    let mut child = Command::new(&cmd);
+    child.args(&args).stdin(Stdio::piped());
+
+    if let Ok(mut handle) = child.spawn() {
+        if let Some(mut stdin) = handle.stdin.take() {
+            for line in reader.lines() {
+                let line = line?;
+                let colored = colorize_log_line(&line);
+                writeln!(stdin, "{colored}")?;
+            }
+        }
+        let status = handle.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    let _ = Command::new("cat").arg(path).status();
+    Ok(())
+}
+
+fn parse_pager_command(pager: &str) -> (String, Vec<String>) {
+    let mut parts = pager.split_whitespace();
+    let cmd = parts
+        .next()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "less".to_string());
+    let args = parts.map(|s| s.to_string()).collect();
+    (cmd, args)
+}
+
+fn colorize_log_line(line: &str) -> String {
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some(idx) = rest.find("] ")
+    {
+        let meta = &rest[..idx];
+        let remainder = &rest[idx + 2..];
+        if let Some(space_idx) = meta.rfind(' ') {
+            let (timestamp, number) = meta.split_at(space_idx);
+            let number = number.trim();
+            let body = colorize_diff_body(remainder);
+            return format!(
+                "[{} {}] {}",
+                timestamp.blue().bold(),
+                number.yellow().bold(),
+                body
+            );
+        }
+    }
+    colorize_diff_body(line)
+}
+
+fn colorize_diff_body(body: &str) -> String {
+    if let Some(rest) = body.strip_prefix('+') {
+        format!("{}", format!("+{rest}").green())
+    } else if let Some(rest) = body.strip_prefix('-') {
+        format!("{}", format!("-{rest}").red())
+    } else {
+        body.to_string()
+    }
+}
+
+fn diff_style(text: &str) -> Option<Style> {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('+') {
+        Some(Style::default().fg(Color::Green))
+    } else if trimmed.starts_with('-') {
+        Some(Style::default().fg(Color::Red))
+    } else {
+        None
+    }
+}
+
+fn apply_line_style(spans: &mut [Span<'static>], style: Style) {
+    for span in spans {
+        span.style = span.style.patch(style);
+    }
+}
+
+fn total_rows(lines: &[Line<'_>], width: usize) -> usize {
+    lines.iter().map(|line| rows_for_line(line, width)).sum()
+}
+
+fn rows_for_line(line: &Line<'_>, width: usize) -> usize {
+    let width = width.max(1);
+    let text_width = line.width();
+    if text_width == 0 {
+        1
+    } else {
+        text_width.div_ceil(width)
+    }
 }

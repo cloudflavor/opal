@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use structopt::StructOpt;
 
@@ -56,9 +57,54 @@ pub struct RunArgs {
     /// Optional directory to store job logs (default: .opal/logs/<run_id>)
     pub log_dir: Option<PathBuf>,
 
+    #[structopt(
+        long = "engine",
+        default_value = "auto",
+        possible_values = EngineChoice::VARIANTS,
+        help = "Container runtime to use (auto, container, docker, podman, nerdctl)"
+    )]
+    pub engine: EngineChoice,
+
     #[structopt(long = "no-tui")]
     /// Disable the Ratatui interface
     pub no_tui: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum EngineChoice {
+    Auto,
+    Container,
+    Docker,
+    Podman,
+    Nerdctl,
+}
+
+impl EngineChoice {
+    pub const VARIANTS: &'static [&'static str] =
+        &["auto", "container", "docker", "podman", "nerdctl"];
+}
+
+impl FromStr for EngineChoice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "container" => Ok(Self::Container),
+            "docker" => Ok(Self::Docker),
+            "podman" => Ok(Self::Podman),
+            "nerdctl" => Ok(Self::Nerdctl),
+            other => Err(format!("unknown engine '{other}'")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum EngineKind {
+    ContainerCli,
+    Docker,
+    Podman,
+    Nerdctl,
 }
 
 #[derive(Debug, Clone)]
@@ -70,4 +116,5 @@ pub struct ExecutorConfig {
     pub max_parallel_jobs: usize,
     pub log_dir: Option<PathBuf>,
     pub enable_tui: bool,
+    pub engine: EngineKind,
 }

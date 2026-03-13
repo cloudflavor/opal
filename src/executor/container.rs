@@ -1,6 +1,7 @@
+use super::log::{LogFormatter, sanitize_fragments};
 use super::ui::{UiBridge, UiHandle, UiJobInfo, UiJobStatus};
-use crate::ExecutorConfig;
 use crate::pipeline::{Job, PipelineGraph};
+use crate::{EngineKind, ExecutorConfig};
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
 use owo_colors::OwoColorize;
@@ -9,10 +10,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::{self, Child, Command, Stdio};
+use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use time::format_description::FormatItem;
 use time::{OffsetDateTime, macros::format_description};
@@ -323,12 +326,12 @@ impl ContainerExecutor {
                 Ok(_) => {
                     if let Some(children) = plan.dependents.get(&event.name) {
                         for child in children {
-                            if let Some(count) = remaining.get_mut(child) {
-                                if *count > 0 {
-                                    *count -= 1;
-                                    if *count == 0 {
-                                        ready.push_back(child.clone());
-                                    }
+                            if let Some(count) = remaining.get_mut(child)
+                                && *count > 0
+                            {
+                                *count -= 1;
+                                if *count == 0 {
+                                    ready.push_back(child.clone());
                                 }
                             }
                         }
@@ -534,15 +537,15 @@ impl ContainerExecutor {
             let container_name = self.job_container_name(&stage_name, &job);
             let script_commands = self.expanded_commands(&job);
             let script_path = self.write_job_script(&job, &script_commands)?;
-            self.execute(
-                &script_path,
-                &log_path,
-                &mounts,
-                &job_image,
-                &container_name,
-                &job,
-                ui_ref,
-            )?;
+            self.execute(ExecuteContext {
+                script_path: &script_path,
+                log_path: &log_path,
+                mounts: &mounts,
+                image: &job_image,
+                container_name: &container_name,
+                job: &job,
+                ui: ui_ref,
+            })?;
             if !self.config.enable_tui {
                 self.emit_line(format!("    script stored at {}", script_path.display()));
                 self.emit_line(format!("    log file stored at {}", log_path.display()));
@@ -623,16 +626,16 @@ impl ContainerExecutor {
         self.stage_positions.get(stage_name).copied().unwrap_or(0)
     }
 
-    fn execute(
-        &self,
-        script_path: &Path,
-        log_path: &Path,
-        mounts: &[VolumeMount],
-        image: &str,
-        container_name: &str,
-        job: &Job,
-        ui: Option<&UiBridge>,
-    ) -> Result<()> {
+    fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
+        let ExecuteContext {
+            script_path,
+            log_path,
+            mounts,
+            image,
+            container_name,
+            job,
+            ui,
+        } = ctx;
         if !self.config.enable_tui {
             self.emit_line(self.format_mounts(mounts));
             self.emit_line(self.logs_header());
@@ -647,92 +650,15 @@ impl ContainerExecutor {
             self.emit_line(format!("{} {}", script_label, container_script.display()));
         }
 
-        let volume_arg = format!("{}:{}", self.config.workdir.display(), CONTAINER_WORKDIR);
-
-        let mut command = Command::new("container");
-        command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .arg("run")
-            .arg("--rm")
-            .arg("--arch")
-            .arg("x86_64")
-            .arg("--name")
-            .arg(container_name)
-            .arg("--workdir")
-            .arg(CONTAINER_WORKDIR)
-            .arg("--dns")
-            .arg("1.1.1.1")
-            .arg("--volume")
-            .arg(&volume_arg);
-
-        for mount in mounts {
-            command.arg("--volume").arg(mount.to_arg());
-        }
-
-        for (key, value) in self.job_env(job) {
-            command.arg("--env").arg(format!("{}={}", key, value));
-        }
-
-        let mut proc = command
-            .arg(image)
-            .arg("sh")
-            .arg(container_script)
-            .spawn()
-            .with_context(|| "failed to run command")?;
-
-        let stdout = BufReader::new(proc.stdout.take().unwrap());
-        let line_prefix = if self.use_color {
-            format!("{}", "    │".dimmed())
-        } else {
-            "    │".to_string()
-        };
-        let timestamp_style = |text: &str| {
-            if self.use_color {
-                format!("{}", text.bold().blue())
-            } else {
-                text.to_string()
-            }
-        };
-        let line_no_style = |text: &str| {
-            if self.use_color {
-                format!("{}", text.bold().green())
-            } else {
-                text.to_string()
-            }
-        };
-
-        let mut log_file = File::create(log_path)
-            .with_context(|| format!("failed to create log at {}", log_path.display()))?;
-        let mut log_line_no = 1usize;
-        let mut display_line_no = 1usize;
-        for line in stdout.lines() {
-            let line = line?;
-            let timestamp = OffsetDateTime::now_utc()
-                .format(TIMESTAMP_FORMAT)
-                .unwrap_or_else(|_| "??????????".to_string());
-            let fragments = Self::expand_carriage_returns(&line);
-            for fragment in &fragments {
-                let ts_colored = timestamp_style(&timestamp);
-                let no_colored = line_no_style(&format!("{:04}", display_line_no));
-                let decorated = format!("[{} {}] {}", ts_colored, no_colored, fragment);
-                if !self.config.enable_tui {
-                    println!(
-                        "{} [{} {}] {}",
-                        line_prefix, ts_colored, no_colored, fragment
-                    );
-                }
-                if let Some(ui) = ui {
-                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, fragment);
-                    ui.job_log_line(&job.name, &raw_line);
-                } else {
-                    println!("{} {}", line_prefix, decorated);
-                }
-                display_line_no += 1;
-            }
-            writeln!(log_file, "[{} {:04}] {}", timestamp, log_line_no, line)?;
-            log_line_no += 1;
-        }
+        let env_vars = self.job_env(job);
+        let mut proc = self.spawn_container_process(
+            &container_script,
+            container_name,
+            image,
+            mounts,
+            &env_vars,
+        )?;
+        self.capture_child_output(&mut proc, job, log_path, ui)?;
 
         let status = proc.wait()?;
         if !status.success() {
@@ -745,6 +671,167 @@ impl ContainerExecutor {
         Ok(())
     }
 
+    fn spawn_container_process(
+        &self,
+        container_script: &Path,
+        container_name: &str,
+        image: &str,
+        mounts: &[VolumeMount],
+        env_vars: &[(String, String)],
+    ) -> Result<Child> {
+        match self.config.engine {
+            EngineKind::ContainerCli => {
+                self.spawn_container_cli(container_script, container_name, image, mounts, env_vars)
+            }
+            EngineKind::Docker => self.spawn_docker_like(
+                "docker",
+                container_script,
+                container_name,
+                image,
+                mounts,
+                env_vars,
+            ),
+            EngineKind::Podman => self.spawn_docker_like(
+                "podman",
+                container_script,
+                container_name,
+                image,
+                mounts,
+                env_vars,
+            ),
+            EngineKind::Nerdctl => self.spawn_docker_like(
+                "nerdctl",
+                container_script,
+                container_name,
+                image,
+                mounts,
+                env_vars,
+            ),
+        }
+    }
+
+    fn spawn_container_cli(
+        &self,
+        container_script: &Path,
+        container_name: &str,
+        image: &str,
+        mounts: &[VolumeMount],
+        env_vars: &[(String, String)],
+    ) -> Result<Child> {
+        let workspace_mount = format!("{}:{}", self.config.workdir.display(), CONTAINER_WORKDIR);
+        let mut command = Command::new("container");
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .arg("run")
+            .arg("--arch")
+            .arg("x86_64")
+            .arg("--name")
+            .arg(container_name)
+            .arg("--workdir")
+            .arg(CONTAINER_WORKDIR)
+            .arg("--dns")
+            .arg("1.1.1.1")
+            .arg("--volume")
+            .arg(&workspace_mount);
+
+        for mount in mounts {
+            command.arg("--volume").arg(mount.to_arg());
+        }
+
+        for (key, value) in env_vars {
+            command.arg("--env").arg(format!("{key}={value}"));
+        }
+
+        command
+            .arg(image)
+            .arg("sh")
+            .arg(container_script)
+            .spawn()
+            .with_context(|| "failed to run container command")
+    }
+
+    fn spawn_docker_like(
+        &self,
+        binary: &str,
+        container_script: &Path,
+        container_name: &str,
+        image: &str,
+        mounts: &[VolumeMount],
+        env_vars: &[(String, String)],
+    ) -> Result<Child> {
+        let workspace_mount = format!("{}:{}", self.config.workdir.display(), CONTAINER_WORKDIR);
+        let mut command = Command::new(binary);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .arg("run")
+            .arg("--name")
+            .arg(container_name)
+            .arg("--workdir")
+            .arg(CONTAINER_WORKDIR)
+            .arg("--volume")
+            .arg(&workspace_mount);
+
+        for mount in mounts {
+            command.arg("--volume").arg(mount.to_arg());
+        }
+
+        for (key, value) in env_vars {
+            command.arg("--env").arg(format!("{key}={value}"));
+        }
+
+        command.arg(image).arg("sh").arg(container_script);
+
+        command
+            .spawn()
+            .with_context(|| format!("failed to run {binary} command"))
+    }
+
+    fn capture_child_output(
+        &self,
+        proc: &mut Child,
+        job: &Job,
+        log_path: &Path,
+        ui: Option<&UiBridge>,
+    ) -> Result<()> {
+        let stdout = proc
+            .stdout
+            .take()
+            .context("missing stdout from container process")?;
+        let stderr = proc
+            .stderr
+            .take()
+            .context("missing stderr from container process")?;
+
+        let formatter = LogFormatter::new(self.use_color);
+        let line_prefix = formatter.line_prefix().to_string();
+        let mut log_file = File::create(log_path)
+            .with_context(|| format!("failed to create log at {}", log_path.display()))?;
+        let mut display_line_no = 1usize;
+
+        stream_lines(stdout, stderr, |line| {
+            let timestamp = OffsetDateTime::now_utc()
+                .format(TIMESTAMP_FORMAT)
+                .unwrap_or_else(|_| "??????????".to_string());
+            for fragment in sanitize_fragments(&line) {
+                let decorated = formatter.format(&timestamp, display_line_no, &fragment);
+                if let Some(ui) = ui {
+                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, fragment);
+                    ui.job_log_line(&job.name, &raw_line);
+                } else {
+                    println!("{} {}", line_prefix, decorated);
+                }
+                writeln!(
+                    log_file,
+                    "[{} {:04}] {}",
+                    timestamp, display_line_no, fragment
+                )?;
+                display_line_no += 1;
+            }
+            Ok(())
+        })
+    }
     fn resolve_workdir_path(&self, path: &Path) -> PathBuf {
         if path.is_absolute() {
             path.to_path_buf()
@@ -918,20 +1005,6 @@ impl ContainerExecutor {
         cmds
     }
 
-    fn expand_carriage_returns(line: &str) -> Vec<String> {
-        let mut parts = Vec::new();
-        for fragment in line.split('\r') {
-            if fragment.is_empty() {
-                continue;
-            }
-            parts.push(fragment.to_string());
-        }
-        if parts.is_empty() {
-            parts.push(String::new());
-        }
-        parts
-    }
-
     fn job_env(&self, job: &Job) -> Vec<(String, String)> {
         let mut env = Vec::new();
         let mut push = |key: &str, value: &str| {
@@ -1009,6 +1082,16 @@ impl ContainerExecutor {
     }
 }
 
+struct ExecuteContext<'a> {
+    script_path: &'a Path,
+    log_path: &'a Path,
+    mounts: &'a [VolumeMount],
+    image: &'a str,
+    container_name: &'a str,
+    job: &'a Job,
+    ui: Option<&'a UiBridge>,
+}
+
 impl VolumeMount {
     fn to_arg(&self) -> OsString {
         let mut arg = OsString::new();
@@ -1027,7 +1110,7 @@ fn should_use_color() -> bool {
         return false;
     }
 
-    if env::var_os("CLICOLOR_FORCE").map_or(false, |v| v != "0") {
+    if env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
         return true;
     }
 
@@ -1066,6 +1149,57 @@ fn job_name_slug(name: &str) -> String {
 
 fn stage_name_slug(name: &str) -> String {
     job_name_slug(name)
+}
+
+fn stream_lines<F>(
+    stdout: impl Read + Send + 'static,
+    stderr: impl Read + Send + 'static,
+    mut on_line: F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Result<()>,
+{
+    let (tx, rx) = std_mpsc::channel::<Result<String, io::Error>>();
+    spawn_reader(stdout, tx.clone());
+    spawn_reader(stderr, tx.clone());
+    drop(tx);
+
+    for line in rx {
+        let line = line?;
+        on_line(line)?;
+    }
+
+    Ok(())
+}
+
+fn spawn_reader<R>(reader: R, tx: std_mpsc::Sender<Result<String, io::Error>>)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        loop {
+            let mut buf = String::new();
+            match reader.read_line(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buf.ends_with('\n') {
+                        buf.pop();
+                        if buf.ends_with('\r') {
+                            buf.pop();
+                        }
+                    }
+                    if tx.send(Ok(buf)).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
@@ -1173,15 +1307,15 @@ fn spawn_job(
                 result: Err(anyhow!("job task panicked: {err}")),
             },
         };
-        if let Some(ui) = &ui {
-            if event.result.is_err() {
-                ui.job_finished(
-                    &job_name,
-                    UiJobStatus::Failed,
-                    event.duration,
-                    event.result.as_ref().err().map(|e| e.to_string()),
-                );
-            }
+        if let Some(ui) = &ui
+            && event.result.is_err()
+        {
+            ui.job_finished(
+                &job_name,
+                UiJobStatus::Failed,
+                event.duration,
+                event.result.as_ref().err().map(|e| e.to_string()),
+            );
         }
 
         drop(permit);

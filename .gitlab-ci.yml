@@ -1,0 +1,82 @@
+stages:
+  - deps
+  - test
+  - build
+  - package
+  - publish
+
+default:
+  image: rustlang/rust:nightly
+  before_script:
+    - rustc --version
+    - cargo --version
+
+variables:
+  CARGO_TERM_COLOR: always
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - target/
+    - .cargo/registry/
+    - .cargo/git/
+
+fetch-sources:
+  stage: deps
+  script:
+    - cargo fetch --locked
+
+lint:
+  stage: test
+  needs:
+    - fetch-sources
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt --all -- --check
+    - cargo clippy --workspace --all-targets -- -D warnings
+
+unit-tests:
+  stage: test
+  needs:
+    - fetch-sources
+  script:
+    - cargo test --all --all-targets --locked
+  artifacts:
+    when: always
+    paths:
+      - target/debug/deps/
+
+build-release:
+  stage: build
+  needs:
+    - unit-tests
+    - lint
+  script:
+    - cargo build --release --locked
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - target/release/opal
+
+package-crate:
+  stage: package
+  needs:
+    - build-release
+  script:
+    - cargo package --locked
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - target/package/
+
+publish-crate:
+  stage: publish
+  needs:
+    - package-crate
+  rules:
+    - if: '$CARGO_REGISTRY_TOKEN'
+      when: manual
+    - when: never
+  script:
+    - echo "publishing opal $CI_COMMIT_SHA"
+    - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"

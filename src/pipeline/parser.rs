@@ -55,7 +55,7 @@ impl PipelineGraph {
         Self::from_mapping(root)
     }
 
-    pub fn from_str(contents: &str) -> Result<Self> {
+    pub fn from_yaml_str(contents: &str) -> Result<Self> {
         let root: Mapping = serde_yaml::from_str(contents)?;
         Self::from_mapping(root)
     }
@@ -102,6 +102,14 @@ impl PipelineGraph {
         }
 
         build_graph(defaults, stage_names, job_names, job_defs)
+    }
+}
+
+impl std::str::FromStr for PipelineGraph {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_yaml_str(s)
     }
 }
 
@@ -201,7 +209,7 @@ fn parse_image(value: Value) -> Result<String> {
     match value {
         Value::String(name) => Ok(name),
         Value::Mapping(mut map) => {
-            if let Some(val) = map.remove(&Value::String("name".to_string())) {
+            if let Some(val) = map.remove(Value::String("name".to_string())) {
                 extract_string(val, "image name")
             } else {
                 bail!("image mapping must include 'name'")
@@ -221,8 +229,8 @@ fn extract_string(value: Value, what: &str) -> Result<String> {
 fn parse_job(value: Value) -> Result<(RawJob, Option<String>, HashMap<String, String>)> {
     match value {
         Value::Mapping(mut map) => {
-            let image_value = map.remove(&Value::String("image".to_string()));
-            let variables_value = map.remove(&Value::String("variables".to_string()));
+            let image_value = map.remove(Value::String("image".to_string()));
+            let variables_value = map.remove(Value::String("variables".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
@@ -444,7 +452,8 @@ fn parse_include_entry(value: Value) -> Result<PathBuf> {
     match value {
         Value::String(path) => Ok(PathBuf::from(path)),
         Value::Mapping(map) => {
-            if let Some(Value::String(local)) = map.get(&Value::String("local".to_string())) {
+            let local_key = Value::String("local".to_string());
+            if let Some(Value::String(local)) = map.get(&local_key) {
                 Ok(PathBuf::from(local))
             } else {
                 bail!("only 'local' includes are supported");
@@ -564,7 +573,7 @@ mod tests {
         - echo test
     "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(pipeline.stages.len(), 2);
         assert_eq!(pipeline.stages[0].name, "build");
         assert_eq!(pipeline.stages[1].name, "test");
@@ -694,7 +703,7 @@ deploy-job:
     - echo deploy
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let build_idx = find_job(&pipeline, "build-job");
         let deploy_idx = find_job(&pipeline, "deploy-job");
 
@@ -727,7 +736,7 @@ test-job:
     - echo test
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let test_idx = find_job(&pipeline, "test-job");
         assert_eq!(pipeline.graph[test_idx].needs.len(), 1);
         let need = &pipeline.graph[test_idx].needs[0];
@@ -751,7 +760,7 @@ build-job:
       - output/report.txt
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let build_idx = find_job(&pipeline, "build-job");
         let job = &pipeline.graph[build_idx];
         assert_eq!(job.artifacts.len(), 2);
@@ -779,7 +788,7 @@ test-job:
     - echo test
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(pipeline.defaults.image.as_deref(), Some("rust:latest"));
         let build_idx = find_job(&pipeline, "build-job");
         assert_eq!(
@@ -811,7 +820,7 @@ build-job:
     - echo build
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(pipeline.stages.len(), 1);
         assert_eq!(pipeline.stages[0].jobs.len(), 1);
         assert_eq!(
@@ -851,7 +860,7 @@ build-job:
   script: echo body
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(
             pipeline.defaults.before_script,
             vec!["echo before-one".to_string(), "echo before-two".to_string()]
@@ -883,7 +892,7 @@ build-job:
     - echo job
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(
             pipeline
                 .defaults
@@ -926,7 +935,7 @@ build-job:
     - echo build
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(pipeline.stages.len(), 1);
         assert_eq!(pipeline.stages[0].jobs.len(), 1);
         let job_idx = pipeline.stages[0].jobs[0];
@@ -943,7 +952,7 @@ broken-job:
   stage: build
 "#;
 
-        let err = PipelineGraph::from_str(yaml).expect_err("missing script should error");
+        let err = PipelineGraph::from_yaml_str(yaml).expect_err("missing script should error");
         assert!(err.to_string().contains("must define a script"));
     }
 
@@ -963,7 +972,7 @@ build-job:
     - echo build
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         assert_eq!(pipeline.stages[0].jobs.len(), 1);
         let job_idx = pipeline.stages[0].jobs[0];
         assert_eq!(pipeline.graph[job_idx].name, "build-job");
@@ -987,7 +996,7 @@ child-job:
   extends: .base-template
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let job_idx = find_job(&pipeline, "child-job");
         let job = &pipeline.graph[job_idx];
         assert_eq!(job.stage, "build");
@@ -1022,7 +1031,7 @@ combined:
     - .test-template
 "#;
 
-        let pipeline = PipelineGraph::from_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let job_idx = find_job(&pipeline, "combined");
         let job = &pipeline.graph[job_idx];
         assert_eq!(job.commands, vec!["echo tests"]);
@@ -1050,7 +1059,7 @@ job:
   extends: .a
 "#;
 
-        let err = PipelineGraph::from_str(yaml).expect_err("cycle must error");
+        let err = PipelineGraph::from_yaml_str(yaml).expect_err("cycle must error");
         assert!(err.to_string().contains("cyclical extends"));
     }
 
@@ -1065,7 +1074,7 @@ job:
   extends: .missing
 "#;
 
-        let err = PipelineGraph::from_str(yaml).expect_err("unknown template must error");
+        let err = PipelineGraph::from_yaml_str(yaml).expect_err("unknown template must error");
         assert!(err.to_string().contains("unknown job/template '.missing'"));
     }
 

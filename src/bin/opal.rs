@@ -1,11 +1,6 @@
-#[cfg(target_os = "macos")]
-use anyhow::Context;
-use anyhow::Result;
-#[cfg(target_os = "macos")]
+use anyhow::{Context, Result};
 use opal::executor::ContainerExecutor;
-#[cfg(target_os = "linux")]
-use opal::executor::PDExecutor;
-use opal::{Cli, Commands, ExecutorConfig, RunArgs};
+use opal::{Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, RunArgs};
 use std::env;
 use std::io::{self, IsTerminal};
 use structopt::StructOpt;
@@ -30,32 +25,28 @@ async fn main() -> Result<()> {
 
     match opts.commands {
         Commands::Run(args) => {
-            #[cfg(target_os = "linux")]
-            let _nerd_executor = PDExecutor::new(ExecutorConfig {});
+            let RunArgs {
+                pipeline,
+                workdir,
+                base_image,
+                env_includes,
+                max_parallel_jobs,
+                log_dir,
+                engine,
+                no_tui,
+            } = args;
 
-            #[cfg(target_os = "macos")]
-            let container_executor = {
-                let RunArgs {
-                    pipeline,
-                    workdir,
-                    base_image,
-                    env_includes,
-                    max_parallel_jobs,
-                    log_dir,
-                    no_tui,
-                } = args;
-
-                ContainerExecutor::new(ExecutorConfig {
-                    image: base_image,
-                    workdir,
-                    pipeline,
-                    env_includes,
-                    max_parallel_jobs,
-                    log_dir,
-                    enable_tui: !no_tui,
-                })
-                .with_context(|| "failed create new exeecutor")?
-            };
+            let container_executor = ContainerExecutor::new(ExecutorConfig {
+                image: base_image,
+                workdir,
+                pipeline,
+                env_includes,
+                max_parallel_jobs,
+                log_dir,
+                enable_tui: !no_tui,
+                engine: resolve_engine(engine),
+            })
+            .with_context(|| "failed create new executor")?;
 
             container_executor
                 .run()
@@ -63,4 +54,32 @@ async fn main() -> Result<()> {
                 .with_context(|| "failed to run pipeline")
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_engine(choice: EngineChoice) -> EngineKind {
+    match choice {
+        EngineChoice::Auto | EngineChoice::Container => EngineKind::ContainerCli,
+        EngineChoice::Docker => EngineKind::Docker,
+        EngineChoice::Podman => EngineKind::Podman,
+        EngineChoice::Nerdctl => EngineKind::Nerdctl,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_engine(choice: EngineChoice) -> EngineKind {
+    match choice {
+        EngineChoice::Auto | EngineChoice::Docker => EngineKind::Docker,
+        EngineChoice::Podman => EngineKind::Podman,
+        EngineChoice::Nerdctl => EngineKind::Nerdctl,
+        EngineChoice::Container => {
+            eprintln!("'container' engine is unavailable on Linux; falling back to docker");
+            EngineKind::Docker
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn resolve_engine(_: EngineChoice) -> EngineKind {
+    EngineKind::Docker
 }

@@ -8,6 +8,6 @@ cd "$ROOT_DIR"
 cargo build --release
 
 "$ROOT_DIR/target/release/opal" run \
-  --pipeline "$ROOT_DIR/assets/.gitlab-ci.yml" \
-  --workdir "$ROOT_DIR/assets" \
-  --base-image "alpine:latest"
+  --pipeline "$ROOT_DIR/.gitlab-ci.yml" \
+  --workdir "$ROOT_DIR" \
+  --base-image "rustlang/rust:nightly"
