@@ -386,6 +386,7 @@ impl ExecutorCore {
                             log_path: None,
                             log_hash: planned.log_hash.clone(),
                             allow_failure: planned.rule.allow_failure,
+                            environment: planned.job.environment.clone(),
                         });
                         completed += 1;
                         if let Some(children) = plan.dependents.get(&name) {
@@ -534,6 +535,7 @@ impl ExecutorCore {
                             log_path: None,
                             log_hash: planned.log_hash.clone(),
                             allow_failure: planned.rule.allow_failure,
+                            environment: planned.job.environment.clone(),
                         });
                         completed += 1;
                         if let Some(children) = plan.dependents.get(&name) {
@@ -628,6 +630,7 @@ impl ExecutorCore {
                                 log_path: event.log_path.clone(),
                                 log_hash: event.log_hash.clone(),
                                 allow_failure: planned.rule.allow_failure,
+                                environment: planned.job.environment.clone(),
                             });
                             completed += 1;
                         }
@@ -670,6 +673,7 @@ impl ExecutorCore {
                                 log_path: event.log_path.clone(),
                                 log_hash: event.log_hash.clone(),
                                 allow_failure: planned.rule.allow_failure,
+                                environment: planned.job.environment.clone(),
                             });
                             completed += 1;
                         }
@@ -716,6 +720,7 @@ impl ExecutorCore {
                     log_path: Some(planned.log_path.clone()),
                     log_hash: planned.log_hash.clone(),
                     allow_failure: planned.rule.allow_failure,
+                    environment: planned.job.environment.clone(),
                 });
                 recorded.insert(job_name.clone());
             }
@@ -780,6 +785,10 @@ impl ExecutorCore {
             .get(&name)
             .map(|planned| planned.rule.allow_failure)
             .unwrap_or(false);
+        let environment = plan
+            .nodes
+            .get(&name)
+            .and_then(|planned| planned.job.environment.clone());
 
         let status = match result {
             Ok(_) => JobStatus::Success,
@@ -795,6 +804,7 @@ impl ExecutorCore {
             log_path,
             log_hash,
             allow_failure,
+            environment,
         });
     }
 

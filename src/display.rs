@@ -219,6 +219,13 @@ pub fn print_pipeline_summary<F>(
         if let Some(log_path) = &entry.log_path {
             line.push_str(&format!(" [log: {}]", log_path.display()));
         }
+        if let Some(env) = &entry.environment {
+            line.push_str(&format!(" (env: {}", env.name));
+            if let Some(url) = &env.url {
+                line.push_str(&format!(", url: {}", url));
+            }
+            line.push(')');
+        }
         emit_line(line);
     }
 

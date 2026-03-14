@@ -1,10 +1,12 @@
 use crate::gitlab::{
-    DependencySource, Job, JobDependency, ParallelConfig, PipelineGraph, RetryPolicy,
+    DependencySource, EnvironmentConfig, Job, JobDependency, ParallelConfig, PipelineGraph,
+    RetryPolicy,
 };
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 use super::rules::{RuleContext, RuleEvaluation, evaluate_rules};
 
@@ -50,6 +52,7 @@ pub struct JobSummary {
     pub log_path: Option<PathBuf>,
     pub log_hash: String,
     pub allow_failure: bool,
+    pub environment: Option<EnvironmentConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +170,13 @@ where
                         entry.retain(|meta| meta.name != expanded.job.name);
                     }
                     continue;
+                }
+                if !expanded.job.tags.is_empty() {
+                    warn!(
+                        job = %expanded.job.name,
+                        tags = ?expanded.job.tags,
+                        "job has runner tags, but Opal runs locally; ignoring tags"
+                    );
                 }
                 if !evaluation.variables.is_empty() {
                     expanded.job.variables.extend(evaluation.variables.clone());

@@ -11,9 +11,9 @@ use serde_yaml::{Mapping, Value};
 use tracing::warn;
 
 use super::graph::{
-    CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
-    ParallelConfig, PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup,
-    WorkflowConfig,
+    CacheConfig, CachePolicy, DependencySource, EnvironmentAction, EnvironmentConfig,
+    ExternalDependency, Job, JobDependency, ParallelConfig, PipelineDefaults, PipelineGraph,
+    RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -347,11 +347,29 @@ fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
             Value::String(s) => s,
             other => bail!("variable names must be strings, got {other:?}"),
         };
-        let value = extract_string(val, &format!("variable '{name}'"))?;
+        let value = extract_variable_value(val, &format!("variable '{name}'"))?;
         vars.insert(name, value);
     }
 
     Ok(vars)
+}
+
+fn extract_variable_value(value: Value, what: &str) -> Result<String> {
+    match value {
+        Value::String(text) => Ok(text),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        Value::Number(num) => Ok(num.to_string()),
+        Value::Null => Ok(String::new()),
+        Value::Mapping(mut map) => {
+            let key = Value::String("value".to_string());
+            if let Some(entry) = map.remove(&key) {
+                extract_variable_value(entry, what)
+            } else {
+                bail!("{what} mapping must include 'value'")
+            }
+        }
+        other => bail!("{what} must be a string/bool/number, got {other:?}"),
+    }
 }
 
 fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>> {
@@ -569,6 +587,30 @@ fn build_graph(
         let resource_group = job_spec.resource_group.clone();
         let parallel = job_parallel;
 
+        let environment = job_spec.environment.as_ref().map(|env| {
+            let action = match env.action.as_deref() {
+                Some("stop") => EnvironmentAction::Stop,
+                _ => EnvironmentAction::Start,
+            };
+            let name = if env.name.is_empty() {
+                job_name.clone()
+            } else {
+                env.name.clone()
+            };
+            EnvironmentConfig {
+                name,
+                url: env.url.clone(),
+                on_stop: env.on_stop.clone(),
+                auto_stop_in: parse_optional_timeout(
+                    &env.auto_stop_in,
+                    &format!("job '{}'.environment.auto_stop_in", job_name),
+                )
+                .ok()
+                .flatten(),
+                action,
+            }
+        });
+
         let node = graph.add_node(Job {
             name: job_name.clone(),
             stage: stage_name,
@@ -591,6 +633,8 @@ fn build_graph(
             inherit_default_before_script: inherit_flags.0,
             inherit_default_after_script: inherit_flags.1,
             parallel,
+            tags: job_spec.tags.clone(),
+            environment,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -802,6 +846,24 @@ struct RawJob {
     resource_group: Option<String>,
     #[serde(default)]
     inherit: Option<RawInherit>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    environment: Option<RawEnvironment>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawEnvironment {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    on_stop: Option<String>,
+    #[serde(default)]
+    auto_stop_in: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

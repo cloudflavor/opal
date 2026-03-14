@@ -41,6 +41,8 @@ pub struct Job {
     pub interruptible: bool,
     pub resource_group: Option<String>,
     pub parallel: Option<ParallelConfig>,
+    pub tags: Vec<String>,
+    pub environment: Option<EnvironmentConfig>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {
@@ -94,6 +96,21 @@ pub struct RetryPolicy {
 pub enum ParallelConfig {
     Count(u32),
     Matrix(Vec<HashMap<String, Vec<String>>>),
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvironmentConfig {
+    pub name: String,
+    pub url: Option<String>,
+    pub on_stop: Option<String>,
+    pub auto_stop_in: Option<Duration>,
+    pub action: EnvironmentAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentAction {
+    Start,
+    Stop,
 }
 
 #[derive(Debug, Clone)]
