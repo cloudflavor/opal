@@ -1,7 +1,10 @@
 use crate::pipeline::Job;
 use crate::secrets::SecretsStore;
+use anyhow::Result;
 use owo_colors::OwoColorize;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub struct LogFormatter<'a> {
@@ -33,7 +36,15 @@ impl<'a> LogFormatter<'a> {
         &self.line_prefix
     }
 
-    pub fn format(&self, timestamp: &str, line_no: usize, text: &str) -> String {
+    pub fn mask<'b>(&self, text: &'b str) -> Cow<'b, str> {
+        if let Some(secrets) = self.secrets {
+            secrets.mask_fragment(text)
+        } else {
+            Cow::Borrowed(text)
+        }
+    }
+
+    pub fn format_masked(&self, timestamp: &str, line_no: usize, masked_text: &str) -> String {
         let number = format!("{:04}", line_no);
         let timestamp = if self.use_color {
             format!("{}", timestamp.bold().blue())
@@ -45,12 +56,12 @@ impl<'a> LogFormatter<'a> {
         } else {
             number
         };
-        let masked = if let Some(secrets) = self.secrets {
-            secrets.mask_fragment(text)
-        } else {
-            text.into()
-        };
-        format!("[{} {}] {}", timestamp, number, masked)
+        format!("[{} {}] {}", timestamp, number, masked_text)
+    }
+
+    pub fn format(&self, timestamp: &str, line_no: usize, text: &str) -> String {
+        let masked = self.mask(text);
+        self.format_masked(timestamp, line_no, masked.as_ref())
     }
 }
 
@@ -131,4 +142,18 @@ pub fn job_log_info(logs_dir: &Path, run_id: &str, job: &Job) -> (PathBuf, Strin
     let short = &hex[..12];
     let log_path = logs_dir.join(format!("{short}.log"));
     (log_path, short.to_string())
+}
+
+pub fn format_plain_log_line(timestamp: &str, line_no: usize, text: &str) -> String {
+    format!("[{} {:04}] {}", timestamp, line_no, text)
+}
+
+pub fn write_log_line(
+    writer: &mut dyn Write,
+    timestamp: &str,
+    line_no: usize,
+    text: &str,
+) -> Result<()> {
+    writeln!(writer, "{}", format_plain_log_line(timestamp, line_no, text))?;
+    Ok(())
 }

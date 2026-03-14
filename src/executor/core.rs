@@ -11,12 +11,11 @@ use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, sanitize_fragments, LogFormatter};
 use crate::mounts::{self, VolumeMount};
 use crate::naming::{job_name_slug, stage_name_slug, generate_run_id};
-use crate::pipeline::{Job, PipelineGraph};
-use crate::planner::{JobPlan, PlannedJob};
-use crate::runner::ExecuteContext;
-use crate::scheduler::{
-    self, HaltKind, JobEvent, JobRunInfo, JobStatus, JobSummary, StageState,
+use crate::pipeline::{
+    self, HaltKind, Job, JobEvent, JobPlan, JobRunInfo, JobStatus, JobSummary, PipelineGraph,
+    PlannedJob, StageState,
 };
+use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::{should_use_color, stream_lines};
 use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobStatus};
@@ -25,7 +24,6 @@ use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::{Arc, Mutex};
@@ -344,7 +342,7 @@ impl ExecutorCore {
                     if let Some(planned) = plan.nodes.get(&name).cloned() {
                         let run_info = self.log_job_start(&planned, ui.as_deref());
                         running.insert(name.clone());
-                        scheduler::spawn_job(
+                        pipeline::spawn_job(
                             exec.clone(),
                             planned,
                             run_info,
@@ -883,17 +881,21 @@ impl ExecutorCore {
                 .format(TIMESTAMP_FORMAT)
                 .unwrap_or_else(|_| "??????????".to_string());
             for fragment in sanitize_fragments(&line) {
-                let decorated = formatter.format(&timestamp, display_line_no, &fragment);
+                let masked = formatter.mask(&fragment);
+                let plain_line =
+                    logging::format_plain_log_line(&timestamp, display_line_no, masked.as_ref());
                 if let Some(ui) = ui {
-                    let raw_line = decorated.clone();
-                    ui.job_log_line(&job.name, &raw_line);
+                    ui.job_log_line(&job.name, &plain_line);
                 } else {
+                    let decorated =
+                        formatter.format_masked(&timestamp, display_line_no, masked.as_ref());
                     display::print_prefixed_line(&line_prefix, &decorated);
                 }
-                writeln!(
-                    log_file,
-                    "[{} {:04}] {}",
-                    timestamp, display_line_no, fragment
+                logging::write_log_line(
+                    &mut log_file,
+                    &timestamp,
+                    display_line_no,
+                    masked.as_ref(),
                 )?;
                 display_line_no += 1;
             }

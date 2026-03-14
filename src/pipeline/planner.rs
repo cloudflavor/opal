@@ -1,7 +1,8 @@
-use crate::pipeline::{Job, PipelineGraph};
+use super::gitlab::{Job, PipelineGraph};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 pub struct JobPlan {
     pub ordered: Vec<String>,
@@ -17,6 +18,65 @@ pub struct PlannedJob {
     pub dependencies: Vec<String>,
     pub log_path: PathBuf,
     pub log_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JobSummary {
+    pub name: String,
+    pub stage_name: String,
+    pub duration: f32,
+    pub status: JobStatus,
+    pub log_path: Option<PathBuf>,
+    pub log_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum JobStatus {
+    Success,
+    Failed(String),
+    Skipped(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct JobRunInfo {
+    pub container_name: String,
+}
+
+#[derive(Debug)]
+pub struct JobEvent {
+    pub name: String,
+    pub stage_name: String,
+    pub duration: f32,
+    pub log_path: Option<PathBuf>,
+    pub log_hash: String,
+    pub result: Result<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HaltKind {
+    None,
+    JobFailure,
+    Deadlock,
+    ChannelClosed,
+}
+
+#[derive(Debug, Clone)]
+pub struct StageState {
+    pub total: usize,
+    pub completed: usize,
+    pub header_printed: bool,
+    pub started_at: Option<Instant>,
+}
+
+impl StageState {
+    pub fn new(total: usize) -> Self {
+        Self {
+            total,
+            completed: 0,
+            header_printed: false,
+            started_at: None,
+        }
+    }
 }
 
 pub fn build_job_plan<F>(graph: &PipelineGraph, mut log_info: F) -> Result<JobPlan>

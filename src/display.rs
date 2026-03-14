@@ -1,7 +1,5 @@
 use crate::mounts::VolumeMount;
-use crate::pipeline::Job;
-use crate::planner::JobPlan;
-use crate::scheduler::{JobStatus, JobSummary};
+use crate::pipeline::{Job, JobPlan, JobStatus, JobSummary};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
 
