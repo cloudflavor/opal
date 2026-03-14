@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
@@ -271,6 +271,9 @@ impl ExecutorCore {
         let mut halt_kind = HaltKind::None;
         let mut halt_error: Option<anyhow::Error> = None;
         let mut summaries: Vec<JobSummary> = Vec::new();
+        let mut attempts: HashMap<String, u32> = HashMap::new();
+        let mut resource_locks: HashMap<String, bool> = HashMap::new();
+        let mut resource_waiting: HashMap<String, VecDeque<String>> = HashMap::new();
         let mut manual_input_available = commands.is_some();
 
         let semaphore = Arc::new(Semaphore::new(self.config.max_parallel_jobs.max(1)));
@@ -398,6 +401,20 @@ impl ExecutorCore {
                     }
                     continue;
                 }
+
+                if let Some(group) = &planned.resource_group {
+                    if resource_locks.get(group).copied().unwrap_or(false) {
+                        resource_waiting
+                            .entry(group.clone())
+                            .or_default()
+                            .push_back(name.clone());
+                        continue;
+                    }
+                    resource_locks.insert(group.clone(), true);
+                }
+
+                let entry = attempts.entry(name.clone()).or_insert(0);
+                *entry += 1;
 
                 let run_info = self.log_job_start(&planned, ui.as_deref());
                 running.insert(name.clone());
@@ -565,13 +582,18 @@ impl ExecutorCore {
                 }
                 SchedulerEvent::Job(event) => {
                     running.remove(&event.name);
-                    completed += 1;
                     let planned = plan
                         .nodes
                         .get(&event.name)
                         .expect("completed job must exist in plan");
                     match event.result {
                         Ok(_) => {
+                            release_resource_lock(
+                                planned,
+                                &mut ready,
+                                &mut resource_locks,
+                                &mut resource_waiting,
+                            );
                             if let Some(children) = plan.dependents.get(&event.name) {
                                 for child in children {
                                     if let Some(count) = remaining.get_mut(child)
@@ -599,9 +621,28 @@ impl ExecutorCore {
                                 log_hash: event.log_hash.clone(),
                                 allow_failure: planned.rule.allow_failure,
                             });
+                            completed += 1;
                         }
                         Err(err) => {
                             let err_msg = err.to_string();
+                            let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
+                            let retries_used = attempts_so_far.saturating_sub(1);
+                            if retries_used < planned.retry.max {
+                                release_resource_lock(
+                                    planned,
+                                    &mut ready,
+                                    &mut resource_locks,
+                                    &mut resource_waiting,
+                                );
+                                ready.push_back(event.name.clone());
+                                continue;
+                            }
+                            release_resource_lock(
+                                planned,
+                                &mut ready,
+                                &mut resource_locks,
+                                &mut resource_waiting,
+                            );
                             if !planned.rule.allow_failure && !pipeline_failed {
                                 pipeline_failed = true;
                                 halt_kind = HaltKind::JobFailure;
@@ -622,6 +663,7 @@ impl ExecutorCore {
                                 log_hash: event.log_hash.clone(),
                                 allow_failure: planned.rule.allow_failure,
                             });
+                            completed += 1;
                         }
                     }
                 }
@@ -1091,6 +1133,29 @@ impl ExecutorCore {
             .with_context(|| format!("failed to run {:?} command", self.config.engine))
     }
 
+    pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
+        let binary = match self.config.engine {
+            EngineKind::ContainerCli => "container",
+            EngineKind::Docker | EngineKind::Orbstack => "docker",
+            EngineKind::Podman => "podman",
+            EngineKind::Nerdctl => "nerdctl",
+        };
+        let mut command = Command::new(binary);
+        if binary == "container" {
+            command.arg("rm").arg("--force").arg(container_name);
+        } else {
+            command.arg("rm").arg("-f").arg(container_name);
+        }
+        if let Err(err) = command.status() {
+            warn!(
+                job = job_name,
+                container = container_name,
+                error = %err,
+                "failed to terminate container after timeout"
+            );
+        }
+    }
+
     fn capture_child_output(
         &self,
         proc: &mut Child,
@@ -1211,5 +1276,21 @@ impl ExecutorCore {
 
     fn container_path_rel(&self, host_path: &Path) -> Result<PathBuf> {
         paths::to_container_path(host_path, &self.config.workdir)
+    }
+}
+
+fn release_resource_lock(
+    planned: &PlannedJob,
+    ready: &mut VecDeque<String>,
+    resource_locks: &mut HashMap<String, bool>,
+    resource_waiting: &mut HashMap<String, VecDeque<String>>,
+) {
+    if let Some(group) = &planned.resource_group {
+        resource_locks.insert(group.clone(), false);
+        if let Some(queue) = resource_waiting.get_mut(group)
+            && let Some(next) = queue.pop_front()
+        {
+            ready.push_back(next);
+        }
     }
 }

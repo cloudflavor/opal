@@ -1,6 +1,7 @@
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::rules::JobRule;
 
@@ -32,6 +33,10 @@ pub struct Job {
     pub image: Option<String>,
     pub variables: HashMap<String, String>,
     pub services: Vec<ServiceConfig>,
+    pub timeout: Option<Duration>,
+    pub retry: RetryPolicy,
+    pub interruptible: bool,
+    pub resource_group: Option<String>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {
@@ -41,6 +46,9 @@ pub struct PipelineDefaults {
     pub variables: HashMap<String, String>,
     pub cache: Vec<CacheConfig>,
     pub services: Vec<ServiceConfig>,
+    pub timeout: Option<Duration>,
+    pub retry: RetryPolicy,
+    pub interruptible: bool,
 }
 #[derive(Debug, Clone)]
 pub struct JobDependency {
@@ -69,6 +77,12 @@ pub struct ServiceConfig {
     pub entrypoint: Vec<String>,
     pub command: Vec<String>,
     pub variables: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RetryPolicy {
+    pub max: u32,
+    pub when: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -58,6 +58,9 @@ pub fn build_job_env(
     push("CI_JOB_STAGE", &job.stage);
     push("CI_PROJECT_DIR", &workdir.display().to_string());
     push("CI_PIPELINE_ID", run_id);
+    if let Some(timeout) = job.timeout {
+        push("CI_JOB_TIMEOUT", &timeout.as_secs().to_string());
+    }
 
     if secrets.has_secrets() {
         secrets.extend_env(&mut env);

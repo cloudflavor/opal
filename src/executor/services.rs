@@ -36,10 +36,7 @@ impl ServiceRuntime {
             job_name_slug(job_name)
         );
         let mut network_cmd = Command::new(binary);
-        network_cmd
-            .arg("network")
-            .arg("create")
-            .arg(&network);
+        network_cmd.arg("network").arg("create").arg(&network);
         run_command(network_cmd)
             .with_context(|| format!("failed to create network {}", network))?;
 

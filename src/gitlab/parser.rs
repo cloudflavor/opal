@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use humantime;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
@@ -10,7 +12,7 @@ use tracing::warn;
 
 use super::graph::{
     CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
-    PipelineDefaults, PipelineGraph, ServiceConfig, StageGroup, WorkflowConfig,
+    PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -159,6 +161,17 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
             }
             Value::String(name) if name == "services" => {
                 defaults.services = parse_services_value(value, "services")?;
+            }
+            Value::String(name) if name == "timeout" => {
+                defaults.timeout = parse_timeout_value(value, "default.timeout")?;
+            }
+            Value::String(name) if name == "retry" => {
+                let raw: RawRetry =
+                    serde_yaml::from_value(value).context("failed to parse default.retry")?;
+                defaults.retry = raw.into_policy(&RetryPolicy::default());
+            }
+            Value::String(name) if name == "interruptible" => {
+                defaults.interruptible = extract_bool(value, "default.interruptible")?;
             }
             Value::String(_) => {
                 // ignore other default keywords for now
@@ -346,6 +359,33 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
     Ok(services)
 }
 
+fn parse_timeout_value(value: Value, field: &str) -> Result<Option<Duration>> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(text) => parse_timeout_str(&text, field).map(Some),
+        other => bail!("{field} must be a string or null, got {other:?}"),
+    }
+}
+
+fn parse_optional_timeout(raw: &Option<String>, field: &str) -> Result<Option<Duration>> {
+    if let Some(text) = raw {
+        Ok(Some(parse_timeout_str(text, field)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn parse_timeout_str(text: &str, field: &str) -> Result<Duration> {
+    humantime::parse_duration(text).with_context(|| format!("invalid duration for {field}: {text}"))
+}
+
+fn extract_bool(value: Value, field: &str) -> Result<bool> {
+    match value {
+        Value::Bool(b) => Ok(b),
+        other => bail!("{field} must be a boolean, got {other:?}"),
+    }
+}
+
 fn build_graph(
     defaults: PipelineDefaults,
     workflow: Option<WorkflowConfig>,
@@ -410,6 +450,20 @@ fn build_graph(
         } else {
             job_cache
         };
+        let services = if job_services.is_empty() {
+            defaults.services.clone()
+        } else {
+            job_services
+        };
+        let timeout =
+            parse_optional_timeout(&job_spec.timeout, &format!("job '{}'.timeout", job_name))?
+                .or(defaults.timeout);
+        let retry = job_spec
+            .retry
+            .map(|raw| raw.into_policy(&defaults.retry))
+            .unwrap_or_else(|| defaults.retry.clone());
+        let interruptible = job_spec.interruptible.unwrap_or(defaults.interruptible);
+        let resource_group = job_spec.resource_group.clone();
 
         let node = graph.add_node(Job {
             name: job_name.clone(),
@@ -425,7 +479,11 @@ fn build_graph(
             cache: cache_entries,
             image: job_image,
             variables: job_variables,
-            services: job_services,
+            services,
+            timeout,
+            retry,
+            interruptible,
+            resource_group,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -536,20 +594,40 @@ fn merge_mappings(mut base: Mapping, addition: Mapping) -> Mapping {
 fn parse_include_entries(value: Value) -> Result<Vec<PathBuf>> {
     match value {
         Value::String(path) => Ok(vec![PathBuf::from(path)]),
-        Value::Sequence(entries) => entries.into_iter().map(parse_include_entry).collect(),
+        Value::Sequence(entries) => {
+            let mut paths = Vec::new();
+            for entry in entries {
+                paths.extend(parse_include_entry(entry)?);
+            }
+            Ok(paths)
+        }
+        Value::Mapping(_) => parse_include_entry(value),
         other => bail!("include must be a string or list, got {other:?}"),
     }
 }
 
-fn parse_include_entry(value: Value) -> Result<PathBuf> {
+fn parse_include_entry(value: Value) -> Result<Vec<PathBuf>> {
     match value {
-        Value::String(path) => Ok(PathBuf::from(path)),
+        Value::String(path) => Ok(vec![PathBuf::from(path)]),
         Value::Mapping(map) => {
             let local_key = Value::String("local".to_string());
+            let file_key = Value::String("file".to_string());
+            let files_key = Value::String("files".to_string());
             if let Some(Value::String(local)) = map.get(&local_key) {
-                Ok(PathBuf::from(local))
+                Ok(vec![PathBuf::from(local)])
+            } else if let Some(Value::String(file)) = map.get(&file_key) {
+                Ok(vec![PathBuf::from(file)])
+            } else if let Some(Value::Sequence(files)) = map.get(&files_key) {
+                let mut paths = Vec::new();
+                for entry in files {
+                    match entry {
+                        Value::String(path) => paths.push(PathBuf::from(path)),
+                        other => bail!("include 'files' entries must be strings, got {other:?}"),
+                    }
+                }
+                Ok(paths)
             } else {
-                bail!("only 'local' includes are supported");
+                bail!("only 'local' or 'file(s)' includes are supported");
             }
         }
         other => bail!("unsupported include entry {other:?}"),
@@ -586,6 +664,14 @@ struct RawJob {
     rules: Vec<JobRule>,
     #[serde(default)]
     artifacts: RawArtifacts,
+    #[serde(default)]
+    timeout: Option<String>,
+    #[serde(default)]
+    retry: Option<RawRetry>,
+    #[serde(default)]
+    interruptible: Option<bool>,
+    #[serde(default)]
+    resource_group: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -637,6 +723,51 @@ impl RawServiceConfig {
             command: self.command.into_vec(),
             variables: self.variables,
         })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawRetry {
+    Simple(u32),
+    Detailed(RawRetryConfig),
+}
+
+impl RawRetry {
+    fn into_policy(self, base: &RetryPolicy) -> RetryPolicy {
+        match self {
+            RawRetry::Simple(max) => RetryPolicy {
+                max,
+                when: base.when.clone(),
+            },
+            RawRetry::Detailed(cfg) => {
+                let mut policy = base.clone();
+                if let Some(max) = cfg.max {
+                    policy.max = max;
+                }
+                if !cfg.when.0.is_empty() {
+                    policy.when = cfg.when.into_vec();
+                }
+                policy
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRetryConfig {
+    #[serde(default)]
+    max: Option<u32>,
+    #[serde(default)]
+    when: StringList,
+}
+
+#[derive(Debug, Default)]
+struct StringList(Vec<String>);
+
+impl StringList {
+    fn into_vec(self) -> Vec<String> {
+        self.0
     }
 }
 
@@ -693,6 +824,57 @@ impl<'de> serde::Deserialize<'de> for ServiceCommand {
                 E: serde::de::Error,
             {
                 Ok(ServiceCommand(Vec::new()))
+            }
+        }
+
+        deserializer.deserialize_any(VisitorImpl)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StringList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        struct VisitorImpl;
+
+        impl<'de> serde::de::Visitor<'de> for VisitorImpl {
+            type Value = StringList;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("string or sequence of strings")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(StringList(vec![v.to_string()]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut items = Vec::new();
+                while let Some(entry) = seq.next_element::<String>()? {
+                    items.push(entry);
+                }
+                Ok(StringList(items))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(StringList(Vec::new()))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(StringList(Vec::new()))
             }
         }
 

@@ -1,8 +1,8 @@
-use crate::gitlab::{DependencySource, Job, PipelineGraph};
+use crate::gitlab::{DependencySource, Job, PipelineGraph, RetryPolicy};
 use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::rules::{RuleContext, RuleEvaluation, evaluate_rules};
 
@@ -21,6 +21,10 @@ pub struct PlannedJob {
     pub log_path: PathBuf,
     pub log_hash: String,
     pub rule: RuleEvaluation,
+    pub timeout: Option<Duration>,
+    pub retry: RetryPolicy,
+    pub interruptible: bool,
+    pub resource_group: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +141,10 @@ where
             deps.dedup();
 
             let (log_path, log_hash) = log_info(&job);
+            let job_timeout = job.timeout;
+            let job_retry = job.retry.clone();
+            let job_interruptible = job.interruptible;
+            let job_resource_group = job.resource_group.clone();
             ordered.push(job.name.clone());
             nodes.insert(
                 job.name.clone(),
@@ -147,6 +155,10 @@ where
                     log_path,
                     log_hash,
                     rule: evaluation,
+                    timeout: job_timeout,
+                    retry: job_retry,
+                    interruptible: job_interruptible,
+                    resource_group: job_resource_group,
                 },
             );
         }
