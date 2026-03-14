@@ -450,6 +450,7 @@ fn build_graph(
             resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
         let (job_spec, job_image, job_variables, job_cache, job_services) =
             parse_job(Value::Mapping(merged_map))?;
+        let inherit_flags = job_inherit_flags(&job_spec);
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
                 .first()
@@ -516,6 +517,8 @@ fn build_graph(
             retry,
             interruptible,
             resource_group,
+            inherit_default_before_script: inherit_flags.0,
+            inherit_default_after_script: inherit_flags.1,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -552,6 +555,26 @@ fn build_graph(
         workflow,
         filters,
     })
+}
+
+fn job_inherit_flags(job: &RawJob) -> (bool, bool) {
+    let mut inherit_before = true;
+    let mut inherit_after = true;
+    if let Some(inherit) = &job.inherit
+        && let Some(default) = &inherit.default
+    {
+        match default {
+            RawInheritDefault::Bool(value) => {
+                inherit_before = *value;
+                inherit_after = *value;
+            }
+            RawInheritDefault::List(entries) => {
+                inherit_before = entries.iter().any(|entry| entry == "before_script");
+                inherit_after = entries.iter().any(|entry| entry == "after_script");
+            }
+        }
+    }
+    (inherit_before, inherit_after)
 }
 
 fn resolve_job_definition(
@@ -705,6 +728,8 @@ struct RawJob {
     interruptible: Option<bool>,
     #[serde(default)]
     resource_group: Option<String>,
+    #[serde(default)]
+    inherit: Option<RawInherit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1592,4 +1617,16 @@ job:
             .find(|&idx| graph.graph[idx].name == name)
             .expect("job must exist")
     }
+}
+#[derive(Debug, Deserialize, Default)]
+struct RawInherit {
+    #[serde(default)]
+    default: Option<RawInheritDefault>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawInheritDefault {
+    Bool(bool),
+    List(Vec<String>),
 }

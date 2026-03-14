@@ -1241,15 +1241,17 @@ impl ExecutorCore {
 
     fn expanded_commands(&self, job: &Job) -> Vec<String> {
         let mut cmds = Vec::new();
+        if job.inherit_default_before_script {
+            cmds.extend(self.g.defaults.before_script.iter().cloned());
+        }
         if let Some(custom) = &job.before_script {
             cmds.extend(custom.iter().cloned());
-        } else {
-            cmds.extend(self.g.defaults.before_script.iter().cloned());
         }
         cmds.extend(job.commands.iter().cloned());
         if let Some(custom) = &job.after_script {
             cmds.extend(custom.iter().cloned());
-        } else {
+        }
+        if job.inherit_default_after_script {
             cmds.extend(self.g.defaults.after_script.iter().cloned());
         }
         cmds
