@@ -1,6 +1,8 @@
 mod graph;
 mod parser;
+pub mod rules;
 
 pub use graph::{
-    Job, JobDependency, PipelineDefaults, PipelineGraph, StageGroup, CacheConfig, CachePolicy,
+    CacheConfig, CachePolicy, Job, JobDependency, PipelineDefaults, PipelineGraph, StageGroup,
+    WorkflowConfig,
 };

@@ -30,6 +30,7 @@ pub struct UiJobInfo {
 #[derive(Clone)]
 pub enum UiCommand {
     RestartJob { name: String },
+    StartManual { name: String },
 }
 
 #[derive(Clone)]
@@ -49,6 +50,9 @@ pub enum UiEvent {
         status: UiJobStatus,
         duration: f32,
         error: Option<String>,
+    },
+    JobManual {
+        name: String,
     },
     HistoryUpdated {
         entry: HistoryEntry,

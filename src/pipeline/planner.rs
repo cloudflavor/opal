@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
+use super::rules::{RuleContext, RuleEvaluation, evaluate_rules};
+
 pub struct JobPlan {
     pub ordered: Vec<String>,
     pub nodes: HashMap<String, PlannedJob>,
@@ -18,6 +20,7 @@ pub struct PlannedJob {
     pub dependencies: Vec<String>,
     pub log_path: PathBuf,
     pub log_hash: String,
+    pub rule: RuleEvaluation,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +31,7 @@ pub struct JobSummary {
     pub status: JobStatus,
     pub log_path: Option<PathBuf>,
     pub log_hash: String,
+    pub allow_failure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +83,11 @@ impl StageState {
     }
 }
 
-pub fn build_job_plan<F>(graph: &PipelineGraph, mut log_info: F) -> Result<JobPlan>
+pub fn build_job_plan<F>(
+    graph: &PipelineGraph,
+    rule_ctx: Option<&RuleContext>,
+    mut log_info: F,
+) -> Result<JobPlan>
 where
     F: FnMut(&Job) -> (PathBuf, String),
 {
@@ -98,13 +106,25 @@ where
         };
 
         for node_idx in &stage.jobs {
-            let job = graph
+            let mut job = graph
                 .graph
                 .node_weight(*node_idx)
                 .cloned()
                 .ok_or_else(|| anyhow!("missing job for node"))?;
 
-            let mut deps = if !job.needs.is_empty() {
+            let evaluation = if let Some(ctx) = rule_ctx {
+                evaluate_rules(&job, ctx)?
+            } else {
+                RuleEvaluation::default()
+            };
+            if !evaluation.included {
+                continue;
+            }
+            if !evaluation.variables.is_empty() {
+                job.variables.extend(evaluation.variables.clone());
+            }
+
+            let mut deps = if job.explicit_needs {
                 job.needs.iter().map(|need| need.job.clone()).collect()
             } else {
                 default_deps.clone()
@@ -122,6 +142,7 @@ where
                     dependencies: deps,
                     log_path,
                     log_hash,
+                    rule: evaluation,
                 },
             );
         }

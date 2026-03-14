@@ -1,5 +1,5 @@
-use crate::naming::{escape_double_quotes, job_name_slug};
 use crate::gitlab::Job;
+use crate::naming::{escape_double_quotes, job_name_slug};
 use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::io::Write;
@@ -16,8 +16,7 @@ pub fn write_job_script(
     let slug = job_name_slug(&job.name);
     let script_path = scripts_dir.join(format!("{slug}.sh"));
     if let Some(parent) = script_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create dir {:?}", parent))?;
+        fs::create_dir_all(parent).with_context(|| format!("failed to create dir {:?}", parent))?;
     }
 
     let mut file = File::create(&script_path)

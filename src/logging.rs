@@ -154,6 +154,10 @@ pub fn write_log_line(
     line_no: usize,
     text: &str,
 ) -> Result<()> {
-    writeln!(writer, "{}", format_plain_log_line(timestamp, line_no, text))?;
+    writeln!(
+        writer,
+        "{}",
+        format_plain_log_line(timestamp, line_no, text)
+    )?;
     Ok(())
 }

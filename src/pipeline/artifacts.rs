@@ -1,5 +1,5 @@
-use crate::naming::job_name_slug;
 use crate::gitlab::Job;
+use crate::naming::job_name_slug;
 use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};

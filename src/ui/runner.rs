@@ -11,15 +11,15 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::Terminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
 
-use super::state::{page_log_with_colors, UiState};
-use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo, UiJobStatus};
+use super::state::{UiState, page_log_with_colors};
+use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo};
 
 pub(super) struct UiRunner {
     rx: UnboundedReceiver<UiEvent>,
@@ -125,7 +125,7 @@ impl UiRunner {
     fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                UiEvent::JobStarted { name } => self.state.set_status(&name, UiJobStatus::Running),
+                UiEvent::JobStarted { name } => self.state.job_started(&name),
                 UiEvent::JobRestarted { name } => self.state.restart_job(&name),
                 UiEvent::JobLog { name, line } => self.state.push_log(&name, line),
                 UiEvent::JobFinished {
@@ -134,6 +134,7 @@ impl UiRunner {
                     duration,
                     error,
                 } => self.state.finish_job(&name, status, duration, error),
+                UiEvent::JobManual { name } => self.state.set_manual_pending(&name, true),
                 UiEvent::HistoryUpdated { entry } => self.state.push_history_entry(entry),
                 UiEvent::PipelineFinished => self.pipeline_finished = true,
             }
@@ -274,6 +275,11 @@ impl UiRunner {
             KeyCode::Char('r') => {
                 if let Some(name) = self.state.restartable_job_name() {
                     let _ = self.commands.send(UiCommand::RestartJob { name });
+                }
+            }
+            KeyCode::Char('m') => {
+                if let Some(name) = self.state.manual_job_name() {
+                    let _ = self.commands.send(UiCommand::StartManual { name });
                 }
             }
             KeyCode::Char('o') => {

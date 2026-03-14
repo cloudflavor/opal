@@ -167,15 +167,23 @@ pub fn print_pipeline_summary<F>(
     let mut success = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
+    let mut allowed_failures = 0usize;
 
     for entry in &ordered {
         match &entry.status {
             JobStatus::Success => success += 1,
-            JobStatus::Failed(_) => failed += 1,
+            JobStatus::Failed(_) => {
+                if entry.allow_failure {
+                    allowed_failures += 1;
+                } else {
+                    failed += 1;
+                }
+            }
             JobStatus::Skipped(_) => skipped += 1,
         }
         let icon = match &entry.status {
             JobStatus::Success => display.bold_green("✓"),
+            JobStatus::Failed(_) if entry.allow_failure => display.bold_yellow("!"),
             JobStatus::Failed(_) => display.bold_red("✗"),
             JobStatus::Skipped(_) => display.bold_yellow("•"),
         };
@@ -185,10 +193,16 @@ pub fn print_pipeline_summary<F>(
         );
         match &entry.status {
             JobStatus::Success => line.push_str(&format!(" – {:.2}s", entry.duration)),
-            JobStatus::Failed(msg) => line.push_str(&format!(
-                " – {:.2}s failed: {}",
-                entry.duration, msg
-            )),
+            JobStatus::Failed(msg) => {
+                if entry.allow_failure {
+                    line.push_str(&format!(
+                        " – {:.2}s failed (allowed): {}",
+                        entry.duration, msg
+                    ));
+                } else {
+                    line.push_str(&format!(" – {:.2}s failed: {}", entry.duration, msg));
+                }
+            }
             JobStatus::Skipped(msg) => line.push_str(&format!(" – {}", msg)),
         }
         if let Some(log_path) = &entry.log_path {
@@ -197,12 +211,13 @@ pub fn print_pipeline_summary<F>(
         emit_line(line);
     }
 
-    emit_line(format!(
+    let mut summary_line = format!(
         "  results: {} ok / {} failed / {} skipped",
         success, failed, skipped
-    ));
-    emit_line(format!(
-        "  session data: {}",
-        session_dir.display()
-    ));
+    );
+    if allowed_failures > 0 {
+        summary_line.push_str(&format!(" / {} allowed", allowed_failures));
+    }
+    emit_line(summary_line);
+    emit_line(format!("  session data: {}", session_dir.display()));
 }

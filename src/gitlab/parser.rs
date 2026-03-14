@@ -6,10 +6,13 @@ use anyhow::{Context, Result, bail};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
+use tracing::warn;
 
 use super::graph::{
     CacheConfig, CachePolicy, Job, JobDependency, PipelineDefaults, PipelineGraph, StageGroup,
+    WorkflowConfig,
 };
+use super::rules::JobRule;
 
 impl PipelineGraph {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
@@ -29,6 +32,7 @@ impl PipelineGraph {
     fn from_mapping(root: Mapping) -> Result<Self> {
         let mut stage_names: Vec<String> = Vec::new();
         let mut defaults = PipelineDefaults::default();
+        let mut workflow: Option<WorkflowConfig> = None;
 
         let mut job_defs: HashMap<String, Value> = HashMap::new();
         let mut job_names: Vec<String> = Vec::new();
@@ -51,6 +55,9 @@ impl PipelineGraph {
                 Value::String(name) if name == "default" => {
                     parse_default_block(&mut defaults, value)?;
                 }
+                Value::String(name) if name == "workflow" => {
+                    workflow = parse_workflow(value)?;
+                }
                 Value::String(name) => {
                     if is_reserved_keyword(&name) {
                         continue;
@@ -70,7 +77,7 @@ impl PipelineGraph {
             }
         }
 
-        build_graph(defaults, stage_names, job_names, job_defs)
+        build_graph(defaults, workflow, stage_names, job_names, job_defs)
     }
 }
 
@@ -158,6 +165,20 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
     }
 
     Ok(())
+}
+
+fn parse_workflow(value: Value) -> Result<Option<WorkflowConfig>> {
+    let mapping = match value {
+        Value::Mapping(map) => map,
+        other => bail!("workflow section must be a mapping, got {other:?}"),
+    };
+    let key = Value::String("rules".to_string());
+    let Some(rules_value) = mapping.get(&key) else {
+        return Ok(None);
+    };
+    let rules: Vec<JobRule> =
+        serde_yaml::from_value(rules_value.clone()).context("failed to parse workflow.rules")?;
+    Ok(Some(WorkflowConfig { rules }))
 }
 
 fn is_reserved_keyword(name: &str) -> bool {
@@ -293,6 +314,7 @@ fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
 
 fn build_graph(
     defaults: PipelineDefaults,
+    workflow: Option<WorkflowConfig>,
     stage_names: Vec<String>,
     job_names: Vec<String>,
     job_defs: HashMap<String, Value>,
@@ -337,10 +359,13 @@ fn build_graph(
                 job_name
             );
         }
-        let needs: Vec<JobDependency> = job_spec
-            .needs
+        let (raw_needs, explicit_needs) = match job_spec.needs {
+            Some(entries) => (entries, true),
+            None => (Vec::new(), false),
+        };
+        let needs: Vec<JobDependency> = raw_needs
             .into_iter()
-            .map(Need::into_dependency)
+            .filter_map(|need| need.into_dependency(&job_name))
             .collect();
         let dependencies = job_spec.dependencies;
         let before_script = job_spec.before_script.map(Script::into_commands);
@@ -357,9 +382,11 @@ fn build_graph(
             stage: stage_name,
             commands,
             needs: needs.clone(),
+            explicit_needs,
             dependencies: dependencies.clone(),
             before_script,
             after_script,
+            rules: job_spec.rules.clone(),
             artifacts,
             cache: cache_entries,
             image: job_image,
@@ -397,6 +424,7 @@ fn build_graph(
         graph,
         stages,
         defaults,
+        workflow,
     })
 }
 
@@ -516,9 +544,11 @@ struct RawJob {
     #[serde(default)]
     script: Script,
     #[serde(default)]
-    needs: Vec<Need>,
+    needs: Option<Vec<Need>>,
     #[serde(default)]
     dependencies: Vec<String>,
+    #[serde(default)]
+    rules: Vec<JobRule>,
     #[serde(default)]
     artifacts: RawArtifacts,
 }
@@ -559,21 +589,40 @@ struct NeedConfig {
     artifacts: bool,
     #[serde(default)]
     optional: bool,
+    #[serde(default)]
+    project: Option<String>,
 }
 
 impl Need {
-    fn into_dependency(self) -> JobDependency {
+    fn into_dependency(self, owner: &str) -> Option<JobDependency> {
         match self {
-            Need::Name(job) => JobDependency {
+            Need::Name(job) => Some(JobDependency {
                 job,
                 needs_artifacts: true,
                 optional: false,
-            },
-            Need::Config(cfg) => JobDependency {
-                job: cfg.job,
-                needs_artifacts: cfg.artifacts,
-                optional: cfg.optional,
-            },
+            }),
+            Need::Config(cfg) => {
+                let NeedConfig {
+                    job,
+                    artifacts,
+                    optional,
+                    project,
+                } = cfg;
+                if project.is_some() {
+                    warn!(
+                        job = owner,
+                        dependency = %job,
+                        "skipping cross-project need; external projects are unsupported"
+                    );
+                    None
+                } else {
+                    Some(JobDependency {
+                        job,
+                        needs_artifacts: artifacts,
+                        optional,
+                    })
+                }
+            }
         }
     }
 }

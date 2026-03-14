@@ -1,6 +1,6 @@
 use super::types::{
-    HistoryAction, PaneFocus, UiJobInfo, UiJobStatus, CURRENT_HISTORY_KEY, LOG_SCROLL_HALF,
-    LOG_SCROLL_PAGE, LOG_SCROLL_STEP,
+    CURRENT_HISTORY_KEY, HistoryAction, LOG_SCROLL_HALF, LOG_SCROLL_PAGE, LOG_SCROLL_STEP,
+    PaneFocus, UiJobInfo, UiJobStatus,
 };
 use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 use anyhow::{Context, Result, anyhow};
@@ -31,7 +31,11 @@ pub(super) struct UiState {
 }
 
 impl UiState {
-    pub(super) fn new(jobs: Vec<UiJobInfo>, history: Vec<HistoryEntry>, current_run_id: String) -> Self {
+    pub(super) fn new(
+        jobs: Vec<UiJobInfo>,
+        history: Vec<HistoryEntry>,
+        current_run_id: String,
+    ) -> Self {
         let mut order = HashMap::new();
         let job_states: Vec<UiJobState> = jobs
             .into_iter()
@@ -609,7 +613,12 @@ impl UiState {
         Ok(())
     }
 
-    pub(super) fn set_history_preview_message(&mut self, title: String, path: &Path, message: String) {
+    pub(super) fn set_history_preview_message(
+        &mut self,
+        title: String,
+        path: &Path,
+        message: String,
+    ) {
         self.history_preview = Some(HistoryPreview {
             title,
             path: path.to_path_buf(),
@@ -805,12 +814,13 @@ impl UiState {
     }
 
     pub(super) fn key_hint_line(&self) -> Line<'static> {
+        let mut text = "Tab switches pane • History: ↑/↓ move, ←/→ collapse, Enter views run/log • Jobs: j/k/h/l arrows switch tabs • Shift/Ctrl+↑/↓ PgUp/PgDn Ctrl+u/d/f/b g/G wheel scroll logs • o opens log • r restarts job • q exits".to_string();
+        if self.manual_job_name().is_some() {
+            text.push_str(" • m starts manual job");
+        }
         Line::from(vec![
             Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "Tab switches pane • History: ↑/↓ move, ←/→ collapse, Enter views run/log • Jobs: j/k/h/l arrows switch tabs • Shift/Ctrl+↑/↓ PgUp/PgDn Ctrl+u/d/f/b g/G wheel scroll logs • o opens log • r restarts job • q exits",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(text, Style::default().fg(Color::DarkGray)),
         ])
     }
 
@@ -823,7 +833,7 @@ impl UiState {
                     .wrap(Wrap { trim: true });
             }
         };
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
                 Span::raw(job.stage.clone()),
@@ -837,13 +847,24 @@ impl UiState {
                 Span::raw(format!("{} ({:.2}s)", job.status.label(), job.duration)),
             ]),
         ];
+        if job.manual_pending {
+            lines.push(Line::from(vec![
+                Span::styled("Manual: ", Style::default().fg(Color::Yellow)),
+                Span::raw("waiting (press 'm' to start)"),
+            ]));
+        }
 
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("Details"))
             .wrap(Wrap { trim: true })
     }
 
-    pub(super) fn log_view(&self, pipeline_finished: bool, width: u16, height: u16) -> Paragraph<'_> {
+    pub(super) fn log_view(
+        &self,
+        pipeline_finished: bool,
+        width: u16,
+        height: u16,
+    ) -> Paragraph<'_> {
         if self.history_preview.is_some() {
             return self.history_preview_view(width, height);
         }
@@ -908,15 +929,34 @@ impl UiState {
             .and_then(|job| job.status.is_restartable().then(|| job.name.clone()))
     }
 
+    pub(super) fn manual_job_name(&self) -> Option<String> {
+        if self.history_view.is_some() {
+            return None;
+        }
+        self.jobs
+            .get(self.selected)
+            .and_then(|job| job.manual_pending.then(|| job.name.clone()))
+    }
+
     pub(super) fn restart_job(&mut self, name: &str) {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].reset_for_restart();
         }
     }
 
-    pub(super) fn set_status(&mut self, name: &str, status: UiJobStatus) {
+    pub(super) fn set_manual_pending(&mut self, name: &str, pending: bool) {
         if let Some(idx) = self.order.get(name).copied() {
-            self.jobs[idx].status = status;
+            self.jobs[idx].manual_pending = pending;
+            if pending {
+                self.jobs[idx].status = UiJobStatus::Pending;
+            }
+        }
+    }
+
+    pub(super) fn job_started(&mut self, name: &str) {
+        if let Some(idx) = self.order.get(name).copied() {
+            self.jobs[idx].manual_pending = false;
+            self.jobs[idx].status = UiJobStatus::Running;
         }
     }
 
@@ -937,6 +977,7 @@ impl UiState {
             self.jobs[idx].status = status;
             self.jobs[idx].duration = duration;
             self.jobs[idx].error = error;
+            self.jobs[idx].manual_pending = false;
         }
     }
 
@@ -1083,6 +1124,7 @@ pub(super) struct UiJobState {
     logs: Vec<String>,
     scroll_offset: usize,
     follow_logs: bool,
+    manual_pending: bool,
 }
 
 impl UiJobState {
@@ -1098,6 +1140,7 @@ impl UiJobState {
             logs: Vec::new(),
             scroll_offset: 0,
             follow_logs: true,
+            manual_pending: false,
         }
     }
 
@@ -1117,6 +1160,7 @@ impl UiJobState {
             logs: Vec::new(),
             scroll_offset: 0,
             follow_logs: true,
+            manual_pending: false,
         }
     }
 

@@ -2,7 +2,7 @@ use crate::executor::core::ExecutorCore;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::anyhow;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task;
 
 use super::planner::{JobEvent, JobRunInfo, PlannedJob};

@@ -98,4 +98,10 @@ impl UiBridge {
             error,
         });
     }
+
+    pub fn job_manual_pending(&self, name: &str) {
+        let _ = self.sender.send(UiEvent::JobManual {
+            name: name.to_string(),
+        });
+    }
 }

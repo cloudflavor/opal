@@ -2,11 +2,14 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::rules::JobRule;
+
 #[derive(Debug, Clone)]
 pub struct PipelineGraph {
     pub graph: DiGraph<Job, ()>,
     pub stages: Vec<StageGroup>,
     pub defaults: PipelineDefaults,
+    pub workflow: Option<WorkflowConfig>,
 }
 #[derive(Debug, Clone)]
 pub struct StageGroup {
@@ -19,9 +22,11 @@ pub struct Job {
     pub stage: String,
     pub commands: Vec<String>,
     pub needs: Vec<JobDependency>,
+    pub explicit_needs: bool,
     pub dependencies: Vec<String>,
     pub before_script: Option<Vec<String>>,
     pub after_script: Option<Vec<String>>,
+    pub rules: Vec<JobRule>,
     pub artifacts: Vec<PathBuf>,
     pub cache: Vec<CacheConfig>,
     pub image: Option<String>,
@@ -47,6 +52,11 @@ pub struct CacheConfig {
     pub key: String,
     pub paths: Vec<PathBuf>,
     pub policy: CachePolicy,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowConfig {
+    pub rules: Vec<JobRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

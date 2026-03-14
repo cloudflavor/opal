@@ -34,10 +34,10 @@ pub fn escape_double_quotes(input: &str) -> String {
     escaped
 }
 
+use crate::ExecutorConfig;
 use sha2::{Digest, Sha256};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::ExecutorConfig;
 
 pub fn generate_run_id(config: &ExecutorConfig) -> String {
     let pipeline_slug = config
