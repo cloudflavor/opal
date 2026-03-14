@@ -113,6 +113,7 @@ pub enum EngineKind {
     Docker,
     Podman,
     Nerdctl,
+    Orbstack,
 }
 
 #[derive(Debug, Clone)]

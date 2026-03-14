@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use opal::executor::ContainerExecutor;
+use opal::executor::{
+    ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
+};
 use opal::{Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, RunArgs};
 use std::env;
 use std::io::{self, IsTerminal};
@@ -36,7 +38,8 @@ async fn main() -> Result<()> {
                 no_tui,
             } = args;
 
-            let container_executor = ContainerExecutor::new(ExecutorConfig {
+            let engine_kind = resolve_engine(engine);
+            let config = ExecutorConfig {
                 image: base_image,
                 workdir,
                 pipeline,
@@ -44,14 +47,38 @@ async fn main() -> Result<()> {
                 max_parallel_jobs,
                 log_dir,
                 enable_tui: !no_tui,
-                engine: resolve_engine(engine),
-            })
-            .with_context(|| "failed create new executor")?;
+                engine: engine_kind,
+            };
 
-            container_executor
-                .run()
-                .await
-                .with_context(|| "failed to run pipeline")
+            let run_result = match engine_kind {
+                EngineKind::ContainerCli => {
+                    let executor = ContainerExecutor::new(config.clone())
+                        .with_context(|| "failed create container executor")?;
+                    executor.run().await
+                }
+                EngineKind::Docker => {
+                    let executor = DockerExecutor::new(config.clone())
+                        .with_context(|| "failed create docker executor")?;
+                    executor.run().await
+                }
+                EngineKind::Podman => {
+                    let executor = PodmanExecutor::new(config.clone())
+                        .with_context(|| "failed create podman executor")?;
+                    executor.run().await
+                }
+                EngineKind::Nerdctl => {
+                    let executor = NerdctlExecutor::new(config.clone())
+                        .with_context(|| "failed create nerdctl executor")?;
+                    executor.run().await
+                }
+                EngineKind::Orbstack => {
+                    let executor = OrbstackExecutor::new(config.clone())
+                        .with_context(|| "failed create orbstack executor")?;
+                    executor.run().await
+                }
+            };
+
+            run_result.with_context(|| "failed to run pipeline")
         }
     }
 }
@@ -61,14 +88,14 @@ fn resolve_engine(choice: EngineChoice) -> EngineKind {
     match choice {
         EngineChoice::Auto => {
             if detect_orbstack() {
-                EngineKind::Docker
+                EngineKind::Orbstack
             } else {
                 EngineKind::ContainerCli
             }
         }
         EngineChoice::Container => EngineKind::ContainerCli,
         EngineChoice::Docker => EngineKind::Docker,
-        EngineChoice::Orbstack => EngineKind::Docker,
+        EngineChoice::Orbstack => EngineKind::Orbstack,
         EngineChoice::Podman => EngineKind::Podman,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
     }

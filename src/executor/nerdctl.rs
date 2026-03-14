@@ -3,13 +3,13 @@ use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
-pub struct PodmanExecutor {
+pub struct NerdctlExecutor {
     core: ExecutorCore,
 }
 
-impl PodmanExecutor {
+impl NerdctlExecutor {
     pub fn new(mut config: ExecutorConfig) -> Result<Self> {
-        config.engine = EngineKind::Podman;
+        config.engine = EngineKind::Nerdctl;
         let core = ExecutorCore::new(config)?;
         Ok(Self { core })
     }
