@@ -45,6 +45,19 @@ pub struct JobDependency {
     pub job: String,
     pub needs_artifacts: bool,
     pub optional: bool,
+    pub source: DependencySource,
+}
+
+#[derive(Debug, Clone)]
+pub enum DependencySource {
+    Local,
+    External(ExternalDependency),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalDependency {
+    pub project: String,
+    pub reference: String,
 }
 
 #[derive(Debug, Clone)]

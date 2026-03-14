@@ -9,8 +9,8 @@ use serde_yaml::{Mapping, Value};
 use tracing::warn;
 
 use super::graph::{
-    CacheConfig, CachePolicy, Job, JobDependency, PipelineDefaults, PipelineGraph, StageGroup,
-    WorkflowConfig,
+    CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
+    PipelineDefaults, PipelineGraph, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -591,6 +591,8 @@ struct NeedConfig {
     optional: bool,
     #[serde(default)]
     project: Option<String>,
+    #[serde(rename = "ref")]
+    reference: Option<String>,
 }
 
 impl Need {
@@ -600,6 +602,7 @@ impl Need {
                 job,
                 needs_artifacts: true,
                 optional: false,
+                source: DependencySource::Local,
             }),
             Need::Config(cfg) => {
                 let NeedConfig {
@@ -607,19 +610,34 @@ impl Need {
                     artifacts,
                     optional,
                     project,
+                    reference,
                 } = cfg;
-                if project.is_some() {
-                    warn!(
-                        job = owner,
-                        dependency = %job,
-                        "skipping cross-project need; external projects are unsupported"
-                    );
-                    None
+                if let Some(project) = project {
+                    let reference = reference.unwrap_or_default();
+                    if reference.is_empty() {
+                        warn!(
+                            job = owner,
+                            dependency = %job,
+                            "needs:project for '{}' is missing required 'ref'",
+                            project
+                        );
+                        return None;
+                    }
+                    Some(JobDependency {
+                        job,
+                        needs_artifacts: artifacts,
+                        optional,
+                        source: DependencySource::External(ExternalDependency {
+                            project,
+                            reference,
+                        }),
+                    })
                 } else {
                     Some(JobDependency {
                         job,
                         needs_artifacts: artifacts,
                         optional,
+                        source: DependencySource::Local,
                     })
                 }
             }

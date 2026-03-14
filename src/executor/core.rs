@@ -10,8 +10,9 @@ use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
-    self, ArtifactManager, CacheManager, HaltKind, JobEvent, JobPlan, JobRunInfo, JobStatus,
-    JobSummary, PlannedJob, RuleContext, RuleWhen, StageState, VolumeMount, mounts,
+    self, ArtifactManager, CacheManager, ExternalArtifactsManager, HaltKind, JobEvent, JobPlan,
+    JobRunInfo, JobStatus, JobSummary, PlannedJob, RuleContext, RuleWhen, StageState, VolumeMount,
+    mounts,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -56,6 +57,7 @@ pub struct ExecutorCore {
     secrets: SecretsStore,
     artifacts: ArtifactManager,
     cache: CacheManager,
+    external_artifacts: Option<ExternalArtifactsManager>,
 }
 
 impl ExecutorCore {
@@ -133,6 +135,13 @@ impl ExecutorCore {
         fs::create_dir_all(&cache_root)
             .with_context(|| format!("failed to create cache root {:?}", cache_root))?;
         let cache = CacheManager::new(cache_root);
+        let external_artifacts = config.gitlab.as_ref().map(|cfg| {
+            ExternalArtifactsManager::new(
+                session_dir.clone(),
+                cfg.base_url.clone(),
+                cfg.token.clone(),
+            )
+        });
 
         Ok(Self {
             config,
@@ -152,6 +161,7 @@ impl ExecutorCore {
             secrets,
             artifacts,
             cache,
+            external_artifacts,
         })
     }
 
@@ -878,6 +888,7 @@ impl ExecutorCore {
                 &self.cache,
                 &cache_env,
                 Path::new(CONTAINER_WORKDIR),
+                self.external_artifacts.as_ref(),
             )?;
             if let Some((host, container_path)) = self.secrets.volume_mount() {
                 mounts.push(VolumeMount {

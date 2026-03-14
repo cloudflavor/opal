@@ -1,4 +1,4 @@
-use crate::gitlab::{Job, PipelineGraph};
+use crate::gitlab::{DependencySource, Job, PipelineGraph};
 use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -125,7 +125,11 @@ where
             }
 
             let mut deps = if job.explicit_needs {
-                job.needs.iter().map(|need| need.job.clone()).collect()
+                job.needs
+                    .iter()
+                    .filter(|need| matches!(need.source, DependencySource::Local))
+                    .map(|need| need.job.clone())
+                    .collect()
             } else {
                 default_deps.clone()
             };
@@ -155,11 +159,9 @@ where
             if known_jobs.contains(dep) {
                 return true;
             }
-            let is_optional = planned
-                .job
-                .needs
-                .iter()
-                .any(|need| need.job == *dep && need.optional);
+            let is_optional = planned.job.needs.iter().any(|need| {
+                matches!(need.source, DependencySource::Local) && need.job == *dep && need.optional
+            });
             if !is_optional {
                 missing_required.push(dep.clone());
             }

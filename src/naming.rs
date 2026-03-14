@@ -22,6 +22,22 @@ pub fn stage_name_slug(name: &str) -> String {
     job_name_slug(name)
 }
 
+pub fn project_slug(path: &str) -> String {
+    let mut slug = String::new();
+    for ch in path.chars() {
+        match ch {
+            'a'..='z' | '0'..='9' => slug.push(ch),
+            'A'..='Z' => slug.push(ch.to_ascii_lowercase()),
+            '/' | '_' | '-' => slug.push('-'),
+            _ => continue,
+        }
+    }
+    if slug.is_empty() {
+        slug.push_str("project");
+    }
+    slug
+}
+
 pub fn escape_double_quotes(input: &str) -> String {
     let mut escaped = String::with_capacity(input.len());
     for ch in input.chars() {

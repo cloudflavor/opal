@@ -79,6 +79,14 @@ pub struct RunArgs {
     #[structopt(long = "no-tui")]
     /// Disable the Ratatui interface
     pub no_tui: bool,
+
+    #[structopt(long = "gitlab-base-url", env = "OPAL_GITLAB_BASE_URL")]
+    /// Base URL for GitLab API (default: https://gitlab.com)
+    pub gitlab_base_url: Option<String>,
+
+    #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
+    /// Personal access token used when downloading cross-project artifacts
+    pub gitlab_token: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -137,4 +145,11 @@ pub struct ExecutorConfig {
     pub log_dir: Option<PathBuf>,
     pub enable_tui: bool,
     pub engine: EngineKind,
+    pub gitlab: Option<GitLabRemoteConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GitLabRemoteConfig {
+    pub base_url: String,
+    pub token: String,
 }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
-use opal::{Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, RunArgs};
+use opal::{Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, RunArgs};
 use std::env;
 use std::io::{self, IsTerminal};
 use structopt::StructOpt;
@@ -36,9 +36,17 @@ async fn main() -> Result<()> {
                 log_dir,
                 engine,
                 no_tui,
+                gitlab_base_url,
+                gitlab_token,
             } = args;
 
             let engine_kind = resolve_engine(engine);
+            let gitlab = gitlab_token.map(|token| GitLabRemoteConfig {
+                base_url: gitlab_base_url
+                    .filter(|url| !url.is_empty())
+                    .unwrap_or_else(|| "https://gitlab.com".to_string()),
+                token,
+            });
             let config = ExecutorConfig {
                 image: base_image,
                 workdir,
@@ -48,6 +56,7 @@ async fn main() -> Result<()> {
                 log_dir,
                 enable_tui: !no_tui,
                 engine: engine_kind,
+                gitlab,
             };
 
             let run_result = match engine_kind {

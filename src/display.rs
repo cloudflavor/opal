@@ -1,4 +1,4 @@
-use crate::gitlab::Job;
+use crate::gitlab::{DependencySource, Job};
 use crate::pipeline::{JobPlan, JobStatus, JobSummary, VolumeMount};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
@@ -71,11 +71,22 @@ impl DisplayFormatter {
         let entries: Vec<String> = job
             .needs
             .iter()
-            .map(|need| {
-                if need.needs_artifacts {
-                    format!("{} (artifacts)", need.job)
-                } else {
-                    need.job.clone()
+            .map(|need| match &need.source {
+                DependencySource::Local => {
+                    if need.needs_artifacts {
+                        format!("{} (artifacts)", need.job)
+                    } else {
+                        need.job.clone()
+                    }
+                }
+                DependencySource::External(ext) => {
+                    let mut label = format!("{}::{}", ext.project, need.job);
+                    if need.needs_artifacts {
+                        label.push_str(" (external artifacts)");
+                    } else {
+                        label.push_str(" (external)");
+                    }
+                    label
                 }
             })
             .collect();

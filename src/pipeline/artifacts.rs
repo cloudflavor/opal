@@ -1,8 +1,11 @@
 use crate::gitlab::Job;
-use crate::naming::job_name_slug;
-use anyhow::{Context, Result};
+use crate::naming::{job_name_slug, project_slug};
+use anyhow::{Context, Result, anyhow};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -125,4 +128,167 @@ fn artifact_kind(path: &Path) -> ArtifactPathKind {
         Some(name) if name.contains('.') => ArtifactPathKind::File,
         _ => ArtifactPathKind::Directory,
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalArtifactsManager {
+    inner: Arc<ExternalArtifactsInner>,
+}
+
+#[derive(Debug)]
+struct ExternalArtifactsInner {
+    root: PathBuf,
+    base_url: String,
+    token: String,
+    cache: Mutex<HashMap<String, PathBuf>>,
+}
+
+impl ExternalArtifactsManager {
+    pub fn new(root: PathBuf, base_url: String, token: String) -> Self {
+        let inner = ExternalArtifactsInner {
+            root,
+            base_url,
+            token,
+            cache: Mutex::new(HashMap::new()),
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    pub fn ensure_artifacts(&self, project: &str, job: &str, reference: &str) -> Result<PathBuf> {
+        let key = format!("{project}::{reference}::{job}");
+        if let Ok(cache) = self.inner.cache.lock()
+            && let Some(path) = cache.get(&key)
+            && path.exists()
+        {
+            return Ok(path.clone());
+        }
+
+        let target = self.external_root(project, job, reference);
+        if target.exists() {
+            fs::remove_dir_all(&target)
+                .with_context(|| format!("failed to clear {}", target.display()))?;
+        }
+        fs::create_dir_all(&target)
+            .with_context(|| format!("failed to create {}", target.display()))?;
+        let archive_path = target.join("artifacts.zip");
+        self.download_artifacts(project, job, reference, &archive_path)?;
+        self.extract_artifacts(&archive_path, &target)?;
+        let _ = fs::remove_file(&archive_path);
+
+        if let Ok(mut cache) = self.inner.cache.lock() {
+            cache.insert(key, target.clone());
+        }
+
+        Ok(target)
+    }
+
+    fn external_root(&self, project: &str, job: &str, reference: &str) -> PathBuf {
+        let project_slug = project_slug(project);
+        let reference_slug = sanitize_reference(reference);
+        self.inner
+            .root
+            .join("external")
+            .join(project_slug)
+            .join(reference_slug)
+            .join(job_name_slug(job))
+    }
+
+    fn download_artifacts(
+        &self,
+        project: &str,
+        job: &str,
+        reference: &str,
+        dest: &Path,
+    ) -> Result<()> {
+        let base = self.inner.base_url.trim_end_matches('/');
+        let project_id = percent_encode(project);
+        let ref_id = percent_encode(reference);
+        let job_name = percent_encode(job);
+        let url = format!(
+            "{base}/api/v4/projects/{project_id}/jobs/artifacts/{ref_id}/download?job={job_name}"
+        );
+        let status = Command::new("curl")
+            .arg("--fail")
+            .arg("-sS")
+            .arg("-L")
+            .arg("-H")
+            .arg(format!("PRIVATE-TOKEN: {}", self.inner.token))
+            .arg("-o")
+            .arg(dest)
+            .arg(&url)
+            .status()
+            .with_context(|| "failed to invoke curl to download artifacts")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "curl failed to download artifacts from {} (status {})",
+                url,
+                status.code().unwrap_or(-1)
+            ));
+        }
+        Ok(())
+    }
+
+    fn extract_artifacts(&self, archive: &Path, dest: &Path) -> Result<()> {
+        let unzip_status = Command::new("unzip")
+            .arg("-q")
+            .arg("-o")
+            .arg(archive)
+            .arg("-d")
+            .arg(dest)
+            .status();
+        match unzip_status {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(_) | Err(_) => {
+                // fallback to python's zipfile
+                let script =
+                    "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])";
+                let status = Command::new("python3")
+                    .arg("-c")
+                    .arg(script)
+                    .arg(archive)
+                    .arg(dest)
+                    .status()
+                    .with_context(|| "failed to invoke python3 to extract artifacts")?;
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        Err(anyhow!(
+            "unable to extract artifacts archive {}",
+            archive.display()
+        ))
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    encoded
+}
+
+fn sanitize_reference(reference: &str) -> String {
+    let mut slug = String::new();
+    for ch in reference.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '-' | '_' | '.') {
+            slug.push(ch);
+        } else {
+            slug.push('-');
+        }
+    }
+    if slug.is_empty() {
+        slug.push_str("ref");
+    }
+    slug
 }

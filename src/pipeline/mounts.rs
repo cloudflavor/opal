@@ -1,8 +1,11 @@
-use crate::gitlab::{Job, PipelineGraph};
-use crate::pipeline::{ArtifactManager, CacheManager, CacheMountSpec};
-use anyhow::Result;
+use crate::gitlab::{DependencySource, Job, PipelineGraph};
+use crate::pipeline::{
+    ArtifactManager, CacheManager, CacheMountSpec, artifacts::ExternalArtifactsManager,
+};
+use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -13,6 +16,26 @@ pub struct VolumeMount {
     pub read_only: bool,
 }
 
+fn mount_external_artifacts(root: &Path, collector: &mut MountCollector<'_>) -> Result<()> {
+    if !root.exists() {
+        return Err(anyhow!(
+            "external artifact directory {} does not exist",
+            root.display()
+        ));
+    }
+    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = match path.strip_prefix(root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.to_path_buf(),
+            _ => continue,
+        };
+        let container = collector.container_path(&rel);
+        collector.push(path, container, true);
+    }
+    Ok(())
+}
+
 pub fn collect_volume_mounts(
     job: &Job,
     graph: &PipelineGraph,
@@ -20,6 +43,7 @@ pub fn collect_volume_mounts(
     cache: &CacheManager,
     cache_env: &HashMap<String, String>,
     container_root: &Path,
+    external: Option<&ExternalArtifactsManager>,
 ) -> Result<Vec<VolumeMount>> {
     let mut collector = MountCollector::new(container_root);
 
@@ -32,20 +56,63 @@ pub fn collect_volume_mounts(
         if !dependency.needs_artifacts {
             continue;
         }
-        let dep_job = graph
-            .graph
-            .node_weights()
-            .find(|d| d.name == dependency.job);
-        if dep_job.is_none() {
-            warn!(
-                job = dependency.job,
-                "dependency not present in pipeline graph"
-            );
-            continue;
-        }
-        for (host, relative) in artifacts.dependency_mount_specs(&dependency.job, dep_job) {
-            let container = collector.container_path(&relative);
-            collector.push(host, container, true);
+        match &dependency.source {
+            DependencySource::Local => {
+                let dep_job = graph
+                    .graph
+                    .node_weights()
+                    .find(|d| d.name == dependency.job);
+                if dep_job.is_none() {
+                    warn!(
+                        job = dependency.job,
+                        "dependency not present in pipeline graph"
+                    );
+                    continue;
+                }
+                for (host, relative) in artifacts.dependency_mount_specs(&dependency.job, dep_job) {
+                    let container = collector.container_path(&relative);
+                    collector.push(host, container, true);
+                }
+            }
+            DependencySource::External(ext) => {
+                let Some(manager) = external else {
+                    if dependency.optional {
+                        warn!(
+                            job = job.name,
+                            dependency = %dependency.job,
+                            "skipping cross-project dependency (GitLab credentials not configured)"
+                        );
+                        continue;
+                    } else {
+                        return Err(anyhow!(
+                            "job '{}' requires artifacts from project '{}' but no GitLab token is configured",
+                            job.name,
+                            ext.project
+                        ));
+                    }
+                };
+                match manager.ensure_artifacts(&ext.project, &dependency.job, &ext.reference) {
+                    Ok(root) => {
+                        mount_external_artifacts(&root, &mut collector)?;
+                    }
+                    Err(err) => {
+                        if dependency.optional {
+                            warn!(
+                                job = job.name,
+                                dependency = %dependency.job,
+                                project = %ext.project,
+                                "failed to download dependency artifacts: {err}"
+                            );
+                            continue;
+                        } else {
+                            return Err(err.context(format!(
+                                "failed to download artifacts for '{}' from project '{}'",
+                                dependency.job, ext.project
+                            )));
+                        }
+                    }
+                }
+            }
         }
     }
 
