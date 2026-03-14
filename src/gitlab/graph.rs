@@ -19,6 +19,7 @@ pub struct Job {
     pub stage: String,
     pub commands: Vec<String>,
     pub needs: Vec<JobDependency>,
+    pub dependencies: Vec<String>,
     pub artifacts: Vec<PathBuf>,
     pub cache: Vec<CacheConfig>,
     pub image: Option<String>,

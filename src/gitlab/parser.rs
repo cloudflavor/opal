@@ -342,6 +342,7 @@ fn build_graph(
             .into_iter()
             .map(Need::into_dependency)
             .collect();
+        let dependencies = job_spec.dependencies;
         let artifacts = job_spec.artifacts.paths;
         let cache_entries = if job_cache.is_empty() {
             defaults.cache.clone()
@@ -354,6 +355,7 @@ fn build_graph(
             stage: stage_name,
             commands,
             needs: needs.clone(),
+            dependencies: dependencies.clone(),
             artifacts,
             cache: cache_entries,
             image: job_image,
@@ -507,6 +509,8 @@ struct RawJob {
     script: Script,
     #[serde(default)]
     needs: Vec<Need>,
+    #[serde(default)]
+    dependencies: Vec<String>,
     #[serde(default)]
     artifacts: RawArtifacts,
 }

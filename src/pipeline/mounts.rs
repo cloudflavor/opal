@@ -49,6 +49,23 @@ pub fn collect_volume_mounts(
         }
     }
 
+    for dep_name in &job.dependencies {
+        let dep_job = graph.graph.node_weights().find(|d| d.name == *dep_name);
+        let Some(dep_job) = dep_job else {
+            warn!(job = dep_name, "dependency not present in pipeline graph");
+            continue;
+        };
+        for relative in &dep_job.artifacts {
+            let host = artifacts.job_artifact_host_path(&dep_job.name, relative);
+            if !host.exists() {
+                warn!(job = dep_name, path = %relative.display(), "artifact missing");
+                continue;
+            }
+            let container = collector.container_path(relative);
+            collector.push(host, container, true);
+        }
+    }
+
     let cache_specs = cache.mount_specs(&job.cache, cache_env)?;
     for CacheMountSpec {
         host,
