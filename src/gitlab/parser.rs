@@ -35,6 +35,7 @@ impl PipelineGraph {
         let mut stage_names: Vec<String> = Vec::new();
         let mut defaults = PipelineDefaults::default();
         let mut workflow: Option<WorkflowConfig> = None;
+        let mut filters = super::graph::PipelineFilters::default();
 
         let mut job_defs: HashMap<String, Value> = HashMap::new();
         let mut job_names: Vec<String> = Vec::new();
@@ -60,6 +61,12 @@ impl PipelineGraph {
                 Value::String(name) if name == "workflow" => {
                     workflow = parse_workflow(value)?;
                 }
+                Value::String(name) if name == "only" => {
+                    filters.only = parse_filter_list(value, "only")?;
+                }
+                Value::String(name) if name == "except" => {
+                    filters.except = parse_filter_list(value, "except")?;
+                }
                 Value::String(name) => {
                     if is_reserved_keyword(&name) {
                         continue;
@@ -79,7 +86,14 @@ impl PipelineGraph {
             }
         }
 
-        build_graph(defaults, workflow, stage_names, job_names, job_defs)
+        build_graph(
+            defaults,
+            workflow,
+            filters,
+            stage_names,
+            job_names,
+            job_defs,
+        )
     }
 }
 
@@ -211,6 +225,8 @@ fn is_reserved_keyword(name: &str) -> bool {
             | "services"
             | "before_script"
             | "after_script"
+            | "only"
+            | "except"
     )
 }
 
@@ -359,6 +375,21 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
     Ok(services)
 }
 
+fn parse_filter_list(value: Value, field: &str) -> Result<Vec<String>> {
+    match value {
+        Value::String(text) => Ok(vec![text]),
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(|entry| match entry {
+                Value::String(text) => Ok(text),
+                other => bail!("{field} entries must be strings, got {other:?}"),
+            })
+            .collect(),
+        Value::Null => Ok(Vec::new()),
+        other => bail!("{field} must be a string or list, got {other:?}"),
+    }
+}
+
 fn parse_timeout_value(value: Value, field: &str) -> Result<Option<Duration>> {
     match value {
         Value::Null => Ok(None),
@@ -389,6 +420,7 @@ fn extract_bool(value: Value, field: &str) -> Result<bool> {
 fn build_graph(
     defaults: PipelineDefaults,
     workflow: Option<WorkflowConfig>,
+    filters: super::graph::PipelineFilters,
     stage_names: Vec<String>,
     job_names: Vec<String>,
     job_defs: HashMap<String, Value>,
@@ -518,6 +550,7 @@ fn build_graph(
         stages,
         defaults,
         workflow,
+        filters,
     })
 }
 

@@ -11,6 +11,7 @@ pub struct PipelineGraph {
     pub stages: Vec<StageGroup>,
     pub defaults: PipelineDefaults,
     pub workflow: Option<WorkflowConfig>,
+    pub filters: PipelineFilters,
 }
 #[derive(Debug, Clone)]
 pub struct StageGroup {
@@ -95,6 +96,12 @@ pub struct CacheConfig {
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowConfig {
     pub rules: Vec<JobRule>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PipelineFilters {
+    pub only: Vec<String>,
+    pub except: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

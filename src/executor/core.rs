@@ -232,6 +232,14 @@ impl ExecutorCore {
 
     fn plan_jobs(&self) -> Result<JobPlan> {
         let ctx = RuleContext::new(&self.config.workdir);
+        if !pipeline::rules::filters_allow(&self.g.filters, &ctx) {
+            return Ok(JobPlan {
+                ordered: Vec::new(),
+                nodes: HashMap::new(),
+                dependents: HashMap::new(),
+                order_index: HashMap::new(),
+            });
+        }
         if let Some(workflow) = &self.g.workflow
             && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
         {

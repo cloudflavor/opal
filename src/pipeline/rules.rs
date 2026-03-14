@@ -1,5 +1,5 @@
-use crate::gitlab::Job;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
+use crate::gitlab::{Job, PipelineFilters};
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
 use regex::RegexBuilder;
@@ -744,4 +744,57 @@ fn match_regex(value: &str, pattern: &str) -> Result<bool> {
     }
     let regex = builder.build()?;
     Ok(regex.is_match(value))
+}
+
+pub fn filters_allow(filters: &PipelineFilters, ctx: &RuleContext) -> bool {
+    if filters.only.is_empty() {
+        if filters
+            .except
+            .iter()
+            .any(|filter| filter_matches(filter, ctx))
+        {
+            return false;
+        }
+        return true;
+    }
+    let passes_only = filters
+        .only
+        .iter()
+        .any(|filter| filter_matches(filter, ctx));
+    if !passes_only {
+        return false;
+    }
+    !filters
+        .except
+        .iter()
+        .any(|filter| filter_matches(filter, ctx))
+}
+
+fn filter_matches(filter: &str, ctx: &RuleContext) -> bool {
+    match filter {
+        "branches" => ctx
+            .env_value("CI_COMMIT_BRANCH")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        "tags" => ctx
+            .env_value("CI_COMMIT_TAG")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        pattern => {
+            if let Some(ref_name) = ctx
+                .env_value("CI_COMMIT_REF_NAME")
+                .filter(|s| !s.is_empty())
+                .or_else(|| ctx.env_value("CI_COMMIT_BRANCH").filter(|s| !s.is_empty()))
+                .or_else(|| ctx.env_value("CI_COMMIT_TAG").filter(|s| !s.is_empty()))
+            {
+                if pattern.starts_with('/') {
+                    match_regex(ref_name, pattern).unwrap_or_default()
+                } else {
+                    ref_name == pattern
+                }
+            } else {
+                false
+            }
+        }
+    }
 }
