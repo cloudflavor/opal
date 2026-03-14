@@ -1,11 +1,11 @@
 use super::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor, paths,
-    script,
+    script, services::ServiceRuntime,
 };
 use crate::display::{self, DisplayFormatter, indent_block, print_pipeline_summary};
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars};
-use crate::gitlab::{Job, PipelineGraph};
+use crate::gitlab::{Job, PipelineGraph, ServiceConfig};
 use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
@@ -881,6 +881,17 @@ impl ExecutorCore {
             self.artifacts.prepare_targets(&job)?;
             let env_vars = self.job_env(&job);
             let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
+            let service_configs = self.job_services(&job);
+            let service_runtime = ServiceRuntime::start(
+                self.config.engine,
+                &self.run_id,
+                &job.name,
+                &service_configs,
+                &env_vars,
+            )?;
+            let service_network = service_runtime
+                .as_ref()
+                .map(|runtime| runtime.network_name().to_string());
             let mut mounts = mounts::collect_volume_mounts(
                 &job,
                 &self.g,
@@ -906,7 +917,7 @@ impl ExecutorCore {
                 &script_commands,
                 self.verbose_scripts,
             )?;
-            self.execute(ExecuteContext {
+            let exec_result = self.execute(ExecuteContext {
                 script_path: &script_path,
                 log_path: &log_path,
                 mounts: &mounts,
@@ -915,7 +926,12 @@ impl ExecutorCore {
                 job: &job,
                 ui: ui_ref,
                 env_vars: &env_vars,
-            })?;
+                network: service_network.as_deref(),
+            });
+            if let Some(mut runtime) = service_runtime {
+                runtime.cleanup();
+            }
+            exec_result?;
             if !self.config.enable_tui {
                 let display = self.display();
                 display::print_line(format!("    script stored at {}", script_path.display()));
@@ -1004,6 +1020,7 @@ impl ExecutorCore {
             job,
             ui,
             env_vars,
+            network,
         } = ctx;
         if !self.config.enable_tui {
             let display = self.display();
@@ -1026,6 +1043,7 @@ impl ExecutorCore {
             image,
             mounts,
             env_vars,
+            network,
         )?;
         self.capture_child_output(&mut proc, job, log_path, ui)?;
 
@@ -1047,6 +1065,7 @@ impl ExecutorCore {
         image: &str,
         mounts: &[VolumeMount],
         env_vars: &[(String, String)],
+        network: Option<&str>,
     ) -> Result<Child> {
         let ctx = EngineCommandContext {
             workdir: &self.config.workdir,
@@ -1056,6 +1075,7 @@ impl ExecutorCore {
             image,
             mounts,
             env_vars,
+            network,
         };
 
         let mut command = match self.config.engine {
@@ -1171,6 +1191,14 @@ impl ExecutorCore {
             &self.config.workdir,
             &self.run_id,
         )
+    }
+
+    fn job_services(&self, job: &Job) -> Vec<ServiceConfig> {
+        if job.services.is_empty() {
+            self.g.defaults.services.clone()
+        } else {
+            job.services.clone()
+        }
     }
 
     fn display(&self) -> DisplayFormatter {

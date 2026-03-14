@@ -23,6 +23,7 @@ impl ContainerExecutor {
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
         ContainerCommandBuilder::new(ctx)
             .with_volumes()
+            .with_network()
             .with_env()
             .build()
     }
@@ -57,6 +58,13 @@ impl<'a> ContainerCommandBuilder<'a> {
     fn with_volumes(mut self) -> Self {
         for mount in self.ctx.mounts {
             self.command.arg("--volume").arg(mount.to_arg());
+        }
+        self
+    }
+
+    fn with_network(mut self) -> Self {
+        if let Some(network) = self.ctx.network {
+            self.command.arg("--network").arg(network);
         }
         self
     }

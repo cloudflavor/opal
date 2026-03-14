@@ -4,5 +4,5 @@ pub mod rules;
 
 pub use graph::{
     CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
-    PipelineDefaults, PipelineGraph, StageGroup, WorkflowConfig,
+    PipelineDefaults, PipelineGraph, ServiceConfig, StageGroup, WorkflowConfig,
 };

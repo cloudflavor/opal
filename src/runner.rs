@@ -12,4 +12,5 @@ pub struct ExecuteContext<'a> {
     pub job: &'a Job,
     pub ui: Option<&'a UiBridge>,
     pub env_vars: &'a [(String, String)],
+    pub network: Option<&'a str>,
 }

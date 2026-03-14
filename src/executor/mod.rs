@@ -1,6 +1,7 @@
 pub mod core;
 pub mod paths;
 pub mod script;
+pub mod services;
 
 pub mod container;
 pub use container::ContainerExecutor;

@@ -31,6 +31,7 @@ pub struct Job {
     pub cache: Vec<CacheConfig>,
     pub image: Option<String>,
     pub variables: HashMap<String, String>,
+    pub services: Vec<ServiceConfig>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {
@@ -39,6 +40,7 @@ pub struct PipelineDefaults {
     pub after_script: Vec<String>,
     pub variables: HashMap<String, String>,
     pub cache: Vec<CacheConfig>,
+    pub services: Vec<ServiceConfig>,
 }
 #[derive(Debug, Clone)]
 pub struct JobDependency {
@@ -58,6 +60,15 @@ pub enum DependencySource {
 pub struct ExternalDependency {
     pub project: String,
     pub reference: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceConfig {
+    pub image: String,
+    pub alias: Option<String>,
+    pub entrypoint: Vec<String>,
+    pub command: Vec<String>,
+    pub variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
@@ -10,7 +10,7 @@ use tracing::warn;
 
 use super::graph::{
     CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
-    PipelineDefaults, PipelineGraph, StageGroup, WorkflowConfig,
+    PipelineDefaults, PipelineGraph, ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -157,6 +157,9 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
             Value::String(name) if name == "cache" => {
                 defaults.cache = parse_cache_value(value)?;
             }
+            Value::String(name) if name == "services" => {
+                defaults.services = parse_services_value(value, "services")?;
+            }
             Value::String(_) => {
                 // ignore other default keywords for now
             }
@@ -224,6 +227,7 @@ type ParsedJobSpec = (
     Option<String>,
     HashMap<String, String>,
     Vec<CacheConfig>,
+    Vec<ServiceConfig>,
 );
 
 fn parse_job(value: Value) -> Result<ParsedJobSpec> {
@@ -232,6 +236,7 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
             let image_value = map.remove(Value::String("image".to_string()));
             let variables_value = map.remove(Value::String("variables".to_string()));
             let cache_value = map.remove(Value::String("cache".to_string()));
+            let services_value = map.remove(Value::String("services".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
@@ -242,7 +247,11 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
                 .map(parse_cache_value)
                 .transpose()?
                 .unwrap_or_default();
-            Ok((job_spec, image, variables, cache))
+            let services = services_value
+                .map(|value| parse_services_value(value, "services"))
+                .transpose()?
+                .unwrap_or_default();
+            Ok((job_spec, image, variables, cache, services))
         }
         other => bail!("job definition must be a mapping, got {other:?}"),
     }
@@ -312,6 +321,31 @@ fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
     Ok(vars)
 }
 
+fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>> {
+    let entries = match value {
+        Value::Sequence(seq) => seq,
+        Value::Null => return Ok(Vec::new()),
+        other => vec![other],
+    };
+    let mut services = Vec::new();
+    for entry in entries {
+        let raw: RawService = serde_yaml::from_value(entry)
+            .with_context(|| format!("failed to parse {field} entry"))?;
+        let config = match raw {
+            RawService::Simple(image) => ServiceConfig {
+                image,
+                alias: None,
+                entrypoint: Vec::new(),
+                command: Vec::new(),
+                variables: HashMap::new(),
+            },
+            RawService::Detailed(details) => details.into_config()?,
+        };
+        services.push(config);
+    }
+    Ok(services)
+}
+
 fn build_graph(
     defaults: PipelineDefaults,
     workflow: Option<WorkflowConfig>,
@@ -342,7 +376,7 @@ fn build_graph(
     for job_name in job_names {
         let merged_map =
             resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
-        let (job_spec, job_image, job_variables, job_cache) =
+        let (job_spec, job_image, job_variables, job_cache, job_services) =
             parse_job(Value::Mapping(merged_map))?;
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
@@ -391,6 +425,7 @@ fn build_graph(
             cache: cache_entries,
             image: job_image,
             variables: job_variables,
+            services: job_services,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -564,6 +599,105 @@ enum Script {
 struct RawArtifacts {
     #[serde(default)]
     paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawService {
+    Simple(String),
+    Detailed(RawServiceConfig),
+}
+
+#[derive(Debug, Deserialize)]
+struct RawServiceConfig {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    alias: Option<String>,
+    #[serde(default)]
+    entrypoint: ServiceCommand,
+    #[serde(default)]
+    command: ServiceCommand,
+    #[serde(default)]
+    variables: HashMap<String, String>,
+}
+
+impl RawServiceConfig {
+    fn into_config(self) -> Result<ServiceConfig> {
+        let image = self
+            .image
+            .or(self.name)
+            .ok_or_else(|| anyhow!("service entry must specify an image (name)"))?;
+        Ok(ServiceConfig {
+            image,
+            alias: self.alias,
+            entrypoint: self.entrypoint.into_vec(),
+            command: self.command.into_vec(),
+            variables: self.variables,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct ServiceCommand(Vec<String>);
+
+impl ServiceCommand {
+    fn into_vec(self) -> Vec<String> {
+        self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ServiceCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct VisitorImpl;
+
+        impl<'de> serde::de::Visitor<'de> for VisitorImpl {
+            type Value = ServiceCommand;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("string or sequence of strings")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ServiceCommand(vec![v.to_string()]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut items = Vec::new();
+                while let Some(entry) = seq.next_element::<String>()? {
+                    items.push(entry);
+                }
+                Ok(ServiceCommand(items))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ServiceCommand(Vec::new()))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ServiceCommand(Vec::new()))
+            }
+        }
+
+        deserializer.deserialize_any(VisitorImpl)
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

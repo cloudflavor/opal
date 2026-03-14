@@ -9,4 +9,5 @@ pub struct EngineCommandContext<'a> {
     pub image: &'a str,
     pub mounts: &'a [VolumeMount],
     pub env_vars: &'a [(String, String)],
+    pub network: Option<&'a str>,
 }
