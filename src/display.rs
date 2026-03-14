@@ -1,5 +1,5 @@
-use crate::mounts::VolumeMount;
-use crate::pipeline::{Job, JobPlan, JobStatus, JobSummary};
+use crate::gitlab::Job;
+use crate::pipeline::{JobPlan, JobStatus, JobSummary, VolumeMount};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
 

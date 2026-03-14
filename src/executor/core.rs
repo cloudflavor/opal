@@ -2,18 +2,16 @@ use super::{
     paths, script, ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor,
     PodmanExecutor,
 };
-use crate::artifacts::ArtifactManager;
-use crate::cache::CacheManager;
 use crate::display::{self, indent_block, print_pipeline_summary, DisplayFormatter};
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars};
 use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, sanitize_fragments, LogFormatter};
-use crate::mounts::{self, VolumeMount};
 use crate::naming::{job_name_slug, stage_name_slug, generate_run_id};
+use crate::gitlab::{Job, PipelineGraph};
 use crate::pipeline::{
-    self, HaltKind, Job, JobEvent, JobPlan, JobRunInfo, JobStatus, JobSummary, PipelineGraph,
-    PlannedJob, StageState,
+    self, mounts, ArtifactManager, CacheManager, HaltKind, JobEvent, JobPlan, JobRunInfo,
+    JobStatus, JobSummary, PlannedJob, StageState, VolumeMount,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;

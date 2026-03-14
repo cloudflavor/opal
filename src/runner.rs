@@ -1,5 +1,5 @@
-use crate::mounts::VolumeMount;
-use crate::pipeline::Job;
+use crate::pipeline::VolumeMount;
+use crate::gitlab::Job;
 use crate::ui::UiBridge;
 use std::path::Path;
 

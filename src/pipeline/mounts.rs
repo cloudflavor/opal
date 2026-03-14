@@ -1,6 +1,5 @@
-use crate::artifacts::ArtifactManager;
-use crate::cache::{CacheManager, CacheMountSpec};
-use crate::pipeline::{Job, PipelineGraph};
+use crate::gitlab::{Job, PipelineGraph};
+use crate::pipeline::{ArtifactManager, CacheManager, CacheMountSpec};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::ffi::OsString;

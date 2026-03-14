@@ -3,17 +3,15 @@ use std::str::FromStr;
 
 use structopt::StructOpt;
 
-pub mod artifacts;
-pub mod cache;
 pub mod display;
 pub mod engine;
 pub mod env;
 pub mod executor;
 pub mod history;
 pub mod logging;
-pub mod mounts;
 pub mod naming;
 pub mod pipeline;
+pub mod gitlab;
 pub mod runner;
 pub mod secrets;
 pub mod terminal;

@@ -1,4 +1,4 @@
-use crate::pipeline::CacheConfig;
+use crate::gitlab::CacheConfig;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

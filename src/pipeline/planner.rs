@@ -1,4 +1,4 @@
-use super::gitlab::{Job, PipelineGraph};
+use crate::gitlab::{Job, PipelineGraph};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::path::PathBuf;

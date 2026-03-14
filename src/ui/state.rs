@@ -1,499 +1,22 @@
-use std::collections::HashMap;
-use std::env;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Stdout, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
-
+use super::types::{
+    HistoryAction, PaneFocus, UiJobInfo, UiJobStatus, CURRENT_HISTORY_KEY, LOG_SCROLL_HALF,
+    LOG_SCROLL_PAGE, LOG_SCROLL_STEP,
+};
+use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 use anyhow::{Context, Result, anyhow};
-use crossterm::ExecutableCommand;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent,
-    KeyModifiers, MouseEvent, MouseEventKind,
-};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use owo_colors::OwoColorize;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use std::collections::HashMap;
+use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
-
-const LOG_SCROLL_STEP: usize = 3;
-const LOG_SCROLL_HALF: usize = 20;
-const LOG_SCROLL_PAGE: usize = 60;
-const CURRENT_HISTORY_KEY: &str = "__current_run__";
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PaneFocus {
-    History,
-    Jobs,
-}
-
-#[derive(Clone)]
-enum HistoryAction {
-    SelectJob(usize),
-    ViewLog { title: String, path: PathBuf },
-    ViewRun(String),
-}
-
-#[derive(Clone)]
-pub struct UiJobInfo {
-    pub name: String,
-    pub stage: String,
-    pub log_path: PathBuf,
-    pub log_hash: String,
-}
-
-pub struct UiHandle {
-    sender: UnboundedSender<UiEvent>,
-    command_rx: Mutex<Option<UnboundedReceiver<UiCommand>>>,
-    thread: thread::JoinHandle<()>,
-}
-
-#[derive(Clone)]
-pub struct UiBridge {
-    sender: UnboundedSender<UiEvent>,
-}
-
-#[derive(Clone)]
-pub enum UiCommand {
-    RestartJob { name: String },
-}
-
-impl UiHandle {
-    pub fn start(
-        jobs: Vec<UiJobInfo>,
-        history: Vec<HistoryEntry>,
-        current_run_id: String,
-    ) -> Result<Self> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let thread_tx = tx.clone();
-        let handle = thread::spawn(move || {
-            if let Err(err) = UiRunner::new(jobs, history, current_run_id, rx, cmd_tx).run() {
-                eprintln!("ui error: {err:?}");
-            }
-        });
-        Ok(Self {
-            sender: thread_tx,
-            command_rx: Mutex::new(Some(cmd_rx)),
-            thread: handle,
-        })
-    }
-
-    pub fn bridge(&self) -> UiBridge {
-        UiBridge {
-            sender: self.sender.clone(),
-        }
-    }
-
-    pub fn command_receiver(&self) -> Option<UnboundedReceiver<UiCommand>> {
-        self.command_rx
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take())
-    }
-
-    pub fn pipeline_finished(&self) {
-        let _ = self.sender.send(UiEvent::PipelineFinished);
-    }
-
-    pub fn wait_for_exit(self) {
-        let _ = self.thread.join();
-    }
-}
-
-impl UiBridge {
-    pub fn job_started(&self, name: &str) {
-        let _ = self.sender.send(UiEvent::JobStarted {
-            name: name.to_string(),
-        });
-    }
-
-    pub fn job_restarted(&self, name: &str) {
-        let _ = self.sender.send(UiEvent::JobRestarted {
-            name: name.to_string(),
-        });
-    }
-
-    pub fn history_updated(&self, entry: HistoryEntry) {
-        let _ = self.sender.send(UiEvent::HistoryUpdated { entry });
-    }
-
-    pub fn job_log_line(&self, name: &str, line: &str) {
-        let _ = self.sender.send(UiEvent::JobLog {
-            name: name.to_string(),
-            line: line.to_string(),
-        });
-    }
-
-    pub fn job_finished(
-        &self,
-        name: &str,
-        status: UiJobStatus,
-        duration: f32,
-        error: Option<String>,
-    ) {
-        let _ = self.sender.send(UiEvent::JobFinished {
-            name: name.to_string(),
-            status,
-            duration,
-            error,
-        });
-    }
-}
-
-enum UiEvent {
-    JobStarted {
-        name: String,
-    },
-    JobRestarted {
-        name: String,
-    },
-    JobLog {
-        name: String,
-        line: String,
-    },
-    JobFinished {
-        name: String,
-        status: UiJobStatus,
-        duration: f32,
-        error: Option<String>,
-    },
-    HistoryUpdated {
-        entry: HistoryEntry,
-    },
-    PipelineFinished,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum UiJobStatus {
-    Pending,
-    Running,
-    Success,
-    Failed,
-    Skipped,
-}
-
-struct UiRunner {
-    rx: UnboundedReceiver<UiEvent>,
-    commands: UnboundedSender<UiCommand>,
-    terminal: Terminal<CrosstermBackend<Stdout>>,
-    state: UiState,
-    pipeline_finished: bool,
-    exit_requested: bool,
-}
-
-impl UiRunner {
-    fn new(
-        jobs: Vec<UiJobInfo>,
-        history: Vec<HistoryEntry>,
-        current_run_id: String,
-        rx: UnboundedReceiver<UiEvent>,
-        commands: UnboundedSender<UiCommand>,
-    ) -> Self {
-        let stdout = io::stdout();
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend).expect("failed to create terminal");
-        Self {
-            rx,
-            commands,
-            terminal,
-            state: UiState::new(jobs, history, current_run_id),
-            pipeline_finished: false,
-            exit_requested: false,
-        }
-    }
-
-    fn run(mut self) -> Result<()> {
-        enable_raw_mode().context("failed to enable raw mode")?;
-        io::stdout()
-            .execute(EnterAlternateScreen)
-            .context("failed to enter alternate screen")?;
-        io::stdout()
-            .execute(EnableMouseCapture)
-            .context("failed to enable mouse capture")?;
-
-        let result = (|| -> Result<()> {
-            while !self.should_quit() {
-                self.draw()?;
-                self.drain_events();
-                self.handle_input()?;
-            }
-            Ok(())
-        })();
-
-        disable_raw_mode().context("failed to disable raw mode")?;
-        io::stdout()
-            .execute(DisableMouseCapture)
-            .context("failed to disable mouse capture")?;
-        io::stdout()
-            .execute(LeaveAlternateScreen)
-            .context("failed to leave alternate screen")?;
-        result
-    }
-
-    fn should_quit(&self) -> bool {
-        self.exit_requested
-    }
-
-    fn draw(&mut self) -> Result<()> {
-        self.terminal.draw(|frame| {
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(32), Constraint::Min(0)])
-                .split(frame.size());
-
-            let history = self.state.history_widget(columns[0].height);
-            frame.render_widget(history, columns[0]);
-
-            let tab_width = columns[1].width.saturating_sub(2).max(1);
-            let (tabs, tab_height) = self.state.tabs(tab_width);
-
-            let layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(tab_height),
-                    Constraint::Length(4),
-                    Constraint::Min(0),
-                    Constraint::Length(2),
-                ])
-                .split(columns[1]);
-
-            frame.render_widget(tabs, layout[0]);
-
-            let info = self.state.info_panel();
-            frame.render_widget(info, layout[1]);
-
-            let log_widget =
-                self.state
-                    .log_view(self.pipeline_finished, layout[2].width, layout[2].height);
-            frame.render_widget(log_widget, layout[2]);
-
-            let hint = self.state.key_hint_widget();
-            frame.render_widget(hint, layout[3]);
-        })?;
-        Ok(())
-    }
-
-    fn drain_events(&mut self) {
-        while let Ok(event) = self.rx.try_recv() {
-            match event {
-                UiEvent::JobStarted { name } => self.state.set_status(&name, UiJobStatus::Running),
-                UiEvent::JobRestarted { name } => self.state.restart_job(&name),
-                UiEvent::JobLog { name, line } => self.state.push_log(&name, line),
-                UiEvent::JobFinished {
-                    name,
-                    status,
-                    duration,
-                    error,
-                } => self.state.finish_job(&name, status, duration, error),
-                UiEvent::HistoryUpdated { entry } => self.state.push_history_entry(entry),
-                UiEvent::PipelineFinished => self.pipeline_finished = true,
-            }
-        }
-    }
-
-    fn handle_input(&mut self) -> Result<()> {
-        if !event::poll(Duration::from_millis(50))? {
-            return Ok(());
-        }
-
-        match event::read()? {
-            CEvent::Key(key) => self.handle_key(key),
-            CEvent::Mouse(mouse) => {
-                self.handle_mouse(mouse);
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        let modifiers = key.modifiers;
-        match key.code {
-            KeyCode::Char('q') => {
-                self.exit_requested = true;
-                return Ok(());
-            }
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.exit_requested = true;
-                return Ok(());
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.state.toggle_focus();
-                return Ok(());
-            }
-            _ => {}
-        }
-
-        if self.state.focus_is_history() {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                    self.state.history_move_down()
-                }
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                    self.state.history_move_up()
-                }
-                KeyCode::Left | KeyCode::Char('h') => self.state.history_move_left(),
-                KeyCode::Right | KeyCode::Char('l') => self.state.history_move_right(),
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    if let Some(action) = self.state.history_activate() {
-                        match action {
-                            HistoryAction::SelectJob(idx) => self.state.select_job(idx),
-                            HistoryAction::ViewLog { title, path } => {
-                                if let Err(err) =
-                                    self.state.load_history_preview(title.clone(), &path)
-                                {
-                                    self.state.set_history_preview_message(
-                                        title,
-                                        &path,
-                                        format!("failed to load log: {err}"),
-                                    );
-                                }
-                            }
-                            HistoryAction::ViewRun(run_id) => {
-                                if let Err(err) = self.state.view_history_run(&run_id) {
-                                    let title = format!("{run_id} • history");
-                                    let empty = PathBuf::new();
-                                    self.state.set_history_preview_message(
-                                        title,
-                                        &empty,
-                                        err.to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                KeyCode::Home => self.state.history_move_home(),
-                KeyCode::End => self.state.history_move_end(),
-                _ => {}
-            }
-            return Ok(());
-        }
-
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Char('J') => self.state.next_job(),
-            KeyCode::Char('k') | KeyCode::Char('K') => self.state.previous_job(),
-            KeyCode::Char('h') => self.state.previous_job(),
-            KeyCode::Char('l') => self.state.next_job(),
-            KeyCode::Left => self.state.previous_job(),
-            KeyCode::Right => self.state.next_job(),
-            KeyCode::Down => {
-                if modifiers.contains(KeyModifiers::SHIFT)
-                    || modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    self.state.scroll_logs_line_down();
-                } else {
-                    self.state.next_job();
-                }
-            }
-            KeyCode::Up => {
-                if modifiers.contains(KeyModifiers::SHIFT)
-                    || modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    self.state.scroll_logs_line_up();
-                } else {
-                    self.state.previous_job();
-                }
-            }
-            KeyCode::PageDown => self.state.scroll_logs_page_down(),
-            KeyCode::PageUp => self.state.scroll_logs_page_up(),
-            KeyCode::End => self.state.scroll_bottom(),
-            KeyCode::Home => self.state.scroll_top(),
-            KeyCode::Char('g') if !modifiers.contains(KeyModifiers::SHIFT) => {
-                self.state.scroll_top();
-            }
-            KeyCode::Char('G') => self.state.scroll_bottom(),
-            KeyCode::Char(' ') => self.state.scroll_logs_page_down(),
-            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_half_down()
-            }
-            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_half_up()
-            }
-            KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_page_down()
-            }
-            KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_page_up()
-            }
-            KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_line_down()
-            }
-            KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.scroll_logs_line_up()
-            }
-            KeyCode::Char('r') => {
-                if let Some(name) = self.state.restartable_job_name() {
-                    let _ = self.commands.send(UiCommand::RestartJob { name });
-                }
-            }
-            KeyCode::Char('o') => {
-                self.view_current_log()?;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    fn handle_mouse(&mut self, event: MouseEvent) {
-        match event.kind {
-            MouseEventKind::ScrollUp => {
-                if self.state.focus_is_history() {
-                    self.state.history_move_up();
-                } else {
-                    self.state.scroll_logs_mouse_up();
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if self.state.focus_is_history() {
-                    self.state.history_move_down();
-                } else {
-                    self.state.scroll_logs_mouse_down();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn view_current_log(&mut self) -> Result<()> {
-        if let Some(path) = self.state.current_log_path() {
-            self.suspend_terminal(|| page_log_with_colors(&path))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn suspend_terminal<F>(&mut self, action: F) -> Result<()>
-    where
-        F: FnOnce() -> Result<()>,
-    {
-        disable_raw_mode().ok();
-        let _ = io::stdout().execute(DisableMouseCapture);
-        let _ = io::stdout().execute(LeaveAlternateScreen);
-        let result = action();
-        let _ = io::stdout().execute(EnterAlternateScreen);
-        let _ = io::stdout().execute(EnableMouseCapture);
-        enable_raw_mode().ok();
-        self.terminal.clear()?;
-        result
-    }
-}
-
-struct UiState {
+pub(super) struct UiState {
     jobs: Vec<UiJobState>,
     order: HashMap<String, usize>,
     selected: usize,
@@ -508,7 +31,7 @@ struct UiState {
 }
 
 impl UiState {
-    fn new(jobs: Vec<UiJobInfo>, history: Vec<HistoryEntry>, current_run_id: String) -> Self {
+    pub(super) fn new(jobs: Vec<UiJobInfo>, history: Vec<HistoryEntry>, current_run_id: String) -> Self {
         let mut order = HashMap::new();
         let job_states: Vec<UiJobState> = jobs
             .into_iter()
@@ -540,7 +63,7 @@ impl UiState {
         }
     }
 
-    fn active_jobs(&self) -> &[UiJobState] {
+    pub(super) fn active_jobs(&self) -> &[UiJobState] {
         if let Some(view) = &self.history_view {
             &view.jobs
         } else {
@@ -548,7 +71,7 @@ impl UiState {
         }
     }
 
-    fn active_selected_index(&self) -> usize {
+    pub(super) fn active_selected_index(&self) -> usize {
         if let Some(view) = &self.history_view {
             view.selected
         } else {
@@ -556,7 +79,7 @@ impl UiState {
         }
     }
 
-    fn set_active_selected_index(&mut self, idx: usize) {
+    pub(super) fn set_active_selected_index(&mut self, idx: usize) {
         if let Some(view) = &mut self.history_view {
             if idx < view.jobs.len() {
                 view.selected = idx;
@@ -567,11 +90,11 @@ impl UiState {
         self.on_active_selection_changed();
     }
 
-    fn active_job(&self) -> Option<&UiJobState> {
+    pub(super) fn active_job(&self) -> Option<&UiJobState> {
         self.active_jobs().get(self.active_selected_index())
     }
 
-    fn active_job_mut(&mut self) -> Option<&mut UiJobState> {
+    pub(super) fn active_job_mut(&mut self) -> Option<&mut UiJobState> {
         let idx = self.active_selected_index();
         if let Some(view) = &mut self.history_view {
             view.jobs.get_mut(idx)
@@ -580,7 +103,7 @@ impl UiState {
         }
     }
 
-    fn tabs(&self, width: u16) -> (Paragraph<'static>, u16) {
+    pub(super) fn tabs(&self, width: u16) -> (Paragraph<'static>, u16) {
         let (lines, rows) = self.tab_lines(width as usize);
         let paragraph = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("Jobs"))
@@ -591,7 +114,7 @@ impl UiState {
         (paragraph, content_height)
     }
 
-    fn history_widget(&mut self, height: u16) -> Paragraph<'static> {
+    pub(super) fn history_widget(&mut self, height: u16) -> Paragraph<'static> {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
@@ -632,7 +155,7 @@ impl UiState {
             .wrap(Wrap { trim: false })
     }
 
-    fn history_status_style(status: HistoryStatus) -> Style {
+    pub(super) fn history_status_style(status: HistoryStatus) -> Style {
         match status {
             HistoryStatus::Success => Style::default().fg(Color::Green),
             HistoryStatus::Failed => Style::default().fg(Color::Red),
@@ -641,7 +164,7 @@ impl UiState {
         }
     }
 
-    fn history_preview_view(&self, width: u16, height: u16) -> Paragraph<'static> {
+    pub(super) fn history_preview_view(&self, width: u16, height: u16) -> Paragraph<'static> {
         let Some(preview) = &self.history_preview else {
             return Paragraph::new(vec![Line::from("no log loaded")])
                 .block(Block::default().borders(Borders::ALL).title("Logs"))
@@ -668,31 +191,31 @@ impl UiState {
             .wrap(Wrap { trim: false })
     }
 
-    fn scroll_history_preview_up(&mut self, lines: usize) {
+    pub(super) fn scroll_history_preview_up(&mut self, lines: usize) {
         if let Some(preview) = self.history_preview.as_mut() {
             preview.scroll_lines_up(lines);
         }
     }
 
-    fn scroll_history_preview_down(&mut self, lines: usize) {
+    pub(super) fn scroll_history_preview_down(&mut self, lines: usize) {
         if let Some(preview) = self.history_preview.as_mut() {
             preview.scroll_lines_down(lines);
         }
     }
 
-    fn scroll_history_preview_to_top(&mut self) {
+    pub(super) fn scroll_history_preview_to_top(&mut self) {
         if let Some(preview) = self.history_preview.as_mut() {
             preview.scroll_to_top();
         }
     }
 
-    fn scroll_history_preview_to_bottom(&mut self) {
+    pub(super) fn scroll_history_preview_to_bottom(&mut self) {
         if let Some(preview) = self.history_preview.as_mut() {
             preview.scroll_to_bottom();
         }
     }
 
-    fn history_nodes(&self) -> Vec<HistoryRenderNode> {
+    pub(super) fn history_nodes(&self) -> Vec<HistoryRenderNode> {
         let mut nodes = Vec::new();
 
         let current_collapsed = self.is_run_collapsed(CURRENT_HISTORY_KEY);
@@ -802,7 +325,7 @@ impl UiState {
         nodes
     }
 
-    fn history_job_line(
+    pub(super) fn history_job_line(
         connector: &str,
         name: &str,
         stage: &str,
@@ -823,7 +346,7 @@ impl UiState {
         ])
     }
 
-    fn history_status_from_ui(status: UiJobStatus) -> HistoryStatus {
+    pub(super) fn history_status_from_ui(status: UiJobStatus) -> HistoryStatus {
         match status {
             UiJobStatus::Success => HistoryStatus::Success,
             UiJobStatus::Failed => HistoryStatus::Failed,
@@ -832,7 +355,7 @@ impl UiState {
         }
     }
 
-    fn current_run_status(&self) -> HistoryStatus {
+    pub(super) fn current_run_status(&self) -> HistoryStatus {
         if self
             .jobs
             .iter()
@@ -856,7 +379,7 @@ impl UiState {
         }
     }
 
-    fn apply_history_highlight(mut line: Line<'static>) -> Line<'static> {
+    pub(super) fn apply_history_highlight(mut line: Line<'static>) -> Line<'static> {
         let highlight = Style::default()
             .bg(Color::DarkGray)
             .fg(Color::White)
@@ -867,7 +390,7 @@ impl UiState {
         line
     }
 
-    fn is_run_collapsed(&self, key: &str) -> bool {
+    pub(super) fn is_run_collapsed(&self, key: &str) -> bool {
         if key == CURRENT_HISTORY_KEY {
             self.history_collapsed.get(key).copied().unwrap_or(false)
         } else {
@@ -875,11 +398,11 @@ impl UiState {
         }
     }
 
-    fn set_run_collapsed(&mut self, key: &str, collapsed: bool) {
+    pub(super) fn set_run_collapsed(&mut self, key: &str, collapsed: bool) {
         self.history_collapsed.insert(key.to_string(), collapsed);
     }
 
-    fn toggle_focus(&mut self) {
+    pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             PaneFocus::Jobs => PaneFocus::History,
             PaneFocus::History => PaneFocus::Jobs,
@@ -891,18 +414,18 @@ impl UiState {
         }
     }
 
-    fn focus_is_history(&self) -> bool {
+    pub(super) fn focus_is_history(&self) -> bool {
         matches!(self.focus, PaneFocus::History)
     }
 
-    fn push_history_entry(&mut self, entry: HistoryEntry) {
+    pub(super) fn push_history_entry(&mut self, entry: HistoryEntry) {
         self.history_collapsed
             .entry(entry.run_id.clone())
             .or_insert(true);
         self.history.push(entry);
     }
 
-    fn view_history_run(&mut self, run_id: &str) -> Result<()> {
+    pub(super) fn view_history_run(&mut self, run_id: &str) -> Result<()> {
         if run_id == self.current_run_id {
             self.close_history_view();
             return Ok(());
@@ -928,7 +451,7 @@ impl UiState {
         Ok(())
     }
 
-    fn close_history_view(&mut self) {
+    pub(super) fn close_history_view(&mut self) {
         self.history_view = None;
         self.history_preview = None;
         self.focus = PaneFocus::Jobs;
@@ -938,7 +461,7 @@ impl UiState {
         self.on_active_selection_changed();
     }
 
-    fn history_move_up(&mut self) {
+    pub(super) fn history_move_up(&mut self) {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
@@ -952,7 +475,7 @@ impl UiState {
         }
     }
 
-    fn history_move_down(&mut self) {
+    pub(super) fn history_move_down(&mut self) {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
@@ -964,13 +487,13 @@ impl UiState {
         }
     }
 
-    fn history_move_home(&mut self) {
+    pub(super) fn history_move_home(&mut self) {
         self.clear_history_preview();
         self.history_selection = 0;
         self.history_scroll = 0;
     }
 
-    fn history_move_end(&mut self) {
+    pub(super) fn history_move_end(&mut self) {
         let len = self.history_nodes().len();
         if len == 0 {
             self.history_selection = 0;
@@ -981,7 +504,7 @@ impl UiState {
         self.clear_history_preview();
     }
 
-    fn history_move_left(&mut self) {
+    pub(super) fn history_move_left(&mut self) {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
@@ -1008,7 +531,7 @@ impl UiState {
         }
     }
 
-    fn history_move_right(&mut self) {
+    pub(super) fn history_move_right(&mut self) {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
@@ -1039,7 +562,7 @@ impl UiState {
         }
     }
 
-    fn history_activate(&mut self) -> Option<HistoryAction> {
+    pub(super) fn history_activate(&mut self) -> Option<HistoryAction> {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             return None;
@@ -1063,11 +586,11 @@ impl UiState {
         }
     }
 
-    fn clear_history_preview(&mut self) {
+    pub(super) fn clear_history_preview(&mut self) {
         self.history_preview = None;
     }
 
-    fn load_history_preview(&mut self, title: String, path: &Path) -> Result<()> {
+    pub(super) fn load_history_preview(&mut self, title: String, path: &Path) -> Result<()> {
         self.history_preview = None;
         let file =
             File::open(path).with_context(|| format!("failed to open log {}", path.display()))?;
@@ -1086,7 +609,7 @@ impl UiState {
         Ok(())
     }
 
-    fn set_history_preview_message(&mut self, title: String, path: &Path, message: String) {
+    pub(super) fn set_history_preview_message(&mut self, title: String, path: &Path, message: String) {
         self.history_preview = Some(HistoryPreview {
             title,
             path: path.to_path_buf(),
@@ -1096,7 +619,7 @@ impl UiState {
         self.focus = PaneFocus::Jobs;
     }
 
-    fn on_active_selection_changed(&mut self) {
+    pub(super) fn on_active_selection_changed(&mut self) {
         if let Some(view) = &self.history_view {
             if let Some(job) = view.jobs.get(view.selected) {
                 let path = job.log_path.clone();
@@ -1119,7 +642,7 @@ impl UiState {
         }
     }
 
-    fn clamp_history_selection(&mut self, len: usize) {
+    pub(super) fn clamp_history_selection(&mut self, len: usize) {
         if len == 0 {
             self.history_selection = 0;
         } else if self.history_selection >= len {
@@ -1127,7 +650,7 @@ impl UiState {
         }
     }
 
-    fn ensure_history_visible(&mut self, height: u16, len: usize) {
+    pub(super) fn ensure_history_visible(&mut self, height: u16, len: usize) {
         let viewport = Self::history_viewport(height);
         if viewport == 0 || len == 0 {
             self.history_scroll = 0;
@@ -1143,11 +666,11 @@ impl UiState {
         }
     }
 
-    fn history_viewport(height: u16) -> usize {
+    pub(super) fn history_viewport(height: u16) -> usize {
         usize::from(height.saturating_sub(2).max(1))
     }
 
-    fn tab_lines(&self, available: usize) -> (Vec<Line<'static>>, u16) {
+    pub(super) fn tab_lines(&self, available: usize) -> (Vec<Line<'static>>, u16) {
         let jobs = self.active_jobs();
         if jobs.is_empty() {
             return (vec![Line::raw("")], 1);
@@ -1191,7 +714,7 @@ impl UiState {
         (lines, row_count)
     }
 
-    fn build_label_spans(&self, job: &UiJobState, selected: bool) -> Vec<Span<'static>> {
+    pub(super) fn build_label_spans(&self, job: &UiJobState, selected: bool) -> Vec<Span<'static>> {
         let (icon_char, icon_color) = job.status.icon();
         let highlight = if selected {
             Some(
@@ -1267,7 +790,7 @@ impl UiState {
         spans
     }
 
-    fn apply_highlight(base: Style, highlight: Option<Style>) -> Style {
+    pub(super) fn apply_highlight(base: Style, highlight: Option<Style>) -> Style {
         if let Some(highlight_style) = highlight {
             base.patch(highlight_style)
         } else {
@@ -1275,13 +798,13 @@ impl UiState {
         }
     }
 
-    fn key_hint_widget(&self) -> Paragraph<'static> {
+    pub(super) fn key_hint_widget(&self) -> Paragraph<'static> {
         Paragraph::new(self.key_hint_line())
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: false })
     }
 
-    fn key_hint_line(&self) -> Line<'static> {
+    pub(super) fn key_hint_line(&self) -> Line<'static> {
         Line::from(vec![
             Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
             Span::styled(
@@ -1291,7 +814,7 @@ impl UiState {
         ])
     }
 
-    fn info_panel(&self) -> Paragraph<'_> {
+    pub(super) fn info_panel(&self) -> Paragraph<'_> {
         let job = match self.active_job() {
             Some(job) => job,
             None => {
@@ -1320,7 +843,7 @@ impl UiState {
             .wrap(Wrap { trim: true })
     }
 
-    fn log_view(&self, pipeline_finished: bool, width: u16, height: u16) -> Paragraph<'_> {
+    pub(super) fn log_view(&self, pipeline_finished: bool, width: u16, height: u16) -> Paragraph<'_> {
         if self.history_preview.is_some() {
             return self.history_preview_view(width, height);
         }
@@ -1372,11 +895,11 @@ impl UiState {
             .wrap(Wrap { trim: false })
     }
 
-    fn current_log_path(&self) -> Option<PathBuf> {
+    pub(super) fn current_log_path(&self) -> Option<PathBuf> {
         self.active_job().map(|job| job.log_path.clone())
     }
 
-    fn restartable_job_name(&self) -> Option<String> {
+    pub(super) fn restartable_job_name(&self) -> Option<String> {
         if self.history_view.is_some() {
             return None;
         }
@@ -1385,25 +908,25 @@ impl UiState {
             .and_then(|job| job.status.is_restartable().then(|| job.name.clone()))
     }
 
-    fn restart_job(&mut self, name: &str) {
+    pub(super) fn restart_job(&mut self, name: &str) {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].reset_for_restart();
         }
     }
 
-    fn set_status(&mut self, name: &str, status: UiJobStatus) {
+    pub(super) fn set_status(&mut self, name: &str, status: UiJobStatus) {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].status = status;
         }
     }
 
-    fn push_log(&mut self, name: &str, line: String) {
+    pub(super) fn push_log(&mut self, name: &str, line: String) {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].push_log(line);
         }
     }
 
-    fn finish_job(
+    pub(super) fn finish_job(
         &mut self,
         name: &str,
         status: UiJobStatus,
@@ -1417,7 +940,7 @@ impl UiState {
         }
     }
 
-    fn next_job(&mut self) {
+    pub(super) fn next_job(&mut self) {
         let len = self.active_jobs().len();
         if len == 0 {
             return;
@@ -1427,7 +950,7 @@ impl UiState {
         self.set_active_selected_index(next);
     }
 
-    fn previous_job(&mut self) {
+    pub(super) fn previous_job(&mut self) {
         let len = self.active_jobs().len();
         if len == 0 {
             return;
@@ -1438,7 +961,7 @@ impl UiState {
         self.set_active_selected_index(prev);
     }
 
-    fn select_job(&mut self, idx: usize) {
+    pub(super) fn select_job(&mut self, idx: usize) {
         let len = self.active_jobs().len();
         if idx >= len {
             return;
@@ -1448,7 +971,7 @@ impl UiState {
         self.set_active_selected_index(idx);
     }
 
-    fn scroll_logs_line_up(&mut self) {
+    pub(super) fn scroll_logs_line_up(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_up(LOG_SCROLL_STEP);
             return;
@@ -1458,7 +981,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_line_down(&mut self) {
+    pub(super) fn scroll_logs_line_down(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_down(LOG_SCROLL_STEP);
             return;
@@ -1468,7 +991,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_half_up(&mut self) {
+    pub(super) fn scroll_logs_half_up(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_up(LOG_SCROLL_HALF);
             return;
@@ -1478,7 +1001,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_half_down(&mut self) {
+    pub(super) fn scroll_logs_half_down(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_down(LOG_SCROLL_HALF);
             return;
@@ -1488,7 +1011,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_page_up(&mut self) {
+    pub(super) fn scroll_logs_page_up(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_up(LOG_SCROLL_PAGE);
             return;
@@ -1498,7 +1021,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_page_down(&mut self) {
+    pub(super) fn scroll_logs_page_down(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_down(LOG_SCROLL_PAGE);
             return;
@@ -1508,7 +1031,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_mouse_up(&mut self) {
+    pub(super) fn scroll_logs_mouse_up(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_up(LOG_SCROLL_STEP);
             return;
@@ -1518,7 +1041,7 @@ impl UiState {
         }
     }
 
-    fn scroll_logs_mouse_down(&mut self) {
+    pub(super) fn scroll_logs_mouse_down(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_down(LOG_SCROLL_STEP);
             return;
@@ -1528,7 +1051,7 @@ impl UiState {
         }
     }
 
-    fn scroll_top(&mut self) {
+    pub(super) fn scroll_top(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_to_top();
             return;
@@ -1538,7 +1061,7 @@ impl UiState {
         }
     }
 
-    fn scroll_bottom(&mut self) {
+    pub(super) fn scroll_bottom(&mut self) {
         if self.history_preview.is_some() {
             self.scroll_history_preview_to_bottom();
             return;
@@ -1549,7 +1072,7 @@ impl UiState {
     }
 }
 
-struct UiJobState {
+pub(super) struct UiJobState {
     name: String,
     stage: String,
     log_path: PathBuf,
@@ -1698,7 +1221,7 @@ enum ScrollDirection {
     Down,
 }
 
-struct HistoryRenderNode {
+pub(super) struct HistoryRenderNode {
     key: HistoryNodeKey,
     parent_index: Option<usize>,
     line: Line<'static>,
@@ -1802,29 +1325,6 @@ impl UiJobStatus {
             UiJobStatus::Success | UiJobStatus::Failed | UiJobStatus::Skipped
         )
     }
-
-    fn is_restartable(self) -> bool {
-        matches!(self, UiJobStatus::Success | UiJobStatus::Failed)
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            UiJobStatus::Pending => "pending",
-            UiJobStatus::Running => "running",
-            UiJobStatus::Success => "success",
-            UiJobStatus::Failed => "failed",
-            UiJobStatus::Skipped => "skipped",
-        }
-    }
-
-    fn from_history(status: HistoryStatus) -> Self {
-        match status {
-            HistoryStatus::Success => UiJobStatus::Success,
-            HistoryStatus::Failed => UiJobStatus::Failed,
-            HistoryStatus::Skipped => UiJobStatus::Skipped,
-            HistoryStatus::Running => UiJobStatus::Running,
-        }
-    }
 }
 
 fn format_log_entry(line: &str) -> Line<'static> {
@@ -1858,7 +1358,7 @@ fn format_log_entry(line: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-fn page_log_with_colors(path: &Path) -> Result<()> {
+pub(super) fn page_log_with_colors(path: &Path) -> Result<()> {
     let file =
         File::open(path).with_context(|| format!("failed to open log {}", path.display()))?;
     let reader = BufReader::new(file);

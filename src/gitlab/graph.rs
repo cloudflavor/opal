@@ -1,0 +1,70 @@
+use petgraph::graph::{DiGraph, NodeIndex};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct PipelineGraph {
+    pub graph: DiGraph<Job, ()>,
+    pub stages: Vec<StageGroup>,
+    pub defaults: PipelineDefaults,
+}
+#[derive(Debug, Clone)]
+pub struct StageGroup {
+    pub name: String,
+    pub jobs: Vec<NodeIndex>,
+}
+#[derive(Debug, Clone)]
+pub struct Job {
+    pub name: String,
+    pub stage: String,
+    pub commands: Vec<String>,
+    pub needs: Vec<JobDependency>,
+    pub artifacts: Vec<PathBuf>,
+    pub cache: Vec<CacheConfig>,
+    pub image: Option<String>,
+    pub variables: HashMap<String, String>,
+}
+#[derive(Debug, Clone, Default)]
+pub struct PipelineDefaults {
+    pub image: Option<String>,
+    pub before_script: Vec<String>,
+    pub after_script: Vec<String>,
+    pub variables: HashMap<String, String>,
+    pub cache: Vec<CacheConfig>,
+}
+#[derive(Debug, Clone)]
+pub struct JobDependency {
+    pub job: String,
+    pub needs_artifacts: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub key: String,
+    pub paths: Vec<PathBuf>,
+    pub policy: CachePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachePolicy {
+    Pull,
+    Push,
+    PullPush,
+}
+impl CachePolicy {
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "pull" => CachePolicy::Pull,
+            "push" => CachePolicy::Push,
+            _ => CachePolicy::PullPush,
+        }
+    }
+
+    pub fn allows_pull(self) -> bool {
+        matches!(self, CachePolicy::Pull | CachePolicy::PullPush)
+    }
+
+    pub fn allows_push(self) -> bool {
+        matches!(self, CachePolicy::Push | CachePolicy::PullPush)
+    }
+}

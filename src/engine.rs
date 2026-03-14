@@ -1,4 +1,4 @@
-use crate::mounts::VolumeMount;
+use crate::pipeline::VolumeMount;
 use std::path::Path;
 
 pub struct EngineCommandContext<'a> {

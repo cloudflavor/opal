@@ -1,4 +1,4 @@
-use crate::pipeline::Job;
+use crate::gitlab::Job;
 use crate::secrets::SecretsStore;
 use anyhow::Result;
 use owo_colors::OwoColorize;
