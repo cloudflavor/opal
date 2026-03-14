@@ -40,6 +40,7 @@ pub struct Job {
     pub retry: RetryPolicy,
     pub interruptible: bool,
     pub resource_group: Option<String>,
+    pub parallel: Option<ParallelConfig>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {
@@ -59,6 +60,7 @@ pub struct JobDependency {
     pub needs_artifacts: bool,
     pub optional: bool,
     pub source: DependencySource,
+    pub parallel: Option<Vec<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +88,12 @@ pub struct ServiceConfig {
 pub struct RetryPolicy {
     pub max: u32,
     pub when: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ParallelConfig {
+    Count(u32),
+    Matrix(Vec<HashMap<String, Vec<String>>>),
 }
 
 #[derive(Debug, Clone)]

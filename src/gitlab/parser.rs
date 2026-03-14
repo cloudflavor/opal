@@ -12,7 +12,8 @@ use tracing::warn;
 
 use super::graph::{
     CacheConfig, CachePolicy, DependencySource, ExternalDependency, Job, JobDependency,
-    PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
+    ParallelConfig, PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup,
+    WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -257,6 +258,7 @@ type ParsedJobSpec = (
     HashMap<String, String>,
     Vec<CacheConfig>,
     Vec<ServiceConfig>,
+    Option<ParallelConfig>,
 );
 
 fn parse_job(value: Value) -> Result<ParsedJobSpec> {
@@ -266,6 +268,7 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
             let variables_value = map.remove(Value::String("variables".to_string()));
             let cache_value = map.remove(Value::String("cache".to_string()));
             let services_value = map.remove(Value::String("services".to_string()));
+            let parallel_value = map.remove(Value::String("parallel".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
@@ -280,7 +283,8 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
                 .map(|value| parse_services_value(value, "services"))
                 .transpose()?
                 .unwrap_or_default();
-            Ok((job_spec, image, variables, cache, services))
+            let parallel = parallel_value.map(parse_parallel_value).transpose()?;
+            Ok((job_spec, image, variables, cache, services, parallel))
         }
         other => bail!("job definition must be a mapping, got {other:?}"),
     }
@@ -375,6 +379,72 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
     Ok(services)
 }
 
+fn parse_parallel_value(value: Value) -> Result<ParallelConfig> {
+    match value {
+        Value::Number(num) => {
+            let count = num
+                .as_u64()
+                .ok_or_else(|| anyhow!("parallel count must be positive integer"))?;
+            if count == 0 {
+                bail!("parallel count must be greater than zero");
+            }
+            Ok(ParallelConfig::Count(count.try_into().unwrap_or(u32::MAX)))
+        }
+        Value::Mapping(mut map) => {
+            let matrix_key = Value::String("matrix".to_string());
+            let Some(entries) = map.remove(&matrix_key) else {
+                bail!("parallel mapping must include 'matrix'");
+            };
+            let matrices = parse_parallel_matrix(entries)?;
+            Ok(ParallelConfig::Matrix(matrices))
+        }
+        other => bail!("parallel must be an integer or mapping, got {other:?}"),
+    }
+}
+
+fn parse_parallel_matrix(value: Value) -> Result<Vec<HashMap<String, Vec<String>>>> {
+    match value {
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(parse_parallel_matrix_entry)
+            .collect(),
+        other => Ok(vec![parse_parallel_matrix_entry(other)?]),
+    }
+}
+
+fn parse_parallel_matrix_entry(value: Value) -> Result<HashMap<String, Vec<String>>> {
+    let mapping = match value {
+        Value::Mapping(map) => map,
+        other => bail!("parallel matrix entries must be mappings, got {other:?}"),
+    };
+    let mut result = HashMap::new();
+    for (key, value) in mapping {
+        let name = match key {
+            Value::String(name) => name,
+            other => bail!("parallel matrix variable names must be strings, got {other:?}"),
+        };
+        let values = match value {
+            Value::String(text) => vec![text],
+            Value::Sequence(entries) => entries
+                .into_iter()
+                .map(|entry| match entry {
+                    Value::String(text) => Ok(text),
+                    other => bail!("parallel matrix values must be strings, got {other:?}"),
+                })
+                .collect::<Result<Vec<_>>>()?,
+            other => bail!("parallel matrix values must be string or list, got {other:?}"),
+        };
+        if values.is_empty() {
+            bail!(
+                "parallel matrix variable '{}' must have at least one value",
+                name
+            );
+        }
+        result.insert(name, values);
+    }
+    Ok(result)
+}
+
 fn parse_filter_list(value: Value, field: &str) -> Result<Vec<String>> {
     match value {
         Value::String(text) => Ok(vec![text]),
@@ -448,7 +518,7 @@ fn build_graph(
     for job_name in job_names {
         let merged_map =
             resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
-        let (job_spec, job_image, job_variables, job_cache, job_services) =
+        let (job_spec, job_image, job_variables, job_cache, job_services, job_parallel) =
             parse_job(Value::Mapping(merged_map))?;
         let inherit_flags = job_inherit_flags(&job_spec);
         let stage_name = job_spec.stage.unwrap_or_else(|| {
@@ -497,6 +567,7 @@ fn build_graph(
             .unwrap_or_else(|| defaults.retry.clone());
         let interruptible = job_spec.interruptible.unwrap_or(defaults.interruptible);
         let resource_group = job_spec.resource_group.clone();
+        let parallel = job_parallel;
 
         let node = graph.add_node(Job {
             name: job_name.clone(),
@@ -519,6 +590,7 @@ fn build_graph(
             resource_group,
             inherit_default_before_script: inherit_flags.0,
             inherit_default_after_script: inherit_flags.1,
+            parallel,
         });
 
         name_to_index.insert(job_name.clone(), node);
@@ -967,6 +1039,8 @@ struct NeedConfig {
     project: Option<String>,
     #[serde(rename = "ref")]
     reference: Option<String>,
+    #[serde(default)]
+    parallel: Option<NeedParallelRaw>,
 }
 
 impl Need {
@@ -977,6 +1051,7 @@ impl Need {
                 needs_artifacts: true,
                 optional: false,
                 source: DependencySource::Local,
+                parallel: None,
             }),
             Need::Config(cfg) => {
                 let NeedConfig {
@@ -985,6 +1060,7 @@ impl Need {
                     optional,
                     project,
                     reference,
+                    parallel,
                 } = cfg;
                 if let Some(project) = project {
                     let reference = reference.unwrap_or_default();
@@ -1005,17 +1081,74 @@ impl Need {
                             project,
                             reference,
                         }),
+                        parallel: None,
                     })
                 } else {
+                    let parallel_filters =
+                        parallel.and_then(|raw| match raw.into_filters(owner, &job) {
+                            Ok(filters) => Some(filters),
+                            Err(err) => {
+                                warn!(
+                                    job = owner,
+                                    dependency = %job,
+                                    error = %err,
+                                    "invalid needs.parallel configuration"
+                                );
+                                None
+                            }
+                        });
                     Some(JobDependency {
                         job,
                         needs_artifacts: artifacts,
                         optional,
                         source: DependencySource::Local,
+                        parallel: parallel_filters,
                     })
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NeedParallelRaw {
+    #[serde(default)]
+    matrix: Vec<HashMap<String, Value>>,
+}
+
+impl NeedParallelRaw {
+    fn into_filters(self, owner: &str, dependency: &str) -> Result<Vec<HashMap<String, String>>> {
+        let mut filters = Vec::new();
+        for entry in self.matrix {
+            let mut filter = HashMap::new();
+            for (name, value) in entry {
+                let value = match value {
+                    Value::String(text) => text,
+                    other => bail!(
+                        "job '{}' dependency '{}' parallel values must be strings, got {other:?}",
+                        owner,
+                        dependency
+                    ),
+                };
+                filter.insert(name, value);
+            }
+            if filter.is_empty() {
+                bail!(
+                    "job '{}' dependency '{}' parallel matrix entries must include variables",
+                    owner,
+                    dependency
+                );
+            }
+            filters.push(filter);
+        }
+        if filters.is_empty() {
+            bail!(
+                "job '{}' dependency '{}' parallel matrix must include at least one entry",
+                owner,
+                dependency
+            );
+        }
+        Ok(filters)
     }
 }
 
