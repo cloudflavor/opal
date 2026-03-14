@@ -1,8 +1,7 @@
+use anyhow::{Context, Result};
 use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use anyhow::{Context, Result};
 
 const SECRETS_RELATIVE_DIR: &str = ".opal/env";
 pub const SECRETS_CONTAINER_DIR: &str = "/workspace/.opal/secrets";

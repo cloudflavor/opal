@@ -27,6 +27,7 @@ pub struct Job {
     pub commands: Vec<String>,
     pub needs: Vec<JobDependency>,
     pub artifacts: Vec<PathBuf>,
+    pub cache: Vec<CacheConfig>,
     pub image: Option<String>,
     pub variables: HashMap<String, String>,
 }
@@ -37,12 +38,45 @@ pub struct PipelineDefaults {
     pub before_script: Vec<String>,
     pub after_script: Vec<String>,
     pub variables: HashMap<String, String>,
+    pub cache: Vec<CacheConfig>,
 }
 
 #[derive(Debug, Clone)]
 pub struct JobDependency {
     pub job: String,
     pub needs_artifacts: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub key: String,
+    pub paths: Vec<PathBuf>,
+    pub policy: CachePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachePolicy {
+    Pull,
+    Push,
+    PullPush,
+}
+
+impl CachePolicy {
+    fn from_str(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "pull" => CachePolicy::Pull,
+            "push" => CachePolicy::Push,
+            _ => CachePolicy::PullPush,
+        }
+    }
+
+    pub fn allows_pull(self) -> bool {
+        matches!(self, CachePolicy::Pull | CachePolicy::PullPush)
+    }
+
+    pub fn allows_push(self) -> bool {
+        matches!(self, CachePolicy::Push | CachePolicy::PullPush)
+    }
 }
 
 impl PipelineGraph {
@@ -71,6 +105,9 @@ impl PipelineGraph {
             match key {
                 Value::String(name) if name == "stages" => {
                     stage_names = parse_stages(value)?;
+                }
+                Value::String(name) if name == "cache" => {
+                    defaults.cache = parse_cache_value(value)?;
                 }
                 Value::String(name) if name == "image" => {
                     defaults.image = Some(parse_image(value)?);
@@ -178,6 +215,9 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
                 let vars = parse_variables_map(value)?;
                 defaults.variables.extend(vars);
             }
+            Value::String(name) if name == "cache" => {
+                defaults.cache = parse_cache_value(value)?;
+            }
             Value::String(_) => {
                 // ignore other default keywords for now
             }
@@ -194,6 +234,7 @@ fn is_reserved_keyword(name: &str) -> bool {
         "stages"
             | "default"
             | "include"
+            | "cache"
             | "variables"
             | "workflow"
             | "spec"
@@ -201,7 +242,6 @@ fn is_reserved_keyword(name: &str) -> bool {
             | "services"
             | "before_script"
             | "after_script"
-            | "cache"
     )
 }
 
@@ -226,18 +266,30 @@ fn extract_string(value: Value, what: &str) -> Result<String> {
     }
 }
 
-fn parse_job(value: Value) -> Result<(RawJob, Option<String>, HashMap<String, String>)> {
+type ParsedJobSpec = (
+    RawJob,
+    Option<String>,
+    HashMap<String, String>,
+    Vec<CacheConfig>,
+);
+
+fn parse_job(value: Value) -> Result<ParsedJobSpec> {
     match value {
         Value::Mapping(mut map) => {
             let image_value = map.remove(Value::String("image".to_string()));
             let variables_value = map.remove(Value::String("variables".to_string()));
+            let cache_value = map.remove(Value::String("cache".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
                 .map(parse_variables_map)
                 .transpose()?
                 .unwrap_or_default();
-            Ok((job_spec, image, variables))
+            let cache = cache_value
+                .map(parse_cache_value)
+                .transpose()?
+                .unwrap_or_default();
+            Ok((job_spec, image, variables, cache))
         }
         other => bail!("job definition must be a mapping, got {other:?}"),
     }
@@ -256,6 +308,36 @@ fn parse_string_list(value: Value, field: &str) -> Result<Vec<String>> {
         Value::Null => Ok(Vec::new()),
         other => bail!("{field} must be a string or sequence, got {other:?}"),
     }
+}
+
+fn parse_cache_value(value: Value) -> Result<Vec<CacheConfig>> {
+    match value {
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(parse_cache_entry)
+            .collect::<Result<Vec<_>>>(),
+        Value::Null => Ok(Vec::new()),
+        other => Ok(vec![parse_cache_entry(other)?]),
+    }
+}
+
+fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
+    let raw: CacheEntryRaw = match value {
+        Value::Mapping(_) => serde_yaml::from_value(value)?,
+        other => bail!("cache entry must be a mapping, got {other:?}"),
+    };
+    let key = raw.key.unwrap_or_else(|| "default".to_string());
+    let paths = if raw.paths.is_empty() {
+        bail!("cache entry must specify at least one path");
+    } else {
+        raw.paths
+    };
+    let policy = raw
+        .policy
+        .as_deref()
+        .map(CachePolicy::from_str)
+        .unwrap_or(CachePolicy::PullPush);
+    Ok(CacheConfig { key, paths, policy })
 }
 
 fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
@@ -306,7 +388,8 @@ fn build_graph(
     for job_name in job_names {
         let merged_map =
             resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
-        let (job_spec, job_image, job_variables) = parse_job(Value::Mapping(merged_map))?;
+        let (job_spec, job_image, job_variables, job_cache) =
+            parse_job(Value::Mapping(merged_map))?;
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
                 .first()
@@ -328,6 +411,11 @@ fn build_graph(
             .map(Need::into_dependency)
             .collect();
         let artifacts = job_spec.artifacts.paths;
+        let cache_entries = if job_cache.is_empty() {
+            defaults.cache.clone()
+        } else {
+            job_cache
+        };
 
         let node = graph.add_node(Job {
             name: job_name.clone(),
@@ -335,6 +423,7 @@ fn build_graph(
             commands,
             needs: needs.clone(),
             artifacts,
+            cache: cache_entries,
             image: job_image,
             variables: job_variables,
         });
@@ -498,6 +587,15 @@ enum Script {
 struct RawArtifacts {
     #[serde(default)]
     paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CacheEntryRaw {
+    key: Option<String>,
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+    #[serde(default)]
+    policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

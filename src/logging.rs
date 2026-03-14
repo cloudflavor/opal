@@ -1,11 +1,16 @@
+use crate::pipeline::Job;
+use crate::secrets::SecretsStore;
 use owo_colors::OwoColorize;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
-pub struct LogFormatter {
+pub struct LogFormatter<'a> {
     use_color: bool,
     line_prefix: String,
+    secrets: Option<&'a SecretsStore>,
 }
 
-impl LogFormatter {
+impl<'a> LogFormatter<'a> {
     pub fn new(use_color: bool) -> Self {
         let line_prefix = if use_color {
             format!("{}", "    │".dimmed())
@@ -15,7 +20,13 @@ impl LogFormatter {
         Self {
             use_color,
             line_prefix,
+            secrets: None,
         }
+    }
+
+    pub fn with_secrets(mut self, secrets: &'a SecretsStore) -> Self {
+        self.secrets = Some(secrets);
+        self
     }
 
     pub fn line_prefix(&self) -> &str {
@@ -34,7 +45,12 @@ impl LogFormatter {
         } else {
             number
         };
-        format!("[{} {}] {}", timestamp, number, text)
+        let masked = if let Some(secrets) = self.secrets {
+            secrets.mask_fragment(text)
+        } else {
+            text.into()
+        };
+        format!("[{} {}] {}", timestamp, number, masked)
     }
 }
 
@@ -103,4 +119,16 @@ fn strip_control_sequences(line: &str) -> String {
     }
 
     String::from_utf8_lossy(&output).into_owned()
+}
+
+pub fn job_log_info(logs_dir: &Path, run_id: &str, job: &Job) -> (PathBuf, String) {
+    let mut hasher = Sha256::new();
+    hasher.update(run_id.as_bytes());
+    hasher.update(job.stage.as_bytes());
+    hasher.update(job.name.as_bytes());
+    let digest = hasher.finalize();
+    let hex = format!("{:x}", digest);
+    let short = &hex[..12];
+    let log_path = logs_dir.join(format!("{short}.log"));
+    (log_path, short.to_string())
 }

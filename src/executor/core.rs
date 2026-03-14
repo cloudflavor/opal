@@ -1,40 +1,43 @@
-use super::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
-use super::log::{LogFormatter, sanitize_fragments};
-use super::secrets::SecretsStore;
-use super::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobStatus};
+use super::{
+    paths, script, ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor,
+    PodmanExecutor,
+};
+use crate::artifacts::ArtifactManager;
+use crate::cache::CacheManager;
+use crate::display::{self, indent_block, print_pipeline_summary, DisplayFormatter};
+use crate::engine::EngineCommandContext;
+use crate::env::{build_job_env, collect_env_vars};
+use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
+use crate::logging::{self, sanitize_fragments, LogFormatter};
+use crate::mounts::{self, VolumeMount};
+use crate::naming::{job_name_slug, stage_name_slug, generate_run_id};
 use crate::pipeline::{Job, PipelineGraph};
+use crate::planner::{JobPlan, PlannedJob};
+use crate::runner::ExecuteContext;
+use crate::scheduler::{
+    self, HaltKind, JobEvent, JobRunInfo, JobStatus, JobSummary, StageState,
+};
+use crate::secrets::SecretsStore;
+use crate::terminal::{should_use_color, stream_lines};
+use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobStatus};
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::{Context, Result, anyhow};
-use globset::{Glob, GlobSetBuilder};
-use owo_colors::OwoColorize;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
-use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{self, Child, Command, Stdio};
-use std::sync::mpsc as std_mpsc;
+use std::process::Child;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use time::format_description::FormatItem;
-use time::{OffsetDateTime, macros::format_description};
-use tokio::sync::{Semaphore, mpsc};
+use std::time::Instant;
+use time::{format_description::FormatItem, macros::format_description, OffsetDateTime};
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task;
 use tracing::warn;
 
-const CONTAINER_WORKDIR: &str = "/workspace";
+pub(super) const CONTAINER_WORKDIR: &str = "/workspace";
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
-
-#[derive(Debug, Clone)]
-struct VolumeMount {
-    host: PathBuf,
-    container: PathBuf,
-    read_only: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
@@ -53,6 +56,8 @@ pub struct ExecutorCore {
     history_path: PathBuf,
     history_entries: Arc<Mutex<Vec<HistoryEntry>>>,
     secrets: SecretsStore,
+    artifacts: ArtifactManager,
+    cache: CacheManager,
 }
 
 impl ExecutorCore {
@@ -125,6 +130,11 @@ impl ExecutorCore {
         }
 
         let secrets = SecretsStore::load(&config.workdir)?;
+        let artifacts = ArtifactManager::new(session_dir.clone());
+        let cache_root = sessions_root.join("cache");
+        fs::create_dir_all(&cache_root)
+            .with_context(|| format!("failed to create cache root {:?}", cache_root))?;
+        let cache = CacheManager::new(cache_root);
 
         Ok(Self {
             config,
@@ -142,6 +152,8 @@ impl ExecutorCore {
             history_path,
             history_entries: Arc::new(Mutex::new(history_entries)),
             secrets,
+            artifacts,
+            cache,
         })
     }
 
@@ -197,7 +209,14 @@ impl ExecutorCore {
             handle.wait_for_exit();
         }
 
-        self.print_summary(&plan, &summaries);
+        let display = self.display();
+        print_pipeline_summary(
+            &display,
+            &plan,
+            &summaries,
+            &self.session_dir,
+            display::print_line,
+        );
         result
     }
 
@@ -232,7 +251,7 @@ impl ExecutorCore {
                 deps.sort();
                 deps.dedup();
 
-                let (log_path, log_hash) = self.job_log_info(&job);
+               let (log_path, log_hash) = self.job_log_info(&job);
                 ordered.push(job.name.clone());
                 nodes.insert(
                     job.name.clone(),
@@ -325,7 +344,7 @@ impl ExecutorCore {
                     if let Some(planned) = plan.nodes.get(&name).cloned() {
                         let run_info = self.log_job_start(&planned, ui.as_deref());
                         running.insert(name.clone());
-                        spawn_job(
+                        scheduler::spawn_job(
                             exec.clone(),
                             planned,
                             run_info,
@@ -514,70 +533,6 @@ impl ExecutorCore {
         });
     }
 
-    fn print_summary(&self, plan: &JobPlan, summaries: &[JobSummary]) {
-        println!();
-        let header = self.colorize("╭─ pipeline summary", |t| {
-            format!("{}", t.bold().blue())
-        });
-        self.emit_line(header);
-
-        if summaries.is_empty() {
-            self.emit_line("  no jobs were executed".to_string());
-            self.emit_line(format!("  session data: {}", self.session_dir.display()));
-            return;
-        }
-
-        let mut ordered = summaries.to_vec();
-        ordered.sort_by_key(|entry| {
-            plan.order_index
-                .get(&entry.name)
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-
-        let mut success = 0usize;
-        let mut failed = 0usize;
-        let mut skipped = 0usize;
-
-        for entry in &ordered {
-            match &entry.status {
-                JobStatus::Success => success += 1,
-                JobStatus::Failed(_) => failed += 1,
-                JobStatus::Skipped(_) => skipped += 1,
-            }
-            let icon = match &entry.status {
-                JobStatus::Success => self.colorize("✓", |t| format!("{}", t.bold().green())),
-                JobStatus::Failed(_) => self.colorize("✗", |t| format!("{}", t.bold().red())),
-                JobStatus::Skipped(_) => self.colorize("•", |t| format!("{}", t.bold().yellow())),
-            };
-            let mut line = format!(
-                "  {} {} (stage {}, log {})",
-                icon, entry.name, entry.stage_name, entry.log_hash
-            );
-            match &entry.status {
-                JobStatus::Success => {
-                    line.push_str(&format!(" – {:.2}s", entry.duration));
-                }
-                JobStatus::Failed(msg) => {
-                    line.push_str(&format!(" – {:.2}s failed: {}", entry.duration, msg));
-                }
-                JobStatus::Skipped(msg) => {
-                    line.push_str(&format!(" – {}", msg));
-                }
-            }
-            if let Some(log_path) = &entry.log_path {
-                line.push_str(&format!(" [log: {}]", log_path.display()));
-            }
-            self.emit_line(line);
-        }
-
-        self.emit_line(format!(
-            "  results: {} ok / {} failed / {} skipped",
-            success, failed, skipped
-        ));
-        self.emit_line(format!("  session data: {}", self.session_dir.display()));
-    }
-
     fn record_pipeline_history(&self, summaries: &[JobSummary]) -> Option<HistoryEntry> {
         let finished_at = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
@@ -648,43 +603,41 @@ impl ExecutorCore {
         }
 
         if !self.config.enable_tui {
+            let display = self.display();
             if self.stage_started(&planned.stage_name) {
                 if self.stage_position(&planned.stage_name) > 0 {
-                    println!();
+                    display::print_blank_line();
                 }
-                self.emit_line(self.stage_header(&planned.stage_name));
+                display::print_line(display.stage_header(&planned.stage_name));
             }
 
             let job = &planned.job;
-            let job_label = self.colorize("  job:", |t| format!("{}", t.bold().green()));
-            let job_name = self.colorize(job.name.as_str(), |t| format!("{}", t.bold().white()));
-            self.emit_line(format!("{} {}", job_label, job_name));
+            let job_label = display.bold_green("  job:");
+            let job_name = display.bold_white(job.name.as_str());
+            display::print_line(format!("{} {}", job_label, job_name));
 
-            if let Some(needs) = Self::format_needs(job) {
-                let needs_label = self.colorize("    needs:", |t| format!("{}", t.bold().cyan()));
-                self.emit_line(format!("{} {}", needs_label, needs));
+            if let Some(needs) = display.format_needs(job) {
+                let needs_label = display.bold_cyan("    needs:");
+                display::print_line(format!("{} {}", needs_label, needs));
             }
-            if let Some(paths) = Self::format_paths(&job.artifacts) {
-                let artifacts_label =
-                    self.colorize("    artifacts:", |t| format!("{}", t.bold().cyan()));
-                self.emit_line(format!("{} {}", artifacts_label, paths));
+            if let Some(paths) = display.format_paths(&job.artifacts) {
+                let artifacts_label = display.bold_cyan("    artifacts:");
+                display::print_line(format!("{} {}", artifacts_label, paths));
             }
 
             let job_image = self.resolve_job_image(job);
-            let image_label = self.colorize("    image:", |t| format!("{}", t.bold().cyan()));
-            self.emit_line(format!("{} {}", image_label, job_image));
+            let image_label = display.bold_cyan("    image:");
+            display::print_line(format!("{} {}", image_label, job_image));
 
-            let container_label =
-                self.colorize("    container:", |t| format!("{}", t.bold().cyan()));
-            self.emit_line(format!("{} {}", container_label, container_name));
+            let container_label = display.bold_cyan("    container:");
+            display::print_line(format!("{} {}", container_label, container_name));
 
             if self.verbose_scripts && !job.commands.is_empty() {
-                let script_label =
-                    self.colorize("    script:", |t| format!("{}", t.bold().yellow()));
-                self.emit_line(format!(
+                let script_label = display.bold_yellow("    script:");
+                display::print_line(format!(
                     "{}\n{}",
                     script_label,
-                    Self::indent_block(&job.commands.join("\n"), "      │ ")
+                    indent_block(&job.commands.join("\n"), "      │ ")
                 ));
             }
         }
@@ -692,7 +645,7 @@ impl ExecutorCore {
         JobRunInfo { container_name }
     }
 
-    fn run_planned_job(
+    pub(crate) fn run_planned_job(
         &self,
         planned: PlannedJob,
         run_info: JobRunInfo,
@@ -710,8 +663,18 @@ impl ExecutorCore {
         let ui_ref = ui.as_deref();
 
         let result = (|| -> Result<()> {
-            self.prepare_artifact_targets(&job)?;
-            let mut mounts = self.build_volume_mounts(&job)?;
+            self.artifacts.prepare_targets(&job)?;
+            let env_vars = self.job_env(&job);
+            let cache_env: HashMap<String, String> =
+                env_vars.iter().cloned().collect();
+            let mut mounts = mounts::collect_volume_mounts(
+                &job,
+                &self.g,
+                &self.artifacts,
+                &self.cache,
+                &cache_env,
+                Path::new(CONTAINER_WORKDIR),
+            )?;
             if let Some((host, container_path)) = self.secrets.volume_mount() {
                 mounts.push(VolumeMount {
                     host,
@@ -722,7 +685,12 @@ impl ExecutorCore {
             let job_image = self.resolve_job_image(&job);
             let container_name = run_info.container_name.clone();
             let script_commands = self.expanded_commands(&job);
-            let script_path = self.write_job_script(&job, &script_commands)?;
+            let script_path = script::write_job_script(
+                &self.scripts_dir,
+                &job,
+                &script_commands,
+                self.verbose_scripts,
+            )?;
             self.execute(ExecuteContext {
                 script_path: &script_path,
                 log_path: &log_path,
@@ -731,23 +699,22 @@ impl ExecutorCore {
                 container_name: &container_name,
                 job: &job,
                 ui: ui_ref,
+                env_vars: &env_vars,
             })?;
             if !self.config.enable_tui {
-                self.emit_line(format!("    script stored at {}", script_path.display()));
-                self.emit_line(format!("    log file stored at {}", log_path.display()));
-                let finish_label =
-                    self.colorize("    ✓ finished in", |t| format!("{}", t.bold().green()));
-                self.emit_line(format!(
+                let display = self.display();
+                display::print_line(format!("    script stored at {}", script_path.display()));
+                display::print_line(format!("    log file stored at {}", log_path.display()));
+                let finish_label = display.bold_green("    ✓ finished in");
+                display::print_line(format!(
                     "{} {:.2}s",
                     finish_label,
                     job_start.elapsed().as_secs_f32()
                 ));
 
                 if let Some(elapsed) = self.stage_job_completed(&stage_name) {
-                    let stage_footer = self.colorize("╰─ stage complete in", |t| {
-                        format!("{}", t.bold().blue())
-                    });
-                    self.emit_line(format!("{stage_footer} {:.2}s", elapsed));
+                    let stage_footer = display.bold_blue("╰─ stage complete in");
+                    display::print_line(format!("{stage_footer} {:.2}s", elapsed));
                 }
             }
 
@@ -821,28 +788,29 @@ impl ExecutorCore {
             container_name,
             job,
             ui,
+            env_vars,
         } = ctx;
         if !self.config.enable_tui {
-            self.emit_line(self.format_mounts(mounts));
-            self.emit_line(self.logs_header());
-            let log_label = self.colorize("    log file:", |t| format!("{}", t.bold().yellow()));
-            self.emit_line(format!("{} {}", log_label, log_path.display()));
+            let display = self.display();
+            display::print_line(display.format_mounts(mounts));
+            display::print_line(display.logs_header());
+            let log_label = display.bold_yellow("    log file:");
+            display::print_line(format!("{} {}", log_label, log_path.display()));
         }
 
         let container_script = self.container_path_rel(script_path)?;
         if self.verbose_scripts && !self.config.enable_tui {
-            let script_label =
-                self.colorize("    script file:", |t| format!("{}", t.bold().yellow()));
-            self.emit_line(format!("{} {}", script_label, container_script.display()));
+            let display = self.display();
+            let script_label = display.bold_yellow("    script file:");
+            display::print_line(format!("{} {}", script_label, container_script.display()));
         }
 
-        let env_vars = self.job_env(job);
         let mut proc = self.spawn_container_process(
             &container_script,
             container_name,
             image,
             mounts,
-            &env_vars,
+            env_vars,
         )?;
         self.capture_child_output(&mut proc, job, log_path, ui)?;
 
@@ -865,121 +833,27 @@ impl ExecutorCore {
         mounts: &[VolumeMount],
         env_vars: &[(String, String)],
     ) -> Result<Child> {
-        match self.config.engine {
-            EngineKind::ContainerCli => {
-                self.spawn_container_cli(container_script, container_name, image, mounts, env_vars)
-            }
-            EngineKind::Docker => self.spawn_docker_like(
-                "docker",
-                container_script,
-                container_name,
-                image,
-                mounts,
-                env_vars,
-            ),
-            EngineKind::Podman => self.spawn_docker_like(
-                "podman",
-                container_script,
-                container_name,
-                image,
-                mounts,
-                env_vars,
-            ),
-            EngineKind::Nerdctl => self.spawn_docker_like(
-                "nerdctl",
-                container_script,
-                container_name,
-                image,
-                mounts,
-                env_vars,
-            ),
-            EngineKind::Orbstack => self.spawn_docker_like(
-                "docker",
-                container_script,
-                container_name,
-                image,
-                mounts,
-                env_vars,
-            ),
-        }
-    }
+        let ctx = EngineCommandContext {
+            workdir: &self.config.workdir,
+            container_root: Path::new(CONTAINER_WORKDIR),
+            container_script,
+            container_name,
+            image,
+            mounts,
+            env_vars,
+        };
 
-    fn spawn_container_cli(
-        &self,
-        container_script: &Path,
-        container_name: &str,
-        image: &str,
-        mounts: &[VolumeMount],
-        env_vars: &[(String, String)],
-    ) -> Result<Child> {
-        let workspace_mount = format!("{}:{}", self.config.workdir.display(), CONTAINER_WORKDIR);
-        let mut command = Command::new("container");
-        command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .arg("run")
-            .arg("--arch")
-            .arg("x86_64")
-            .arg("--name")
-            .arg(container_name)
-            .arg("--workdir")
-            .arg(CONTAINER_WORKDIR)
-            .arg("--dns")
-            .arg("1.1.1.1")
-            .arg("--volume")
-            .arg(&workspace_mount);
-
-        for mount in mounts {
-            command.arg("--volume").arg(mount.to_arg());
-        }
-
-        for (key, value) in env_vars {
-            command.arg("--env").arg(format!("{key}={value}"));
-        }
-
-        command
-            .arg(image)
-            .arg("sh")
-            .arg(container_script)
-            .spawn()
-            .with_context(|| "failed to run container command")
-    }
-
-    fn spawn_docker_like(
-        &self,
-        binary: &str,
-        container_script: &Path,
-        container_name: &str,
-        image: &str,
-        mounts: &[VolumeMount],
-        env_vars: &[(String, String)],
-    ) -> Result<Child> {
-        let workspace_mount = format!("{}:{}", self.config.workdir.display(), CONTAINER_WORKDIR);
-        let mut command = Command::new(binary);
-        command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .arg("run")
-            .arg("--name")
-            .arg(container_name)
-            .arg("--workdir")
-            .arg(CONTAINER_WORKDIR)
-            .arg("--volume")
-            .arg(&workspace_mount);
-
-        for mount in mounts {
-            command.arg("--volume").arg(mount.to_arg());
-        }
-
-        for (key, value) in env_vars {
-            command.arg("--env").arg(format!("{key}={value}"));
-        }
-
-        command.arg(image).arg("sh").arg(container_script);
+        let mut command = match self.config.engine {
+            EngineKind::ContainerCli => ContainerExecutor::build_command(&ctx),
+            EngineKind::Docker => DockerExecutor::build_command(&ctx),
+            EngineKind::Podman => PodmanExecutor::build_command(&ctx),
+            EngineKind::Nerdctl => NerdctlExecutor::build_command(&ctx),
+            EngineKind::Orbstack => OrbstackExecutor::build_command(&ctx),
+        };
 
         command
             .spawn()
-            .with_context(|| format!("failed to run {binary} command"))
+            .with_context(|| format!("failed to run {:?} command", self.config.engine))
     }
 
     fn capture_child_output(
@@ -998,7 +872,7 @@ impl ExecutorCore {
             .take()
             .context("missing stderr from container process")?;
 
-        let formatter = LogFormatter::new(self.use_color);
+        let formatter = LogFormatter::new(self.use_color).with_secrets(&self.secrets);
         let line_prefix = formatter.line_prefix().to_string();
         let mut log_file = File::create(log_path)
             .with_context(|| format!("failed to create log at {}", log_path.display()))?;
@@ -1009,272 +883,23 @@ impl ExecutorCore {
                 .format(TIMESTAMP_FORMAT)
                 .unwrap_or_else(|_| "??????????".to_string());
             for fragment in sanitize_fragments(&line) {
-                let masked = self.secrets.mask_fragment(&fragment);
-                let masked_ref = masked.as_ref();
-                let decorated = formatter.format(&timestamp, display_line_no, masked_ref);
+                let decorated = formatter.format(&timestamp, display_line_no, &fragment);
                 if let Some(ui) = ui {
-                    let raw_line = format!("[{} {:04}] {}", timestamp, display_line_no, masked_ref);
+                    let raw_line = decorated.clone();
                     ui.job_log_line(&job.name, &raw_line);
                 } else {
-                    println!("{} {}", line_prefix, decorated);
+                    display::print_prefixed_line(&line_prefix, &decorated);
                 }
                 writeln!(
                     log_file,
                     "[{} {:04}] {}",
-                    timestamp, display_line_no, masked_ref
+                    timestamp, display_line_no, fragment
                 )?;
                 display_line_no += 1;
             }
             Ok(())
         })
     }
-    fn build_volume_mounts(&self, job: &Job) -> Result<Vec<VolumeMount>> {
-        let mut mounts = Vec::new();
-        self.append_job_artifact_mounts(job, &mut mounts)?;
-        for dependency in &job.needs {
-            if !dependency.needs_artifacts {
-                continue;
-            }
-            self.append_dependency_mounts(&dependency.job, &mut mounts)?;
-        }
-
-        Ok(mounts)
-    }
-
-    fn append_job_artifact_mounts(&self, job: &Job, mounts: &mut Vec<VolumeMount>) -> Result<()> {
-        if job.artifacts.is_empty() {
-            return Ok(());
-        }
-
-        for relative in &job.artifacts {
-            let host = self.job_artifact_host_path(&job.name, relative);
-            let container = self.container_path(relative);
-            self.push_mount(mounts, host, container, false);
-        }
-
-        Ok(())
-    }
-
-    fn append_dependency_mounts(
-        &self,
-        job_name: &str,
-        mounts: &mut Vec<VolumeMount>,
-    ) -> Result<()> {
-        let dep_job = self.g.graph.node_weights().find(|job| job.name == job_name);
-
-        let Some(dep_job) = dep_job else {
-            warn!(job = job_name, "dependency not present in pipeline graph");
-            return Ok(());
-        };
-
-        for relative in &dep_job.artifacts {
-            let host = self.job_artifact_host_path(&dep_job.name, relative);
-            if !host.exists() {
-                warn!(job = job_name, path = %relative.display(), "artifact missing");
-                continue;
-            }
-            let container = self.container_path(relative);
-            self.push_mount(mounts, host, container, true);
-        }
-
-        Ok(())
-    }
-
-    fn push_mount(
-        &self,
-        mounts: &mut Vec<VolumeMount>,
-        host: PathBuf,
-        container: PathBuf,
-        read_only: bool,
-    ) {
-        if mounts
-            .iter()
-            .any(|existing| existing.host == host && existing.container == container)
-        {
-            return;
-        }
-        mounts.push(VolumeMount {
-            host,
-            container,
-            read_only,
-        });
-    }
-
-    fn prepare_artifact_targets(&self, job: &Job) -> Result<()> {
-        if job.artifacts.is_empty() {
-            return Ok(());
-        }
-        let root = self.job_artifacts_root(&job.name);
-        fs::create_dir_all(&root)
-            .with_context(|| format!("failed to prepare artifacts for {}", job.name))?;
-
-        for relative in &job.artifacts {
-            let host = self.job_artifact_host_path(&job.name, relative);
-            match Self::artifact_kind(relative) {
-                ArtifactPathKind::Directory => {
-                    fs::create_dir_all(&host).with_context(|| {
-                        format!("failed to prepare artifact directory {}", host.display())
-                    })?;
-                }
-                ArtifactPathKind::File => {
-                    if let Some(parent) = host.parent() {
-                        fs::create_dir_all(parent).with_context(|| {
-                            format!("failed to prepare artifact parent {}", parent.display())
-                        })?;
-                    }
-                    if !host.exists() {
-                        File::create(&host).with_context(|| {
-                            format!("failed to create artifact file {}", host.display())
-                        })?;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn job_artifact_host_path(&self, job_name: &str, artifact: &Path) -> PathBuf {
-        self.job_artifacts_root(job_name)
-            .join(Self::artifact_relative_path(artifact))
-    }
-
-    fn job_artifacts_root(&self, job_name: &str) -> PathBuf {
-        self.session_dir
-            .join(job_name_slug(job_name))
-            .join("artifacts")
-    }
-
-    fn artifact_relative_path(artifact: &Path) -> PathBuf {
-        use std::path::Component;
-
-        let mut rel = PathBuf::new();
-        for component in artifact.components() {
-            match component {
-                Component::RootDir | Component::CurDir => continue,
-                Component::ParentDir => continue,
-                Component::Prefix(prefix) => rel.push(prefix.as_os_str()),
-                Component::Normal(seg) => rel.push(seg),
-            }
-        }
-
-        if rel.as_os_str().is_empty() {
-            rel.push("artifact");
-        }
-        rel
-    }
-
-    fn artifact_kind(path: &Path) -> ArtifactPathKind {
-        if path.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
-            return ArtifactPathKind::Directory;
-        }
-
-        match path.file_name().and_then(|name| name.to_str()) {
-            Some(name) if name.contains('.') => ArtifactPathKind::File,
-            _ => ArtifactPathKind::Directory,
-        }
-    }
-
-    fn container_path(&self, relative: &Path) -> PathBuf {
-        if relative.is_absolute() {
-            relative.to_path_buf()
-        } else {
-            Path::new(CONTAINER_WORKDIR).join(relative)
-        }
-    }
-
-    fn stage_header(&self, name: &str) -> String {
-        let prefix = self.colorize("╭────────", |t| {
-            format!("{}", t.bold().blue())
-        });
-        let stage_text = format!("stage {}", name);
-        let stage = self.colorize(&stage_text, |t| format!("{}", t.bold().magenta()));
-        let suffix = self.colorize("────────╮", |t| {
-            format!("{}", t.bold().blue())
-        });
-        format!("{} {} {}", prefix, stage, suffix)
-    }
-
-    fn format_needs(job: &Job) -> Option<String> {
-        if job.needs.is_empty() {
-            return None;
-        }
-
-        let entries: Vec<String> = job
-            .needs
-            .iter()
-            .map(|need| {
-                if need.needs_artifacts {
-                    format!("{} (artifacts)", need.job)
-                } else {
-                    need.job.clone()
-                }
-            })
-            .collect();
-
-        Some(entries.join(", "))
-    }
-
-    fn format_paths(paths: &[PathBuf]) -> Option<String> {
-        if paths.is_empty() {
-            return None;
-        }
-
-        Some(
-            paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    }
-
-    fn indent_block(block: &str, prefix: &str) -> String {
-        let mut buf = String::new();
-        for (idx, line) in block.lines().enumerate() {
-            if idx > 0 {
-                buf.push('\n');
-            }
-            buf.push_str(prefix);
-            buf.push_str(line);
-        }
-        buf
-    }
-
-    fn format_mounts(&self, mounts: &[VolumeMount]) -> String {
-        let label = self.colorize("    artifact mounts:", |t| format!("{}", t.bold().cyan()));
-        if mounts.is_empty() {
-            return format!("{} none", label);
-        }
-
-        let desc = mounts
-            .iter()
-            .map(|mount| mount.container.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        format!("{} {}", label, desc)
-    }
-
-    fn colorize<'a, F>(&self, text: &'a str, styler: F) -> String
-    where
-        F: FnOnce(&'a str) -> String,
-    {
-        if self.use_color {
-            styler(text)
-        } else {
-            text.to_string()
-        }
-    }
-
-    fn emit_line(&self, line: String) {
-        println!("{line}");
-    }
-
-    fn logs_header(&self) -> String {
-        self.colorize("    logs:", |t| format!("{}", t.bold().cyan()))
-    }
-
     fn resolve_job_image(&self, job: &Job) -> String {
         job.image
             .clone()
@@ -1311,409 +936,25 @@ impl ExecutorCore {
     }
 
     fn job_env(&self, job: &Job) -> Vec<(String, String)> {
-        let mut env = Vec::new();
-        let mut push = |key: &str, value: &str| {
-            if let Some(existing) = env.iter_mut().find(|(k, _)| k == key) {
-                existing.1 = value.to_string();
-            } else {
-                env.push((key.to_string(), value.to_string()));
-            }
-        };
-
-        for (key, value) in &self.env_vars {
-            push(key, value);
-        }
-        for (key, value) in &self.g.defaults.variables {
-            push(key, value);
-        }
-        for (key, value) in &job.variables {
-            push(key, value);
-        }
-
-        if self.secrets.has_secrets() {
-            self.secrets.extend_env(&mut env);
-        }
-
-        env
+        build_job_env(
+            &self.env_vars,
+            &self.g.defaults.variables,
+            job,
+            &self.secrets,
+            &self.config.workdir,
+            &self.run_id,
+        )
     }
 
-    fn write_job_script(&self, job: &Job, commands: &[String]) -> Result<PathBuf> {
-        let slug = job_name_slug(&job.name);
-        let script_path = self.scripts_dir.join(format!("{slug}.sh"));
-        if let Some(parent) = script_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create dir {:?}", parent))?;
-        }
-
-        let mut file = File::create(&script_path)
-            .with_context(|| format!("failed to create script for {}", job.name))?;
-        writeln!(file, "#!/usr/bin/env sh")?;
-        writeln!(file, "set -eu")?;
-        writeln!(file, "cd {}", CONTAINER_WORKDIR)?;
-        writeln!(file)?;
-
-        for line in commands {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if self.verbose_scripts {
-                writeln!(file, "printf '+ %s\\n' \"{}\"", escape_double_quotes(line))?;
-            }
-            writeln!(file, "{}", line)?;
-        }
-
-        Ok(script_path)
+    fn display(&self) -> DisplayFormatter {
+        DisplayFormatter::new(self.use_color)
     }
 
     fn job_log_info(&self, job: &Job) -> (PathBuf, String) {
-        let mut hasher = Sha256::new();
-        hasher.update(self.run_id.as_bytes());
-        hasher.update(job.stage.as_bytes());
-        hasher.update(job.name.as_bytes());
-        let digest = hasher.finalize();
-        let hex = format!("{:x}", digest);
-        let short = &hex[..12];
-        let log_path = self.logs_dir.join(format!("{short}.log"));
-        (log_path, short.to_string())
+        logging::job_log_info(&self.logs_dir, &self.run_id, job)
     }
 
     fn container_path_rel(&self, host_path: &Path) -> Result<PathBuf> {
-        let rel = host_path
-            .strip_prefix(&self.config.workdir)
-            .with_context(|| {
-                format!(
-                    "path {:?} is outside workspace {:?}",
-                    host_path, self.config.workdir
-                )
-            })?;
-
-        Ok(Path::new(CONTAINER_WORKDIR).join(rel))
-    }
-}
-
-struct ExecuteContext<'a> {
-    script_path: &'a Path,
-    log_path: &'a Path,
-    mounts: &'a [VolumeMount],
-    image: &'a str,
-    container_name: &'a str,
-    job: &'a Job,
-    ui: Option<&'a UiBridge>,
-}
-
-impl VolumeMount {
-    fn to_arg(&self) -> OsString {
-        let mut arg = OsString::new();
-        arg.push(self.host.as_os_str());
-        arg.push(":");
-        arg.push(self.container.as_os_str());
-        if self.read_only {
-            arg.push(":ro");
-        }
-        arg
-    }
-}
-
-fn should_use_color() -> bool {
-    if env::var_os("NO_COLOR").is_some() {
-        return false;
-    }
-
-    if env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
-        return true;
-    }
-
-    match env::var("OPAL_COLOR") {
-        Ok(val) if matches!(val.as_str(), "always" | "1" | "true") => return true,
-        Ok(val) if matches!(val.as_str(), "never" | "0" | "false") => return false,
-        _ => {}
-    }
-
-    if !io::stdout().is_terminal() {
-        return false;
-    }
-
-    true
-}
-
-fn job_name_slug(name: &str) -> String {
-    let mut slug = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-        } else {
-            match ch {
-                ' ' | '-' | '_' => slug.push('-'),
-                _ => continue,
-            }
-        }
-    }
-
-    if slug.is_empty() {
-        slug.push_str("job");
-    }
-
-    slug
-}
-
-fn stage_name_slug(name: &str) -> String {
-    job_name_slug(name)
-}
-
-fn stream_lines<F>(
-    stdout: impl Read + Send + 'static,
-    stderr: impl Read + Send + 'static,
-    mut on_line: F,
-) -> Result<()>
-where
-    F: FnMut(String) -> Result<()>,
-{
-    let (tx, rx) = std_mpsc::channel::<Result<String, io::Error>>();
-    spawn_reader(stdout, tx.clone());
-    spawn_reader(stderr, tx.clone());
-    drop(tx);
-
-    for line in rx {
-        let line = line?;
-        on_line(line)?;
-    }
-
-    Ok(())
-}
-
-fn spawn_reader<R>(reader: R, tx: std_mpsc::Sender<Result<String, io::Error>>)
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut reader = BufReader::new(reader);
-        loop {
-            let mut buf = String::new();
-            match reader.read_line(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if buf.ends_with('\n') {
-                        buf.pop();
-                        if buf.ends_with('\r') {
-                            buf.pop();
-                        }
-                    }
-                    if tx.send(Ok(buf)).is_err() {
-                        break;
-                    }
-                }
-                Err(err) => {
-                    let _ = tx.send(Err(err));
-                    break;
-                }
-            }
-        }
-    });
-}
-
-fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
-    if patterns.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        let glob =
-            Glob::new(pattern).with_context(|| format!("invalid --env pattern '{pattern}'"))?;
-        builder.add(glob);
-    }
-    let matcher = builder.build()?;
-
-    let vars = env::vars()
-        .filter(|(key, _)| matcher.is_match(key))
-        .collect();
-    Ok(vars)
-}
-
-fn generate_run_id(config: &ExecutorConfig) -> String {
-    let pipeline_slug = config
-        .pipeline
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(job_name_slug)
-        .unwrap_or_else(|| "pipeline".to_string());
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let mut hasher = Sha256::new();
-    hasher.update(pipeline_slug.as_bytes());
-    hasher.update(nanos.to_le_bytes());
-    hasher.update(process::id().to_le_bytes());
-
-    let digest = hasher.finalize();
-    let suffix = format!("{:x}", digest);
-    let short = &suffix[..8];
-    format!("{pipeline_slug}-{short}")
-}
-
-fn escape_double_quotes(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-fn spawn_job(
-    exec: Arc<ExecutorCore>,
-    planned: PlannedJob,
-    run_info: JobRunInfo,
-    semaphore: Arc<Semaphore>,
-    tx: mpsc::UnboundedSender<JobEvent>,
-    ui: Option<Arc<UiBridge>>,
-) {
-    let job_name = planned.job.name.clone();
-    let stage_name = planned.stage_name.clone();
-    let log_path = planned.log_path.clone();
-    let log_hash = planned.log_hash.clone();
-    task::spawn(async move {
-        let permit = match semaphore.acquire_owned().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                if let Some(ui) = &ui {
-                    ui.job_finished(
-                        &job_name,
-                        UiJobStatus::Failed,
-                        0.0,
-                        Some(format!("failed to acquire job slot: {err}")),
-                    );
-                }
-                let _ = tx.send(JobEvent {
-                    name: job_name.clone(),
-                    stage_name: stage_name.clone(),
-                    duration: 0.0,
-                    log_path: Some(log_path.clone()),
-                    log_hash: log_hash.clone(),
-                    result: Err(anyhow!("failed to acquire job slot: {err}")),
-                });
-                return;
-            }
-        };
-
-        let exec_clone = exec.clone();
-        let planned_job = planned;
-        let run_info = run_info;
-        let ui_clone = ui.clone();
-        let result = task::spawn_blocking(move || {
-            exec_clone.run_planned_job(planned_job, run_info, ui_clone)
-        })
-        .await;
-        let event = match result {
-            Ok(event) => event,
-            Err(err) => JobEvent {
-                name: job_name.clone(),
-                stage_name: stage_name.clone(),
-                duration: 0.0,
-                log_path: Some(log_path.clone()),
-                log_hash: log_hash.clone(),
-                result: Err(anyhow!("job task panicked: {err}")),
-            },
-        };
-        if let Some(ui) = &ui
-            && event.result.is_err()
-        {
-            ui.job_finished(
-                &job_name,
-                UiJobStatus::Failed,
-                event.duration,
-                event.result.as_ref().err().map(|e| e.to_string()),
-            );
-        }
-
-        drop(permit);
-        let _ = tx.send(event);
-    });
-}
-
-#[derive(Debug, Clone)]
-struct JobPlan {
-    ordered: Vec<String>,
-    nodes: HashMap<String, PlannedJob>,
-    dependents: HashMap<String, Vec<String>>,
-    order_index: HashMap<String, usize>,
-}
-
-#[derive(Debug, Clone)]
-struct JobRunInfo {
-    container_name: String,
-}
-
-#[derive(Debug, Clone)]
-struct PlannedJob {
-    job: Job,
-    stage_name: String,
-    dependencies: Vec<String>,
-    log_path: PathBuf,
-    log_hash: String,
-}
-
-#[derive(Debug)]
-struct JobEvent {
-    name: String,
-    stage_name: String,
-    duration: f32,
-    log_path: Option<PathBuf>,
-    log_hash: String,
-    result: Result<()>,
-}
-
-#[derive(Debug, Clone)]
-struct JobSummary {
-    name: String,
-    stage_name: String,
-    duration: f32,
-    status: JobStatus,
-    log_path: Option<PathBuf>,
-    log_hash: String,
-}
-
-#[derive(Debug, Clone)]
-enum JobStatus {
-    Success,
-    Failed(String),
-    Skipped(String),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ArtifactPathKind {
-    File,
-    Directory,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HaltKind {
-    None,
-    JobFailure,
-    Deadlock,
-    ChannelClosed,
-}
-
-#[derive(Debug, Clone)]
-struct StageState {
-    total: usize,
-    completed: usize,
-    header_printed: bool,
-    started_at: Option<Instant>,
-}
-
-impl StageState {
-    fn new(total: usize) -> Self {
-        Self {
-            total,
-            completed: 0,
-            header_printed: false,
-            started_at: None,
-        }
+        paths::to_container_path(host_path, &self.config.workdir)
     }
 }

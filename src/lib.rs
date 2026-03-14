@@ -3,8 +3,23 @@ use std::str::FromStr;
 
 use structopt::StructOpt;
 
+pub mod artifacts;
+pub mod cache;
+pub mod display;
+pub mod engine;
+pub mod env;
 pub mod executor;
+pub mod history;
+pub mod logging;
+pub mod mounts;
+pub mod naming;
 pub mod pipeline;
+pub mod planner;
+pub mod runner;
+pub mod scheduler;
+pub mod secrets;
+pub mod terminal;
+pub mod ui;
 
 #[derive(StructOpt)]
 pub struct Cli {

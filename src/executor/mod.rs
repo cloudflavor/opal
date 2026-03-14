@@ -1,13 +1,12 @@
 pub mod core;
+pub mod paths;
+pub mod script;
 
 pub mod container;
 pub use container::ContainerExecutor;
 
 pub mod docker;
 pub use docker::DockerExecutor;
-
-pub mod history;
-pub use history::{HistoryEntry, HistoryJob, HistoryStatus};
 
 pub mod podman;
 pub use podman::PodmanExecutor;
@@ -17,7 +16,3 @@ pub use orbstack::OrbstackExecutor;
 
 pub mod nerdctl;
 pub use nerdctl::NerdctlExecutor;
-
-mod log;
-mod secrets;
-mod ui;

@@ -26,7 +26,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use super::history::{HistoryEntry, HistoryJob, HistoryStatus};
+use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 
 const LOG_SCROLL_STEP: usize = 3;
 const LOG_SCROLL_HALF: usize = 20;

@@ -26,12 +26,6 @@ fetch-sources:
   stage: deps
   script:
     - cargo fetch --locked
-  artifacts:
-    when: always
-    expire_in: 1 week
-    paths:
-      - .cargo/
-      - target/
 
 lint:
   stage: test
@@ -58,7 +52,6 @@ build-release:
   needs:
     - unit-tests
     - lint
-    - fetch-sources
   script:
     - cargo build --release --locked
   artifacts:
@@ -70,7 +63,6 @@ package-crate:
   stage: package
   needs:
     - build-release
-    - fetch-sources
   script:
     - cargo package --locked
   artifacts:
@@ -82,7 +74,6 @@ release-artifacts:
   stage: release
   needs:
     - build-release
-    - fetch-sources
   rules:
     - if: '$CI_COMMIT_TAG'
       when: on_success
@@ -124,7 +115,6 @@ publish-crate:
   needs:
     - package-crate
     - release-artifacts
-    - fetch-sources
   rules:
     - if: '$CI_COMMIT_TAG && $CARGO_REGISTRY_TOKEN'
       when: manual
