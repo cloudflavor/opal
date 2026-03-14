@@ -20,6 +20,8 @@ pub struct Job {
     pub commands: Vec<String>,
     pub needs: Vec<JobDependency>,
     pub dependencies: Vec<String>,
+    pub before_script: Option<Vec<String>>,
+    pub after_script: Option<Vec<String>>,
     pub artifacts: Vec<PathBuf>,
     pub cache: Vec<CacheConfig>,
     pub image: Option<String>,

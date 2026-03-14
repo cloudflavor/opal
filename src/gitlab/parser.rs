@@ -343,6 +343,8 @@ fn build_graph(
             .map(Need::into_dependency)
             .collect();
         let dependencies = job_spec.dependencies;
+        let before_script = job_spec.before_script.map(Script::into_commands);
+        let after_script = job_spec.after_script.map(Script::into_commands);
         let artifacts = job_spec.artifacts.paths;
         let cache_entries = if job_cache.is_empty() {
             defaults.cache.clone()
@@ -356,6 +358,8 @@ fn build_graph(
             commands,
             needs: needs.clone(),
             dependencies: dependencies.clone(),
+            before_script,
+            after_script,
             artifacts,
             cache: cache_entries,
             image: job_image,
@@ -503,6 +507,10 @@ fn ensure_stage(stages: &mut Vec<StageGroup>, stage_name: &str) -> usize {
 
 #[derive(Debug, Deserialize)]
 struct RawJob {
+    #[serde(default)]
+    before_script: Option<Script>,
+    #[serde(default)]
+    after_script: Option<Script>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
