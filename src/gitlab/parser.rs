@@ -372,13 +372,16 @@ fn build_graph(
 
     for (job_name, job_idx, needs) in pending_needs {
         for dependency in needs {
-            let dependency_idx = name_to_index.get(&dependency.job).copied().ok_or_else(|| {
-                anyhow::anyhow!(
+            let Some(dependency_idx) = name_to_index.get(&dependency.job).copied() else {
+                if dependency.optional {
+                    continue;
+                }
+                return Err(anyhow::anyhow!(
                     "job '{}' declared unknown dependency '{}'",
                     job_name,
                     dependency.job
-                )
-            })?;
+                ));
+            };
 
             graph.add_edge(dependency_idx, job_idx, ());
         }
@@ -534,11 +537,16 @@ struct CacheEntryRaw {
 #[serde(untagged)]
 enum Need {
     Name(String),
-    Config {
-        job: String,
-        #[serde(default = "default_artifacts_true")]
-        artifacts: bool,
-    },
+    Config(NeedConfig),
+}
+
+#[derive(Debug, Deserialize)]
+struct NeedConfig {
+    job: String,
+    #[serde(default = "default_artifacts_true")]
+    artifacts: bool,
+    #[serde(default)]
+    optional: bool,
 }
 
 impl Need {
@@ -547,10 +555,12 @@ impl Need {
             Need::Name(job) => JobDependency {
                 job,
                 needs_artifacts: true,
+                optional: false,
             },
-            Need::Config { job, artifacts } => JobDependency {
-                job,
-                needs_artifacts: artifacts,
+            Need::Config(cfg) => JobDependency {
+                job: cfg.job,
+                needs_artifacts: cfg.artifacts,
+                optional: cfg.optional,
             },
         }
     }
@@ -772,6 +782,45 @@ test-job:
         let need = &pipeline.graph[test_idx].needs[0];
         assert_eq!(need.job, "build-job");
         assert!(!need.needs_artifacts);
+        assert!(!need.optional);
+    }
+
+    #[test]
+    fn parses_optional_needs() {
+        let yaml = r#"
+stages:
+  - build
+  - test
+
+build-job:
+  stage: build
+  script:
+    - echo build
+
+maybe-job:
+  stage: build
+  script:
+    - echo maybe
+
+test-job:
+  stage: test
+  needs:
+    - build-job
+    - job: maybe-job
+      optional: true
+  script:
+    - echo test
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let test_idx = find_job(&pipeline, "test-job");
+        assert_eq!(pipeline.graph[test_idx].needs.len(), 2);
+        let need0 = &pipeline.graph[test_idx].needs[0];
+        assert_eq!(need0.job, "build-job");
+        assert!(!need0.optional);
+        let need1 = &pipeline.graph[test_idx].needs[1];
+        assert_eq!(need1.job, "maybe-job");
+        assert!(need1.optional);
     }
 
     #[test]

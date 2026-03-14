@@ -36,6 +36,7 @@ pub struct PipelineDefaults {
 pub struct JobDependency {
     pub job: String,
     pub needs_artifacts: bool,
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone)]

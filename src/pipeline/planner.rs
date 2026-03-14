@@ -1,6 +1,6 @@
 use crate::gitlab::{Job, PipelineGraph};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -124,6 +124,33 @@ where
                     log_hash,
                 },
             );
+        }
+    }
+
+    let known_jobs: HashSet<String> = nodes.keys().cloned().collect();
+    for planned in nodes.values_mut() {
+        let mut missing_required = Vec::new();
+        planned.dependencies.retain(|dep| {
+            if known_jobs.contains(dep) {
+                return true;
+            }
+            let is_optional = planned
+                .job
+                .needs
+                .iter()
+                .any(|need| need.job == *dep && need.optional);
+            if !is_optional {
+                missing_required.push(dep.clone());
+            }
+            false
+        });
+
+        if let Some(missing) = missing_required.first() {
+            return Err(anyhow!(
+                "job '{}' depends on unknown job '{}'",
+                planned.job.name,
+                missing
+            ));
         }
     }
 
