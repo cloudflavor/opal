@@ -34,23 +34,22 @@ pub struct Cli {
 #[derive(StructOpt)]
 pub enum Commands {
     Run(RunArgs),
+    View(ViewArgs),
 }
 
 #[derive(StructOpt)]
 pub struct RunArgs {
-    /// Which .gitlab-ci.yml file to use.
-    /// Defaults to current working directory
-    #[structopt(short, long, default_value = ".gitlab-ci.yml")]
-    pub pipeline: PathBuf,
+    /// Which .gitlab-ci.yml file to use (defaults to <workdir>/.gitlab-ci.yml)
+    #[structopt(short, long)]
+    pub pipeline: Option<PathBuf>,
 
     #[structopt(short, long)]
-    /// Context directory
-    pub workdir: PathBuf,
+    /// Context directory (defaults to current working directory)
+    pub workdir: Option<PathBuf>,
 
     #[structopt(short, long)]
-    /// The base image that the runner should use.
-    /// Overrides image specified in the .gitlab-ci.yml file
-    pub base_image: String,
+    /// Optional base image override; falls back to pipeline/job image.
+    pub base_image: Option<String>,
 
     #[structopt(
         short = "E",
@@ -87,6 +86,13 @@ pub struct RunArgs {
     #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
     /// Personal access token used when downloading cross-project artifacts
     pub gitlab_token: Option<String>,
+}
+
+#[derive(StructOpt)]
+pub struct ViewArgs {
+    #[structopt(short, long)]
+    /// Context directory (defaults to current working directory)
+    pub workdir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -137,7 +143,7 @@ pub enum EngineKind {
 
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
-    pub image: String,
+    pub image: Option<String>,
     pub workdir: PathBuf,
     pub pipeline: PathBuf,
     pub env_includes: Vec<String>,

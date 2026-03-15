@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
-use opal::{Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, RunArgs};
+use opal::ui;
+use opal::{
+    Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, RunArgs, ViewArgs,
+};
 use std::env;
 use std::io::{self, IsTerminal};
 use structopt::StructOpt;
@@ -39,6 +42,10 @@ async fn main() -> Result<()> {
                 gitlab_base_url,
                 gitlab_token,
             } = args;
+            let resolved_workdir = workdir
+                .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+            let resolved_pipeline =
+                pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
 
             let engine_kind = resolve_engine(engine);
             let gitlab = gitlab_token.map(|token| GitLabRemoteConfig {
@@ -49,8 +56,8 @@ async fn main() -> Result<()> {
             });
             let config = ExecutorConfig {
                 image: base_image,
-                workdir,
-                pipeline,
+                workdir: resolved_workdir,
+                pipeline: resolved_pipeline,
                 env_includes,
                 max_parallel_jobs,
                 log_dir,
@@ -89,7 +96,15 @@ async fn main() -> Result<()> {
 
             run_result.with_context(|| "failed to run pipeline")
         }
+        Commands::View(args) => run_view(args),
     }
+}
+
+fn run_view(args: ViewArgs) -> Result<()> {
+    let workdir = args
+        .workdir
+        .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+    ui::view_pipeline_logs(&workdir)
 }
 
 #[cfg(target_os = "macos")]

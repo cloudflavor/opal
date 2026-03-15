@@ -83,6 +83,7 @@ pub enum HaltKind {
     JobFailure,
     Deadlock,
     ChannelClosed,
+    Aborted,
 }
 
 #[derive(Debug, Clone)]

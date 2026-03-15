@@ -1,4 +1,4 @@
 /target
-docs
+notes/
 *.opal*
 .opal/env/

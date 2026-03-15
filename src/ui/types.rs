@@ -31,6 +31,8 @@ pub struct UiJobInfo {
 pub enum UiCommand {
     RestartJob { name: String },
     StartManual { name: String },
+    CancelJob { name: String },
+    AbortPipeline,
 }
 
 #[derive(Clone)]

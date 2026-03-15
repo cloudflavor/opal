@@ -1,4 +1,5 @@
 use crate::EngineKind;
+use crate::env::expand_env_list;
 use crate::gitlab::ServiceConfig;
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
@@ -6,7 +7,7 @@ use std::collections::HashMap;
 use std::process::Command;
 
 pub struct ServiceRuntime {
-    binary: &'static str,
+    engine: EngineKind,
     network: String,
     containers: Vec<String>,
 }
@@ -18,30 +19,24 @@ impl ServiceRuntime {
         job_name: &str,
         services: &[ServiceConfig],
         base_env: &[(String, String)],
+        host_env: &HashMap<String, String>,
     ) -> Result<Option<Self>> {
         if services.is_empty() {
             return Ok(None);
         }
-        let binary = match service_binary(engine) {
-            Some(bin) => bin,
-            None => {
-                return Err(anyhow!(
-                    "services are only supported when using docker, podman, nerdctl, or orbstack"
-                ));
-            }
-        };
+        service_supported(engine)?;
         let network = format!(
             "opal-net-{}-{}",
             run_id.replace(|c: char| !c.is_ascii_alphanumeric(), ""),
             job_name_slug(job_name)
         );
-        let mut network_cmd = Command::new(binary);
+        let mut network_cmd = Command::new(engine_binary(engine));
         network_cmd.arg("network").arg("create").arg(&network);
         run_command(network_cmd)
             .with_context(|| format!("failed to create network {}", network))?;
 
         let mut runtime = ServiceRuntime {
-            binary,
+            engine,
             network: network.clone(),
             containers: Vec::new(),
         };
@@ -53,7 +48,7 @@ impl ServiceRuntime {
                 job_name_slug(job_name),
                 idx
             );
-            if let Err(err) = runtime.start_service(&container_name, service, base_env) {
+            if let Err(err) = runtime.start_service(&container_name, service, base_env, host_env) {
                 runtime.cleanup();
                 return Err(err);
             }
@@ -68,13 +63,13 @@ impl ServiceRuntime {
 
     pub fn cleanup(&mut self) {
         for name in self.containers.drain(..).rev() {
-            let _ = Command::new(self.binary)
+            let _ = Command::new(engine_binary(self.engine))
                 .arg("rm")
                 .arg("-f")
                 .arg(&name)
                 .status();
         }
-        let _ = Command::new(self.binary)
+        let _ = Command::new(engine_binary(self.engine))
             .arg("network")
             .arg("rm")
             .arg(&self.network)
@@ -86,17 +81,13 @@ impl ServiceRuntime {
         container_name: &str,
         service: &ServiceConfig,
         base_env: &[(String, String)],
+        host_env: &HashMap<String, String>,
     ) -> Result<()> {
         let alias = service
             .alias
             .clone()
             .unwrap_or_else(|| default_service_alias(&service.image));
-        let mut command = Command::new(self.binary);
-        command.arg("run");
-        if self.binary == "container" {
-            command.arg("--arch").arg("x86_64");
-            command.arg("--dns").arg("1.1.1.1");
-        }
+        let mut command = service_command(self.engine);
         command
             .arg("-d")
             .arg("--rm")
@@ -107,7 +98,9 @@ impl ServiceRuntime {
             .arg("--network-alias")
             .arg(&alias);
 
-        for (key, value) in merged_env(base_env, &service.variables) {
+        let mut merged = merged_env(base_env, &service.variables);
+        expand_env_list(&mut merged[..], host_env);
+        for (key, value) in merged {
             command.arg("--env").arg(format!("{key}={value}"));
         }
 
@@ -134,13 +127,40 @@ impl ServiceRuntime {
     }
 }
 
-fn service_binary(engine: EngineKind) -> Option<&'static str> {
-    match engine {
-        EngineKind::Docker | EngineKind::Orbstack => Some("docker"),
-        EngineKind::Podman => Some("podman"),
-        EngineKind::Nerdctl => Some("nerdctl"),
-        EngineKind::ContainerCli => Some("container"),
+fn service_supported(engine: EngineKind) -> Result<()> {
+    if matches!(
+        engine,
+        EngineKind::Docker
+            | EngineKind::Orbstack
+            | EngineKind::Podman
+            | EngineKind::Nerdctl
+            | EngineKind::ContainerCli
+    ) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "services are only supported when using docker, podman, nerdctl, or orbstack"
+        ))
     }
+}
+
+fn engine_binary(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::Docker | EngineKind::Orbstack => "docker",
+        EngineKind::Podman => "podman",
+        EngineKind::Nerdctl => "nerdctl",
+        EngineKind::ContainerCli => "container",
+    }
+}
+
+fn service_command(engine: EngineKind) -> Command {
+    let mut command = Command::new(engine_binary(engine));
+    command.arg("run");
+    if matches!(engine, EngineKind::ContainerCli) {
+        command.arg("--arch").arg("x86_64");
+        command.arg("--dns").arg("1.1.1.1");
+    }
+    command
 }
 
 fn run_command(mut cmd: Command) -> Result<()> {

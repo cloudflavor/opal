@@ -4,7 +4,7 @@ use super::{
 };
 use crate::display::{self, DisplayFormatter, indent_block, print_pipeline_summary};
 use crate::engine::EngineCommandContext;
-use crate::env::{build_job_env, collect_env_vars};
+use crate::env::{build_job_env, collect_env_vars, expand_env_list};
 use crate::gitlab::{Job, PipelineGraph, ServiceConfig};
 use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
@@ -49,6 +49,7 @@ pub struct ExecutorCore {
     run_id: String,
     verbose_scripts: bool,
     env_vars: Vec<(String, String)>,
+    host_env: HashMap<String, String>,
     stage_positions: HashMap<String, usize>,
     stage_states: Arc<Mutex<HashMap<String, StageState>>>,
     job_attempts: Arc<Mutex<HashMap<String, usize>>>,
@@ -58,6 +59,8 @@ pub struct ExecutorCore {
     artifacts: ArtifactManager,
     cache: CacheManager,
     external_artifacts: Option<ExternalArtifactsManager>,
+    running_containers: Arc<Mutex<HashMap<String, String>>>,
+    cancelled_jobs: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ExecutorCore {
@@ -121,7 +124,9 @@ impl ExecutorCore {
                 s == "1" || s.eq_ignore_ascii_case("true")
             })
             .unwrap_or(false);
-        let env_vars = collect_env_vars(&config.env_includes)?;
+        let host_env: HashMap<String, String> = std::env::vars().collect();
+        let mut env_vars = collect_env_vars(&config.env_includes)?;
+        expand_env_list(&mut env_vars[..], &host_env);
         let mut stage_positions = HashMap::new();
         let mut stage_states = HashMap::new();
         for (idx, stage) in g.stages.iter().enumerate() {
@@ -142,6 +147,8 @@ impl ExecutorCore {
                 cfg.token.clone(),
             )
         });
+        let running_containers = Arc::new(Mutex::new(HashMap::new()));
+        let cancelled_jobs = Arc::new(Mutex::new(HashSet::new()));
 
         Ok(Self {
             config,
@@ -153,6 +160,7 @@ impl ExecutorCore {
             run_id,
             verbose_scripts,
             env_vars,
+            host_env,
             stage_positions,
             stage_states: Arc::new(Mutex::new(stage_states)),
             job_attempts: Arc::new(Mutex::new(HashMap::new())),
@@ -162,6 +170,8 @@ impl ExecutorCore {
             artifacts,
             cache,
             external_artifacts,
+            running_containers,
+            cancelled_jobs,
         })
     }
 
@@ -219,14 +229,16 @@ impl ExecutorCore {
             handle.wait_for_exit();
         }
 
-        let display = self.display();
-        print_pipeline_summary(
-            &display,
-            &plan,
-            &summaries,
-            &self.session_dir,
-            display::print_line,
-        );
+        if !self.config.enable_tui {
+            let display = self.display();
+            print_pipeline_summary(
+                &display,
+                &plan,
+                &summaries,
+                &self.session_dir,
+                display::print_line,
+            );
+        }
         result
     }
 
@@ -274,6 +286,7 @@ impl ExecutorCore {
         let mut delayed_pending: HashSet<String> = HashSet::new();
         let mut manual_waiting: HashSet<String> = HashSet::new();
         let mut running = HashSet::new();
+        let mut abort_requested = false;
         let mut completed = 0usize;
         let mut pipeline_failed = false;
         let mut halt_kind = HaltKind::None;
@@ -336,7 +349,7 @@ impl ExecutorCore {
         };
 
         for name in &plan.ordered {
-            if remaining.get(name).copied().unwrap_or(0) == 0 {
+            if remaining.get(name).copied().unwrap_or(0) == 0 && !abort_requested {
                 enqueue_ready(
                     name,
                     pipeline_failed,
@@ -349,6 +362,9 @@ impl ExecutorCore {
 
         while completed < total {
             while let Some(name) = ready.pop_front() {
+                if abort_requested {
+                    break;
+                }
                 let planned = match plan.nodes.get(&name).cloned() {
                     Some(job) => job,
                     None => continue,
@@ -395,7 +411,7 @@ impl ExecutorCore {
                                     && *count > 0
                                 {
                                     *count -= 1;
-                                    if *count == 0 {
+                                    if *count == 0 && !abort_requested {
                                         enqueue_ready(
                                             child,
                                             pipeline_failed,
@@ -425,7 +441,23 @@ impl ExecutorCore {
                 let entry = attempts.entry(name.clone()).or_insert(0);
                 *entry += 1;
 
-                let run_info = self.log_job_start(&planned, ui.as_deref());
+                let run_info = match self.log_job_start(&planned, ui.as_deref()) {
+                    Ok(info) => info,
+                    Err(err) => {
+                        let summary = JobSummary {
+                            name: planned.job.name.clone(),
+                            stage_name: planned.stage_name.clone(),
+                            duration: 0.0,
+                            status: JobStatus::Failed(err.to_string()),
+                            log_path: Some(planned.log_path.clone()),
+                            log_hash: planned.log_hash.clone(),
+                            allow_failure: false,
+                            environment: planned.job.environment.clone(),
+                        };
+                        summaries.push(summary);
+                        return (summaries, Err(err));
+                    }
+                };
                 running.insert(name.clone());
                 pipeline::spawn_job(
                     exec.clone(),
@@ -544,7 +576,7 @@ impl ExecutorCore {
                                     && *count > 0
                                 {
                                     *count -= 1;
-                                    if *count == 0 {
+                                    if *count == 0 && !abort_requested {
                                         enqueue_ready(
                                             child,
                                             pipeline_failed,
@@ -574,6 +606,9 @@ impl ExecutorCore {
 
             match event {
                 SchedulerEvent::Delay(name) => {
+                    if abort_requested {
+                        continue;
+                    }
                     delayed_pending.remove(&name);
                     if pipeline_failed
                         && let Some(planned) = plan.nodes.get(&name)
@@ -583,13 +618,30 @@ impl ExecutorCore {
                     }
                     ready.push_back(name);
                 }
-                SchedulerEvent::Command(cmd) => {
-                    if let UiCommand::StartManual { name } = cmd
-                        && manual_waiting.remove(&name)
-                    {
-                        ready.push_back(name);
+                SchedulerEvent::Command(cmd) => match cmd {
+                    UiCommand::StartManual { name } => {
+                        if manual_waiting.remove(&name) {
+                            ready.push_back(name);
+                        }
                     }
-                }
+                    UiCommand::CancelJob { name } => {
+                        self.cancel_running_job(&name);
+                    }
+                    UiCommand::AbortPipeline => {
+                        abort_requested = true;
+                        pipeline_failed = true;
+                        halt_kind = HaltKind::Aborted;
+                        if halt_error.is_none() {
+                            halt_error = Some(anyhow!("pipeline aborted by user"));
+                        }
+                        self.cancel_all_running_jobs();
+                        ready.clear();
+                        waiting_on_failure.clear();
+                        delayed_pending.clear();
+                        manual_waiting.clear();
+                    }
+                    UiCommand::RestartJob { .. } => {}
+                },
                 SchedulerEvent::Job(event) => {
                     running.remove(&event.name);
                     let planned = plan
@@ -610,7 +662,7 @@ impl ExecutorCore {
                                         && *count > 0
                                     {
                                         *count -= 1;
-                                        if *count == 0 {
+                                        if *count == 0 && !abort_requested {
                                             enqueue_ready(
                                                 child,
                                                 pipeline_failed,
@@ -688,6 +740,7 @@ impl ExecutorCore {
             HaltKind::ChannelClosed => {
                 Some("not run (executor channel closed unexpectedly)".to_string())
             }
+            HaltKind::Aborted => Some("not run (pipeline aborted by user)".to_string()),
             HaltKind::None => None,
         };
 
@@ -748,7 +801,23 @@ impl ExecutorCore {
                         ui_ref.job_restarted(&name);
                     }
 
-                    let run_info = self.log_job_start(&planned, ui.as_deref());
+                    let run_info = match self.log_job_start(&planned, ui.as_deref()) {
+                        Ok(info) => info,
+                        Err(err) => {
+                            let summary = JobSummary {
+                                name: planned.job.name.clone(),
+                                stage_name: planned.stage_name.clone(),
+                                duration: 0.0,
+                                status: JobStatus::Failed(err.to_string()),
+                                log_path: Some(planned.log_path.clone()),
+                                log_hash: planned.log_hash.clone(),
+                                allow_failure: false,
+                                environment: planned.job.environment.clone(),
+                            };
+                            summaries.push(summary);
+                            return Err(err);
+                        }
+                    };
                     let exec = self.clone();
                     let ui_clone = ui.clone();
                     let run_info_clone = run_info.clone();
@@ -760,6 +829,8 @@ impl ExecutorCore {
                     self.update_summaries_from_event(plan, event, summaries);
                 }
                 UiCommand::StartManual { .. } => {}
+                UiCommand::CancelJob { .. } => {}
+                UiCommand::AbortPipeline => break,
             }
         }
         Ok(())
@@ -870,7 +941,7 @@ impl ExecutorCore {
         }
     }
 
-    fn log_job_start(&self, planned: &PlannedJob, ui: Option<&UiBridge>) -> JobRunInfo {
+    fn log_job_start(&self, planned: &PlannedJob, ui: Option<&UiBridge>) -> Result<JobRunInfo> {
         let attempt = self.next_attempt(&planned.job.name);
         let container_name = self.job_container_name(&planned.stage_name, &planned.job, attempt);
         if let Some(ui) = ui {
@@ -900,7 +971,7 @@ impl ExecutorCore {
                 display::print_line(format!("{} {}", artifacts_label, paths));
             }
 
-            let job_image = self.resolve_job_image(job);
+            let job_image = self.resolve_job_image(job)?;
             let image_label = display.bold_cyan("    image:");
             display::print_line(format!("{} {}", image_label, job_image));
 
@@ -917,7 +988,8 @@ impl ExecutorCore {
             }
         }
 
-        JobRunInfo { container_name }
+        self.track_running_container(&planned.job.name, &container_name);
+        Ok(JobRunInfo { container_name })
     }
 
     pub(crate) fn run_planned_job(
@@ -948,6 +1020,7 @@ impl ExecutorCore {
                 &job.name,
                 &service_configs,
                 &env_vars,
+                &self.host_env,
             )?;
             let service_network = service_runtime
                 .as_ref()
@@ -968,7 +1041,7 @@ impl ExecutorCore {
                     read_only: true,
                 });
             }
-            let job_image = self.resolve_job_image(&job);
+            let job_image = self.resolve_job_image(&job)?;
             let container_name = run_info.container_name.clone();
             let script_commands = self.expanded_commands(&job);
             let script_path = script::write_job_script(
@@ -1013,8 +1086,14 @@ impl ExecutorCore {
         })();
 
         let duration = job_start.elapsed().as_secs_f32();
+        let cancelled = self.take_cancelled_job(&job_name);
+        let final_result = if cancelled {
+            Err(anyhow!("job cancelled by user"))
+        } else {
+            result
+        };
         if let Some(ui) = ui_ref {
-            match &result {
+            match &final_result {
                 Ok(_) => ui.job_finished(&job_name, UiJobStatus::Success, duration, None),
                 Err(err) => ui.job_finished(
                     &job_name,
@@ -1025,13 +1104,15 @@ impl ExecutorCore {
             }
         }
 
+        self.clear_running_container(&job_name);
+
         JobEvent {
             name: job_name,
             stage_name,
             duration,
             log_path: Some(log_path.clone()),
             log_hash,
-            result,
+            result: final_result,
         }
     }
 
@@ -1068,6 +1149,60 @@ impl ExecutorCore {
 
     fn stage_position(&self, stage_name: &str) -> usize {
         self.stage_positions.get(stage_name).copied().unwrap_or(0)
+    }
+
+    fn track_running_container(&self, job_name: &str, container: &str) {
+        if let Ok(mut map) = self.running_containers.lock() {
+            map.insert(job_name.to_string(), container.to_string());
+        }
+    }
+
+    fn clear_running_container(&self, job_name: &str) {
+        if let Ok(mut map) = self.running_containers.lock() {
+            map.remove(job_name);
+        }
+    }
+
+    fn mark_job_cancelled(&self, job_name: &str) {
+        if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
+            cancelled.insert(job_name.to_string());
+        }
+    }
+
+    fn take_cancelled_job(&self, job_name: &str) -> bool {
+        if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
+            cancelled.remove(job_name)
+        } else {
+            false
+        }
+    }
+
+    fn cancel_running_job(&self, job_name: &str) -> bool {
+        let container = {
+            let map = match self.running_containers.lock() {
+                Ok(map) => map,
+                Err(_) => return false,
+            };
+            map.get(job_name).cloned()
+        };
+        if let Some(container_name) = container {
+            self.mark_job_cancelled(job_name);
+            self.kill_container(job_name, &container_name);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cancel_all_running_jobs(&self) {
+        let containers: Vec<(String, String)> = match self.running_containers.lock() {
+            Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Err(_) => return,
+        };
+        for (job, container) in containers {
+            self.mark_job_cancelled(&job);
+            self.kill_container(&job, &container);
+        }
     }
 
     fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
@@ -1222,11 +1357,20 @@ impl ExecutorCore {
             Ok(())
         })
     }
-    fn resolve_job_image(&self, job: &Job) -> String {
-        job.image
-            .clone()
-            .or_else(|| self.g.defaults.image.clone())
-            .unwrap_or_else(|| self.config.image.clone())
+    fn resolve_job_image(&self, job: &Job) -> Result<String> {
+        if let Some(image) = job.image.clone() {
+            return Ok(image);
+        }
+        if let Some(image) = self.g.defaults.image.clone() {
+            return Ok(image);
+        }
+        if let Some(image) = &self.config.image {
+            return Ok(image.clone());
+        }
+        Err(anyhow!(
+            "job '{}' has no image (use --base-image or set image in pipeline/job)",
+            job.name
+        ))
     }
 
     fn next_attempt(&self, job_name: &str) -> usize {
@@ -1273,8 +1417,9 @@ impl ExecutorCore {
             &self.g.defaults.variables,
             job,
             &self.secrets,
-            &self.config.workdir,
+            Path::new(CONTAINER_WORKDIR),
             &self.run_id,
+            &self.host_env,
         )
     }
 

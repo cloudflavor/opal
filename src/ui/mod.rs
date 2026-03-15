@@ -3,5 +3,38 @@ mod runner;
 mod state;
 pub mod types;
 
+use crate::history;
+use crate::history::HistoryEntry;
+use crate::ui::types::UiEvent;
+use anyhow::{Context, Result};
+use std::path::Path;
+use tokio::sync::mpsc;
+
 pub use handle::{UiBridge, UiHandle};
 pub use types::{UiCommand, UiJobInfo, UiJobStatus};
+
+pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Result<()> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, rx, cmd_tx);
+    let _ = tx.send(UiEvent::PipelineFinished);
+    runner.run()
+}
+
+pub fn view_pipeline_logs(root: &Path) -> Result<()> {
+    let history_path = root.join(".opal").join("history.json");
+    let history = history::load(&history_path)
+        .with_context(|| format!("failed to load history at {}", history_path.display()))?;
+    if history.is_empty() {
+        anyhow::bail!("no history entries found at {}", history_path.display());
+    }
+    let current_run_id = history
+        .last()
+        .map(|entry| entry.run_id.clone())
+        .unwrap_or_else(|| "history-view".to_string());
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, rx, cmd_tx);
+    let _ = tx.send(UiEvent::PipelineFinished);
+    runner.run()
+}

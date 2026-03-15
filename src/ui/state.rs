@@ -4,6 +4,7 @@ use super::types::{
 };
 use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 use anyhow::{Context, Result, anyhow};
+use include_dir::{Dir, include_dir};
 use owo_colors::OwoColorize;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
@@ -15,6 +16,23 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
+
+const HELP_DOC_SCROLL_PAGE: i32 = 10;
+static EMBEDDED_DOCS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/docs");
+
+#[derive(Clone)]
+struct HelpDocument {
+    title: String,
+    path: PathBuf,
+    lines: Vec<Line<'static>>,
+}
+
+#[derive(Clone, Copy)]
+enum HelpView {
+    Shortcuts,
+    Document(usize),
+}
 
 pub(super) struct UiState {
     jobs: Vec<UiJobState>,
@@ -28,6 +46,10 @@ pub(super) struct UiState {
     history_collapsed: HashMap<String, bool>,
     history_preview: Option<HistoryPreview>,
     history_view: Option<HistoryRunView>,
+    show_help: bool,
+    help_view: HelpView,
+    help_scroll: u16,
+    help_docs: Vec<HelpDocument>,
 }
 
 impl UiState {
@@ -64,6 +86,10 @@ impl UiState {
             history_collapsed,
             history_preview: None,
             history_view: None,
+            show_help: false,
+            help_view: HelpView::Shortcuts,
+            help_scroll: 0,
+            help_docs: HelpDocument::discover(),
         }
     }
 
@@ -728,8 +754,8 @@ impl UiState {
         let highlight = if selected {
             Some(
                 Style::default()
-                    .bg(Color::Black)
-                    .fg(Color::White)
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             )
         } else if job.status == UiJobStatus::Running {
@@ -807,21 +833,369 @@ impl UiState {
         }
     }
 
-    pub(super) fn key_hint_widget(&self) -> Paragraph<'static> {
-        Paragraph::new(self.key_hint_line())
-            .alignment(Alignment::Left)
+    pub(super) fn help_prompt(&self) -> Paragraph<'static> {
+        Paragraph::new(vec![Line::from(vec![
+            Self::hint_label("Help", Color::Cyan),
+            Span::raw(": press "),
+            key_span_color("?", Color::Yellow),
+            Span::raw(" for shortcuts"),
+        ])])
+        .wrap(Wrap { trim: false })
+    }
+
+    pub(super) fn help_visible(&self) -> bool {
+        self.show_help
+    }
+
+    pub(super) fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+        if self.show_help {
+            self.help_view = HelpView::Shortcuts;
+            self.help_scroll = 0;
+        }
+    }
+
+    pub(super) fn help_window_title(&self) -> String {
+        match self.help_view {
+            HelpView::Shortcuts => "Help".to_string(),
+            HelpView::Document(idx) => {
+                if let Some(doc) = self.help_docs.get(idx) {
+                    format!("Help — {}", doc.title)
+                } else {
+                    "Help".to_string()
+                }
+            }
+        }
+    }
+
+    pub(super) fn help_header(&self) -> Paragraph<'static> {
+        match self.help_view {
+            HelpView::Shortcuts => Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "OPAL HELP",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Keyboard shortcuts and local docs",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+            .alignment(Alignment::Center),
+            HelpView::Document(idx) => {
+                if let Some(doc) = self.help_docs.get(idx) {
+                    let total = self.help_docs.len();
+                    Paragraph::new(vec![
+                        Line::from(Span::styled(
+                            doc.title.clone(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("Document {}/{}", idx + 1, total),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::raw("  "),
+                            Span::styled(
+                                doc.path.display().to_string(),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]),
+                    ])
+                    .alignment(Alignment::Center)
+                } else {
+                    Paragraph::new(vec![Line::from("Document unavailable")])
+                        .alignment(Alignment::Center)
+                }
+            }
+        }
+    }
+
+    pub(super) fn help_body(&self) -> Paragraph<'static> {
+        let mut body = match self.help_view {
+            HelpView::Shortcuts => Paragraph::new(self.shortcut_help_lines()),
+            HelpView::Document(idx) => Paragraph::new(self.help_document_lines(idx)),
+        };
+        body = body.wrap(Wrap { trim: false });
+        if matches!(self.help_view, HelpView::Document(_)) {
+            body = body.scroll((self.help_scroll, 0));
+        }
+        body
+    }
+
+    pub(super) fn help_footer(&self) -> Paragraph<'static> {
+        let mut spans = vec![
+            Span::raw("Press "),
+            key_span_color("?", Color::Yellow),
+            Span::raw(" or "),
+            key_span_color("Esc", Color::Yellow),
+            Span::raw(" to close"),
+        ];
+        if !self.help_docs.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.push(bullet());
+            spans.push(Span::raw("Press "));
+            spans.push(key_span_color("1-9", Color::Cyan));
+            spans.push(Span::raw(" to open docs"));
+        }
+        if matches!(self.help_view, HelpView::Document(_)) && !self.help_docs.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.push(bullet());
+            spans.push(Span::raw("Use "));
+            spans.push(key_span_color("←/→", Color::Cyan));
+            spans.push(Span::raw(" to switch docs"));
+            spans.push(Span::raw("  "));
+            spans.push(bullet());
+            spans.push(Span::raw("Use "));
+            spans.push(key_span_color("↑/↓/Pg", Color::Cyan));
+            spans.push(Span::raw(" to scroll"));
+            spans.push(Span::raw("  "));
+            spans.push(bullet());
+            spans.push(Span::raw("Press "));
+            spans.push(key_span_color("S", Color::Cyan));
+            spans.push(Span::raw(" for shortcuts"));
+        }
+        Paragraph::new(vec![Line::from(spans)])
+            .alignment(Alignment::Right)
             .wrap(Wrap { trim: false })
     }
 
-    pub(super) fn key_hint_line(&self) -> Line<'static> {
-        let mut text = "Tab switches pane • History: ↑/↓ move, ←/→ collapse, Enter views run/log • Jobs: j/k/h/l arrows switch tabs • Shift/Ctrl+↑/↓ PgUp/PgDn Ctrl+u/d/f/b g/G wheel scroll logs • o opens log • r restarts job • q exits".to_string();
-        if self.manual_job_name().is_some() {
-            text.push_str(" • m starts manual job");
+    pub(super) fn show_help_shortcuts(&mut self) {
+        self.help_view = HelpView::Shortcuts;
+        self.help_scroll = 0;
+    }
+
+    pub(super) fn open_help_document(&mut self, index: usize) {
+        if index < self.help_docs.len() {
+            self.help_view = HelpView::Document(index);
+            self.help_scroll = 0;
         }
-        Line::from(vec![
-            Span::styled("Keys: ", Style::default().fg(Color::Yellow)),
-            Span::styled(text, Style::default().fg(Color::DarkGray)),
-        ])
+    }
+
+    pub(super) fn open_help_document_digit(&mut self, digit: char) {
+        if let Some(value) = digit.to_digit(10) {
+            if value == 0 {
+                return;
+            }
+            let idx = (value - 1) as usize;
+            self.open_help_document(idx);
+        }
+    }
+
+    pub(super) fn next_help_document(&mut self) {
+        if self.help_docs.is_empty() {
+            return;
+        }
+        match self.help_view {
+            HelpView::Shortcuts => self.open_help_document(0),
+            HelpView::Document(idx) => {
+                let next = (idx + 1) % self.help_docs.len();
+                self.open_help_document(next);
+            }
+        }
+    }
+
+    pub(super) fn previous_help_document(&mut self) {
+        if self.help_docs.is_empty() {
+            return;
+        }
+        match self.help_view {
+            HelpView::Shortcuts => self.open_help_document(self.help_docs.len().saturating_sub(1)),
+            HelpView::Document(idx) => {
+                let prev = if idx == 0 {
+                    self.help_docs.len() - 1
+                } else {
+                    idx - 1
+                };
+                self.open_help_document(prev);
+            }
+        }
+    }
+
+    pub(super) fn scroll_help_document(&mut self, delta: i32) {
+        if let HelpView::Document(idx) = self.help_view {
+            if let Some(doc) = self.help_docs.get(idx) {
+                let max_scroll = doc.lines.len().saturating_sub(1).min(u16::MAX as usize) as i32;
+                if max_scroll <= 0 {
+                    self.help_scroll = 0;
+                    return;
+                }
+                let current = self.help_scroll as i32;
+                let next = (current + delta).clamp(0, max_scroll);
+                self.help_scroll = next as u16;
+            }
+        }
+    }
+
+    pub(super) fn scroll_help_doc_to_top(&mut self) {
+        if matches!(self.help_view, HelpView::Document(_)) {
+            self.help_scroll = 0;
+        }
+    }
+
+    pub(super) fn scroll_help_doc_to_bottom(&mut self) {
+        if let HelpView::Document(idx) = self.help_view {
+            if let Some(doc) = self.help_docs.get(idx) {
+                let max_scroll = doc.lines.len().saturating_sub(1).min(u16::MAX as usize) as u16;
+                self.help_scroll = max_scroll;
+            }
+        }
+    }
+
+    pub(super) fn scroll_help_document_page_up(&mut self) {
+        self.scroll_help_document(-HELP_DOC_SCROLL_PAGE);
+    }
+
+    pub(super) fn scroll_help_document_page_down(&mut self) {
+        self.scroll_help_document(HELP_DOC_SCROLL_PAGE);
+    }
+
+    fn shortcut_help_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        lines.extend(Self::help_section(
+            "Jobs",
+            Color::Green,
+            &[
+                ("j/k/←/→", "change tab"),
+                ("↓/↑", "next/prev"),
+                ("r", "restart job"),
+                ("o", "open log"),
+                ("x", "cancel job"),
+            ],
+        ));
+        lines.extend(Self::help_section(
+            "Manual",
+            Color::Yellow,
+            &[("m", "start pending job")],
+        ));
+        lines.extend(Self::help_section(
+            "Logs",
+            Color::Magenta,
+            &[
+                ("Shift/Ctrl+↑/↓", "scroll"),
+                ("g/G", "top/bottom"),
+                ("Ctrl+u/d", "half page"),
+                ("Ctrl+f/b", "page"),
+                ("Ctrl+e/y", "line"),
+                ("Space", "page down"),
+            ],
+        ));
+        lines.extend(Self::help_section(
+            "History/Panes",
+            Color::Cyan,
+            &[
+                ("↑/↓/j/k", "move cursor"),
+                ("←/→/h/l", "collapse"),
+                ("Enter/Space", "open run/log"),
+                ("Tab", "switch panes"),
+                ("q", "quit"),
+            ],
+        ));
+        if !self.help_docs.is_empty() {
+            lines.extend(self.help_docs_summary_lines());
+        }
+        lines
+    }
+
+    fn help_section(title: &str, color: Color, entries: &[(&str, &str)]) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::raw(" ")));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                title.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(Span::raw(" ")));
+        for (key, desc) in entries {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                key_span_color(key, color),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw("       "),
+                Span::raw((*desc).to_string()),
+            ]));
+            lines.push(Line::from(Span::raw(" ")));
+        }
+        lines
+    }
+
+    fn help_docs_summary_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::raw(" ")));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Reference",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::raw("Press a number to open a document"),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::raw("Use S to return here after reading"),
+        ]));
+        lines.push(Line::from(Span::raw(" ")));
+        let quick_docs = self.help_docs.iter().take(9);
+        for (idx, doc) in quick_docs.enumerate() {
+            let label = format!("{}", idx + 1);
+            lines.push(Line::from(vec![
+                Span::raw("     "),
+                key_span_color(&label, Color::Cyan),
+                Span::raw("  "),
+                Span::styled(doc.title.clone(), Style::default().fg(Color::White)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw("        "),
+                Span::styled(
+                    doc.path.display().to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+            lines.push(Line::from(Span::raw(" ")));
+        }
+        if self.help_docs.len() > 9 {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    format!(
+                        "Use ←/→ to browse the remaining {} file(s)",
+                        self.help_docs.len() - 9
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+        lines
+    }
+
+    fn help_document_lines(&self, index: usize) -> Vec<Line<'static>> {
+        if let Some(doc) = self.help_docs.get(index) {
+            if doc.lines.is_empty() {
+                vec![Line::from("Document is empty")]
+            } else {
+                doc.lines.clone()
+            }
+        } else {
+            vec![Line::from("Document not found")]
+        }
+    }
+
+    fn hint_label(text: &str, color: Color) -> Span<'static> {
+        Span::styled(
+            format!("{text}: "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
     }
 
     pub(super) fn info_panel(&self) -> Paragraph<'_> {
@@ -844,7 +1218,11 @@ impl UiState {
             ]),
             Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!("{} ({:.2}s)", job.status.label(), job.duration)),
+                Span::raw(format!(
+                    "{} ({:.2}s)",
+                    job.status.label(),
+                    job.display_duration()
+                )),
             ]),
         ];
         if job.manual_pending {
@@ -878,7 +1256,11 @@ impl UiState {
         };
         let mut lines: Vec<Line> = Vec::new();
         let status_span = Span::styled(
-            format!("Status: {} ({:.2}s)", job.status.label(), job.duration),
+            format!(
+                "Status: {} ({:.2}s)",
+                job.status.label(),
+                job.display_duration()
+            ),
             Style::default().fg(job.status.icon().1),
         );
         lines.push(Line::from(status_span));
@@ -929,6 +1311,15 @@ impl UiState {
             .and_then(|job| job.status.is_restartable().then(|| job.name.clone()))
     }
 
+    pub(super) fn cancelable_job_name(&self) -> Option<String> {
+        if self.history_view.is_some() {
+            return None;
+        }
+        self.jobs
+            .get(self.selected)
+            .and_then(|job| (job.status == UiJobStatus::Running).then(|| job.name.clone()))
+    }
+
     pub(super) fn manual_job_name(&self) -> Option<String> {
         if self.history_view.is_some() {
             return None;
@@ -957,6 +1348,8 @@ impl UiState {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].manual_pending = false;
             self.jobs[idx].status = UiJobStatus::Running;
+            self.jobs[idx].duration = 0.0;
+            self.jobs[idx].start_time = Some(Instant::now());
         }
     }
 
@@ -976,6 +1369,7 @@ impl UiState {
         if let Some(idx) = self.order.get(name).copied() {
             self.jobs[idx].status = status;
             self.jobs[idx].duration = duration;
+            self.jobs[idx].start_time = None;
             self.jobs[idx].error = error;
             self.jobs[idx].manual_pending = false;
         }
@@ -1113,6 +1507,17 @@ impl UiState {
     }
 }
 
+fn key_span_color(text: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        text.to_string(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn bullet() -> Span<'static> {
+    Span::styled(" • ", Style::default().fg(Color::DarkGray))
+}
+
 pub(super) struct UiJobState {
     name: String,
     stage: String,
@@ -1120,6 +1525,7 @@ pub(super) struct UiJobState {
     log_hash: String,
     status: UiJobStatus,
     duration: f32,
+    start_time: Option<Instant>,
     error: Option<String>,
     logs: Vec<String>,
     scroll_offset: usize,
@@ -1136,6 +1542,7 @@ impl UiJobState {
             log_hash: info.log_hash,
             status: UiJobStatus::Pending,
             duration: 0.0,
+            start_time: None,
             error: None,
             logs: Vec::new(),
             scroll_offset: 0,
@@ -1156,6 +1563,7 @@ impl UiJobState {
             log_hash: job.log_hash.clone(),
             status: UiJobStatus::from_history(job.status),
             duration: 0.0,
+            start_time: None,
             error: None,
             logs: Vec::new(),
             scroll_offset: 0,
@@ -1179,6 +1587,7 @@ impl UiJobState {
     fn reset_for_restart(&mut self) {
         self.status = UiJobStatus::Pending;
         self.duration = 0.0;
+        self.start_time = None;
         self.error = None;
         self.logs.clear();
         self.scroll_offset = 0;
@@ -1257,6 +1666,15 @@ impl UiJobState {
 
         collected.reverse();
         collected
+    }
+
+    fn display_duration(&self) -> f32 {
+        if matches!(self.status, UiJobStatus::Running)
+            && let Some(start) = self.start_time
+        {
+            return start.elapsed().as_secs_f32();
+        }
+        self.duration
     }
 }
 
@@ -1400,6 +1818,131 @@ fn format_log_entry(line: &str) -> Line<'static> {
         apply_line_style(&mut spans, style);
     }
     Line::from(spans)
+}
+
+impl HelpDocument {
+    fn discover() -> Vec<Self> {
+        let mut docs = Vec::new();
+        for file in EMBEDDED_DOCS.files() {
+            if file
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("md"))
+                != Some(true)
+            {
+                continue;
+            }
+            if let Some(contents) = file.contents_utf8() {
+                if let Some(doc) = Self::from_contents(file.path(), contents) {
+                    docs.push(doc);
+                }
+            }
+        }
+        docs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        docs
+    }
+
+    fn from_contents(path: &Path, contents: &str) -> Option<Self> {
+        let path_buf = path.to_path_buf();
+        let title = Self::extract_title(contents).unwrap_or_else(|| {
+            path_buf
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Document")
+                .replace('_', " ")
+        });
+        let lines = Self::markdown_lines(contents);
+        Some(Self {
+            title,
+            path: path_buf,
+            lines,
+        })
+    }
+
+    fn extract_title(contents: &str) -> Option<String> {
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let title = trimmed.trim_start_matches('#').trim();
+                if !title.is_empty() {
+                    return Some(title.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn markdown_lines(contents: &str) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut in_code = false;
+        for raw in contents.lines() {
+            let trimmed_end = raw.trim_end();
+            let trimmed = trimmed_end.trim();
+            if trimmed.starts_with("```") {
+                in_code = !in_code;
+                lines.push(Line::from(""));
+                continue;
+            }
+            if trimmed.is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
+            if in_code {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(trimmed_end.to_string(), Style::default().fg(Color::Green)),
+                ]));
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("# ") {
+                lines.push(Line::from(Span::styled(
+                    rest.trim().to_uppercase(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("## ") {
+                lines.push(Line::from(Span::styled(
+                    rest.trim().to_string(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("### ") {
+                lines.push(Line::from(Span::styled(
+                    rest.trim().to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                continue;
+            }
+            if let Some(rest) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+            {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    bullet(),
+                    Span::raw(rest.trim().to_string()),
+                ]));
+                continue;
+            }
+            lines.push(Line::from(trimmed_end.to_string()));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from("This document is empty."));
+        }
+        lines
+    }
 }
 
 pub(super) fn page_log_with_colors(path: &Path) -> Result<()> {

@@ -2,7 +2,7 @@ use crate::gitlab::Job;
 use crate::naming::{job_name_slug, project_slug};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -40,11 +40,6 @@ impl ArtifactManager {
                             format!("failed to prepare artifact parent {}", parent.display())
                         })?;
                     }
-                    if !host.exists() {
-                        File::create(&host).with_context(|| {
-                            format!("failed to create artifact file {}", host.display())
-                        })?;
-                    }
                 }
             }
         }
@@ -53,13 +48,27 @@ impl ArtifactManager {
     }
 
     pub fn job_mount_specs(&self, job: &Job) -> Vec<(PathBuf, PathBuf)> {
-        job.artifacts
-            .iter()
-            .map(|relative| {
-                let host = self.job_artifact_host_path(&job.name, relative);
-                (host, relative.clone())
-            })
-            .collect()
+        use std::collections::HashSet;
+
+        let mut specs = Vec::new();
+        let mut seen = HashSet::new();
+        for relative in &job.artifacts {
+            let rel_path = artifact_relative_path(relative);
+            let mount_rel = match artifact_kind(relative) {
+                ArtifactPathKind::Directory => rel_path.clone(),
+                ArtifactPathKind::File => match rel_path.parent() {
+                    Some(parent) if parent != Path::new("") && parent != Path::new(".") => {
+                        parent.to_path_buf()
+                    }
+                    _ => continue,
+                },
+            };
+            if seen.insert(mount_rel.clone()) {
+                let host = self.job_artifacts_root(&job.name).join(&mount_rel);
+                specs.push((host, mount_rel));
+            }
+        }
+        specs
     }
 
     pub fn dependency_mount_specs(
@@ -120,13 +129,11 @@ fn artifact_relative_path(artifact: &Path) -> PathBuf {
 }
 
 fn artifact_kind(path: &Path) -> ArtifactPathKind {
-    if path.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
-        return ArtifactPathKind::Directory;
-    }
-
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some(name) if name.contains('.') => ArtifactPathKind::File,
-        _ => ArtifactPathKind::Directory,
+    let text = path.to_string_lossy();
+    if text.ends_with(std::path::MAIN_SEPARATOR) {
+        ArtifactPathKind::Directory
+    } else {
+        ArtifactPathKind::File
     }
 }
 
