@@ -7,8 +7,8 @@ use crate::display::{
 };
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
-use crate::gitlab::{Job, PipelineGraph, ServiceConfig};
-use crate::history::{self, HistoryEntry, HistoryJob, HistoryStatus};
+use crate::gitlab::{CachePolicy, Job, PipelineGraph, ServiceConfig};
+use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
@@ -19,7 +19,7 @@ use crate::pipeline::{
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::{should_use_color, stream_lines};
-use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobStatus};
+use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobResources, UiJobStatus};
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -63,6 +63,13 @@ pub struct ExecutorCore {
     external_artifacts: Option<ExternalArtifactsManager>,
     running_containers: Arc<Mutex<HashMap<String, String>>>,
     cancelled_jobs: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Debug, Clone)]
+struct JobResourceInfo {
+    artifact_dir: Option<String>,
+    artifact_paths: Vec<String>,
+    caches: Vec<HistoryCache>,
 }
 
 impl ExecutorCore {
@@ -179,8 +186,10 @@ impl ExecutorCore {
 
     pub async fn run(&self) -> Result<()> {
         let plan = self.plan_jobs()?;
+        let resource_map = self.collect_job_resources(&plan);
         let display = self.display();
-        let plan_lines = collect_pipeline_plan(&display, &plan);
+        let plan_text = collect_pipeline_plan(&display, &plan).join("\n");
+        let ui_resources = Self::convert_ui_resources(&resource_map);
         let history_snapshot = self
             .history_entries
             .lock()
@@ -202,7 +211,9 @@ impl ExecutorCore {
                 jobs,
                 history_snapshot,
                 self.run_id.clone(),
-                plan_lines,
+                ui_resources,
+                plan_text,
+                self.config.workdir.clone(),
             )?)
         } else {
             None
@@ -225,7 +236,7 @@ impl ExecutorCore {
                 .await?;
         }
 
-        let history_entry = self.record_pipeline_history(&summaries);
+        let history_entry = self.record_pipeline_history(&summaries, &resource_map);
         if let (Some(entry), Some(ui)) = (history_entry, ui_bridge.as_deref()) {
             ui.history_updated(entry);
         }
@@ -267,6 +278,73 @@ impl ExecutorCore {
             });
         }
         pipeline::build_job_plan(&self.g, Some(&ctx), |job| self.job_log_info(job))
+    }
+
+    fn collect_job_resources(&self, plan: &JobPlan) -> HashMap<String, JobResourceInfo> {
+        plan.nodes
+            .values()
+            .map(|planned| {
+                let artifact_dir = if planned.job.artifacts.is_empty() {
+                    None
+                } else {
+                    Some(
+                        self.artifacts
+                            .job_artifacts_root(&planned.job.name)
+                            .display()
+                            .to_string(),
+                    )
+                };
+                let artifact_paths = planned
+                    .job
+                    .artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                let env_vars = self.job_env(&planned.job);
+                let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
+                let caches = self
+                    .cache
+                    .describe_entries(&planned.job.cache, &cache_env)
+                    .into_iter()
+                    .map(|entry| HistoryCache {
+                        key: entry.key,
+                        policy: cache_policy_label(entry.policy).to_string(),
+                        host: entry.host.display().to_string(),
+                        paths: entry
+                            .paths
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect(),
+                    })
+                    .collect();
+                (
+                    planned.job.name.clone(),
+                    JobResourceInfo {
+                        artifact_dir,
+                        artifact_paths,
+                        caches,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn convert_ui_resources(
+        resources: &HashMap<String, JobResourceInfo>,
+    ) -> HashMap<String, UiJobResources> {
+        resources
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    UiJobResources {
+                        artifact_dir: info.artifact_dir.clone(),
+                        artifact_paths: info.artifact_paths.clone(),
+                        caches: info.caches.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     async fn execute_plan(
@@ -691,6 +769,26 @@ impl ExecutorCore {
                             completed += 1;
                         }
                         Err(err) => {
+                            if event.cancelled {
+                                release_resource_lock(
+                                    planned,
+                                    &mut ready,
+                                    &mut resource_locks,
+                                    &mut resource_waiting,
+                                );
+                                summaries.push(JobSummary {
+                                    name: event.name.clone(),
+                                    stage_name: event.stage_name.clone(),
+                                    duration: event.duration,
+                                    status: JobStatus::Skipped("aborted by user".to_string()),
+                                    log_path: event.log_path.clone(),
+                                    log_hash: event.log_hash.clone(),
+                                    allow_failure: true,
+                                    environment: planned.job.environment.clone(),
+                                });
+                                completed += 1;
+                                continue;
+                            }
                             let err_msg = err.to_string();
                             let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
                             let retries_used = attempts_so_far.saturating_sub(1);
@@ -853,6 +951,7 @@ impl ExecutorCore {
             log_path,
             log_hash,
             result,
+            cancelled,
         } = event;
 
         let allow_failure = plan
@@ -867,7 +966,13 @@ impl ExecutorCore {
 
         let status = match result {
             Ok(_) => JobStatus::Success,
-            Err(err) => JobStatus::Failed(err.to_string()),
+            Err(err) => {
+                if cancelled {
+                    JobStatus::Skipped("aborted by user".to_string())
+                } else {
+                    JobStatus::Failed(err.to_string())
+                }
+            }
         };
 
         summaries.retain(|entry| entry.name != name);
@@ -883,7 +988,11 @@ impl ExecutorCore {
         });
     }
 
-    fn record_pipeline_history(&self, summaries: &[JobSummary]) -> Option<HistoryEntry> {
+    fn record_pipeline_history(
+        &self,
+        summaries: &[JobSummary],
+        resources: &HashMap<String, JobResourceInfo>,
+    ) -> Option<HistoryEntry> {
         let finished_at = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -912,6 +1021,17 @@ impl ExecutorCore {
                     .log_path
                     .as_ref()
                     .map(|path| path.display().to_string()),
+                artifact_dir: resources
+                    .get(&entry.name)
+                    .and_then(|info| info.artifact_dir.clone()),
+                artifacts: resources
+                    .get(&entry.name)
+                    .map(|info| info.artifact_paths.clone())
+                    .unwrap_or_default(),
+                caches: resources
+                    .get(&entry.name)
+                    .map(|info| info.caches.clone())
+                    .unwrap_or_default(),
             })
             .collect();
 
@@ -1099,12 +1219,23 @@ impl ExecutorCore {
         if let Some(ui) = ui_ref {
             match &final_result {
                 Ok(_) => ui.job_finished(&job_name, UiJobStatus::Success, duration, None),
-                Err(err) => ui.job_finished(
-                    &job_name,
-                    UiJobStatus::Failed,
-                    duration,
-                    Some(err.to_string()),
-                ),
+                Err(err) => {
+                    if cancelled {
+                        ui.job_finished(
+                            &job_name,
+                            UiJobStatus::Skipped,
+                            duration,
+                            Some("aborted by user".to_string()),
+                        );
+                    } else {
+                        ui.job_finished(
+                            &job_name,
+                            UiJobStatus::Failed,
+                            duration,
+                            Some(err.to_string()),
+                        );
+                    }
+                }
             }
         }
 
@@ -1117,6 +1248,7 @@ impl ExecutorCore {
             log_path: Some(log_path.clone()),
             log_hash,
             result: final_result,
+            cancelled,
         }
     }
 
@@ -1461,5 +1593,13 @@ fn release_resource_lock(
         {
             ready.push_back(next);
         }
+    }
+}
+
+fn cache_policy_label(policy: CachePolicy) -> &'static str {
+    match policy {
+        CachePolicy::Pull => "pull",
+        CachePolicy::Push => "push",
+        CachePolicy::PullPush => "pull-push",
     }
 }

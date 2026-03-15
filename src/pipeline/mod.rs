@@ -6,7 +6,7 @@ pub mod rules;
 pub mod scheduler;
 
 pub use artifacts::{ArtifactManager, ExternalArtifactsManager};
-pub use cache::{CacheManager, CacheMountSpec};
+pub use cache::{CacheEntryInfo, CacheManager, CacheMountSpec};
 pub use mounts::VolumeMount;
 pub use planner::{
     HaltKind, JobEvent, JobPlan, JobRunInfo, JobStatus, JobSummary, PlannedJob, StageState,

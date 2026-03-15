@@ -98,7 +98,7 @@ impl ArtifactManager {
             .join(artifact_relative_path(artifact))
     }
 
-    fn job_artifacts_root(&self, job_name: &str) -> PathBuf {
+    pub fn job_artifacts_root(&self, job_name: &str) -> PathBuf {
         self.root.join(job_name_slug(job_name)).join("artifacts")
     }
 }

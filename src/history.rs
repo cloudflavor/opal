@@ -19,6 +19,21 @@ pub struct HistoryJob {
     pub log_hash: String,
     #[serde(default)]
     pub log_path: Option<String>,
+    #[serde(default)]
+    pub artifact_dir: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub caches: Vec<HistoryCache>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HistoryCache {
+    pub key: String,
+    pub policy: String,
+    pub host: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

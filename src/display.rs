@@ -250,11 +250,18 @@ pub fn print_pipeline_plan<F>(display: &DisplayFormatter, plan: &JobPlan, mut em
 where
     F: FnMut(String),
 {
-    emit_line(String::new());
-    let header = display.bold_blue("╭─ pipeline plan");
-    emit_line(header);
+    let mut emit = |line: String| {
+        if line.is_empty() {
+            emit_line(String::new());
+        } else {
+            emit_line(format!("  {line}"));
+        }
+    };
+    emit(String::new());
+    let header = display.bold_blue("pipeline plan");
+    emit(header);
     if plan.ordered.is_empty() {
-        emit_line("  no jobs scheduled for this context".to_string());
+        emit("no jobs scheduled for this context".to_string());
         return;
     }
 
@@ -265,10 +272,12 @@ where
         };
         if current_stage.as_deref() != Some(planned.stage_name.as_str()) {
             current_stage = Some(planned.stage_name.clone());
-            emit_line(String::new());
-            emit_line(display.stage_header(&planned.stage_name));
+            emit(String::new());
+            let stage_label = display.bold_cyan("stage:");
+            let stage_name = display.bold_magenta(planned.stage_name.as_str());
+            emit(format!("{stage_label} {stage_name}"));
         }
-        emit_plan_job(display, plan, planned, &mut emit_line);
+        emit_plan_job(display, plan, planned, &mut emit);
     }
 }
 

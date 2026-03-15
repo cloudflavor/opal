@@ -75,6 +75,7 @@ pub struct JobEvent {
     pub log_path: Option<PathBuf>,
     pub log_hash: String,
     pub result: Result<()>,
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,16 +7,28 @@ use crate::history;
 use crate::history::HistoryEntry;
 use crate::ui::types::UiEvent;
 use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::env;
 use std::path::Path;
 use tokio::sync::mpsc;
 
 pub use handle::{UiBridge, UiHandle};
-pub use types::{UiCommand, UiJobInfo, UiJobStatus};
+pub use types::{UiCommand, UiJobInfo, UiJobResources, UiJobStatus};
 
 pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, Vec::new(), rx, cmd_tx);
+    let workdir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let runner = runner::UiRunner::new(
+        Vec::new(),
+        history,
+        current_run_id,
+        HashMap::new(),
+        String::new(),
+        workdir,
+        rx,
+        cmd_tx,
+    );
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }
@@ -34,7 +46,17 @@ pub fn view_pipeline_logs(root: &Path) -> Result<()> {
         .unwrap_or_else(|| "history-view".to_string());
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, Vec::new(), rx, cmd_tx);
+    let workdir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let runner = runner::UiRunner::new(
+        Vec::new(),
+        history,
+        current_run_id,
+        HashMap::new(),
+        String::new(),
+        workdir,
+        rx,
+        cmd_tx,
+    );
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }

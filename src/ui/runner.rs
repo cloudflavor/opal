@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,8 +20,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
 
-use super::state::{UiState, page_log_with_colors};
-use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo};
+use super::state::{UiState, page_log_with_colors, page_text_with_pager};
+use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo, UiJobResources};
 
 pub(super) struct UiRunner {
     rx: UnboundedReceiver<UiEvent>,
@@ -33,11 +34,14 @@ pub(super) struct UiRunner {
 }
 
 impl UiRunner {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         jobs: Vec<UiJobInfo>,
         history: Vec<HistoryEntry>,
         current_run_id: String,
-        plan_lines: Vec<String>,
+        job_resources: HashMap<String, UiJobResources>,
+        plan_text: String,
+        workdir: PathBuf,
         rx: UnboundedReceiver<UiEvent>,
         commands: UnboundedSender<UiCommand>,
     ) -> Self {
@@ -48,7 +52,14 @@ impl UiRunner {
             rx,
             commands,
             terminal,
-            state: UiState::new(jobs, history, current_run_id, plan_lines),
+            state: UiState::new(
+                jobs,
+                history,
+                current_run_id,
+                job_resources,
+                plan_text,
+                workdir,
+            ),
             pipeline_finished: false,
             exit_requested: false,
             abort_sent: false,
@@ -84,7 +95,11 @@ impl UiRunner {
     }
 
     fn should_quit(&self) -> bool {
-        self.exit_requested
+        if self.exit_requested {
+            self.pipeline_finished
+        } else {
+            false
+        }
     }
 
     fn request_abort(&mut self) {
@@ -113,13 +128,11 @@ impl UiRunner {
             let tab_width = columns[1].width.saturating_sub(2).max(1);
             let (tabs, tab_height) = self.state.tabs(tab_width);
 
-            let plan_height = self.state.plan_panel_height();
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(tab_height),
                     Constraint::Length(4),
-                    Constraint::Length(plan_height),
                     Constraint::Min(0),
                 ])
                 .split(columns[1]);
@@ -129,14 +142,10 @@ impl UiRunner {
             let info = self.state.info_panel();
             frame.render_widget(info, layout[1]);
 
-            self.state.update_plan_viewport(layout[2].height);
-            let plan_panel = self.state.plan_panel();
-            frame.render_widget(plan_panel, layout[2]);
-
             let log_widget =
                 self.state
-                    .log_view(self.pipeline_finished, layout[3].width, layout[3].height);
-            frame.render_widget(log_widget, layout[3]);
+                    .log_view(self.pipeline_finished, layout[2].width, layout[2].height);
+            frame.render_widget(log_widget, layout[2]);
 
             if self.state.help_visible() {
                 let area = centered_rect(60, 80, frame.size());
@@ -152,6 +161,8 @@ impl UiRunner {
                         Constraint::Length(3),
                     ])
                     .split(inner);
+                self.state
+                    .update_help_viewport(help_layout[1].width, help_layout[1].height);
                 frame.render_widget(Clear, area);
                 frame.render_widget(block, area);
                 frame.render_widget(self.state.help_header(), help_layout[0]);
@@ -222,53 +233,26 @@ impl UiRunner {
                     self.state.next_help_document();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.scroll_help_document(-1);
+                    self.state.scroll_help(-1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.scroll_help_document(1);
+                    self.state.scroll_help(1);
                 }
                 KeyCode::PageUp => {
-                    self.state.scroll_help_document_page_up();
+                    self.state.scroll_help_page_up();
                 }
                 KeyCode::PageDown => {
-                    self.state.scroll_help_document_page_down();
+                    self.state.scroll_help_page_down();
                 }
                 KeyCode::Home => {
-                    self.state.scroll_help_doc_to_top();
+                    self.state.scroll_help_to_top();
                 }
                 KeyCode::End => {
-                    self.state.scroll_help_doc_to_bottom();
+                    self.state.scroll_help_to_bottom();
                 }
                 _ => {}
             }
             return Ok(());
-        }
-        match key.code {
-            KeyCode::Char('[') => {
-                self.state.scroll_plan_line_up();
-                return Ok(());
-            }
-            KeyCode::Char(']') => {
-                self.state.scroll_plan_line_down();
-                return Ok(());
-            }
-            KeyCode::Char('{') => {
-                self.state.scroll_plan_page_up();
-                return Ok(());
-            }
-            KeyCode::Char('}') => {
-                self.state.scroll_plan_page_down();
-                return Ok(());
-            }
-            KeyCode::Char('\\') => {
-                self.state.scroll_plan_to_top();
-                return Ok(());
-            }
-            KeyCode::Char('|') => {
-                self.state.scroll_plan_to_bottom();
-                return Ok(());
-            }
-            _ => {}
         }
         match key.code {
             KeyCode::Char('q') => {
@@ -287,6 +271,10 @@ impl UiRunner {
             }
             KeyCode::Char('?') => {
                 self.state.toggle_help();
+                return Ok(());
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                self.view_plan()?;
                 return Ok(());
             }
             _ => {}
@@ -325,6 +313,17 @@ impl UiRunner {
                                         title,
                                         &empty,
                                         err.to_string(),
+                                    );
+                                }
+                            }
+                            HistoryAction::ViewDir { title, path } => {
+                                if let Err(err) =
+                                    self.state.load_directory_preview(title.clone(), &path)
+                                {
+                                    self.state.set_history_preview_message(
+                                        title,
+                                        &path,
+                                        format!("failed to read directory: {err}"),
                                     );
                                 }
                             }
@@ -440,6 +439,11 @@ impl UiRunner {
         } else {
             Ok(())
         }
+    }
+
+    fn view_plan(&mut self) -> Result<()> {
+        let plan = self.state.plan_text();
+        self.suspend_terminal(|| page_text_with_pager(&plan))
     }
 
     fn suspend_terminal<F>(&mut self, action: F) -> Result<()>

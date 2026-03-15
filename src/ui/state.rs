@@ -1,6 +1,6 @@
 use super::types::{
     CURRENT_HISTORY_KEY, HistoryAction, LOG_SCROLL_HALF, LOG_SCROLL_PAGE, LOG_SCROLL_STEP,
-    PaneFocus, UiJobInfo, UiJobStatus,
+    PaneFocus, UiJobInfo, UiJobResources, UiJobStatus,
 };
 use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 use anyhow::{Context, Result, anyhow};
@@ -17,8 +17,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use walkdir::WalkDir;
 
-const HELP_DOC_SCROLL_PAGE: i32 = 10;
 static EMBEDDED_DOCS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/docs");
 
 #[derive(Clone)]
@@ -49,10 +49,13 @@ pub(super) struct UiState {
     show_help: bool,
     help_view: HelpView,
     help_scroll: u16,
+    help_viewport: u16,
+    help_width: u16,
     help_docs: Vec<HelpDocument>,
-    plan_lines: Vec<Line<'static>>,
-    plan_scroll: u16,
-    plan_viewport: u16,
+    job_resources: HashMap<String, UiJobResources>,
+    plan_text: String,
+    workdir: PathBuf,
+    history_height: u16,
 }
 
 impl UiState {
@@ -60,7 +63,9 @@ impl UiState {
         jobs: Vec<UiJobInfo>,
         history: Vec<HistoryEntry>,
         current_run_id: String,
-        plan_lines: Vec<String>,
+        job_resources: HashMap<String, UiJobResources>,
+        plan_text: String,
+        workdir: PathBuf,
     ) -> Self {
         let mut order = HashMap::new();
         let job_states: Vec<UiJobState> = jobs
@@ -78,11 +83,6 @@ impl UiState {
             history_collapsed.insert(entry.run_id.clone(), true);
         }
 
-        let plan_lines = plan_lines
-            .into_iter()
-            .map(Line::from)
-            .collect::<Vec<Line<'static>>>();
-
         Self {
             jobs: job_states,
             order,
@@ -98,10 +98,13 @@ impl UiState {
             show_help: false,
             help_view: HelpView::Shortcuts,
             help_scroll: 0,
+            help_viewport: 1,
+            help_width: 1,
             help_docs: HelpDocument::discover(),
-            plan_lines,
-            plan_scroll: 0,
-            plan_viewport: 1,
+            job_resources,
+            plan_text,
+            workdir,
+            history_height: 0,
         }
     }
 
@@ -167,8 +170,8 @@ impl UiState {
                 .wrap(Wrap { trim: false });
         }
 
-        self.clamp_history_selection(nodes.len());
-        self.ensure_history_visible(height, nodes.len());
+        self.history_height = height;
+        self.clamp_and_scroll_history(nodes.len());
 
         let viewport = Self::history_viewport(height);
         let visible = if viewport == 0 {
@@ -297,6 +300,10 @@ impl UiState {
                         Self::history_status_from_ui(job.status),
                     ),
                 });
+                let job_idx = nodes.len() - 1;
+                if let Some(resources) = self.job_resources.get(&job.name) {
+                    self.append_job_resource_nodes(&mut nodes, job_idx, resources);
+                }
             }
         }
 
@@ -361,10 +368,66 @@ impl UiState {
                         job.status,
                     ),
                 });
+                let job_idx = nodes.len() - 1;
+                let resources = UiJobResources::from(job);
+                self.append_job_resource_nodes(&mut nodes, job_idx, &resources);
             }
         }
 
         nodes
+    }
+
+    fn append_job_resource_nodes(
+        &self,
+        nodes: &mut Vec<HistoryRenderNode>,
+        parent_index: usize,
+        resources: &UiJobResources,
+    ) {
+        let mut entries = Vec::new();
+        if let Some(dir) = &resources.artifact_dir {
+            entries.push(ResourceEntry::dir(
+                format!("Artifact dir: {}", self.relative_display(dir)),
+                PathBuf::from(dir),
+            ));
+        }
+        if !resources.artifact_paths.is_empty() {
+            let display_paths: Vec<String> = resources
+                .artifact_paths
+                .iter()
+                .map(|p| self.relative_display(p))
+                .collect();
+            let summary = Self::summarize_list(&display_paths);
+            entries.push(ResourceEntry::info(format!("Artifacts: {summary}")));
+        }
+        if !resources.caches.is_empty() {
+            let cache_summary = resources
+                .caches
+                .iter()
+                .map(|cache| {
+                    format!(
+                        "{} ({}) @ {}",
+                        cache.key,
+                        cache.policy,
+                        self.relative_display(&cache.host)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            entries.push(ResourceEntry::info(format!("Caches: {cache_summary}")));
+        }
+        if entries.is_empty() {
+            return;
+        }
+        let total = entries.len();
+        for (idx, entry) in entries.into_iter().enumerate() {
+            let connector = if idx + 1 == total { "└─" } else { "├─" };
+            let line = Self::resource_line(connector, &entry.label, entry.color);
+            nodes.push(HistoryRenderNode {
+                key: entry.key,
+                parent_index: Some(parent_index),
+                line,
+            });
+        }
     }
 
     pub(super) fn history_job_line(
@@ -515,6 +578,7 @@ impl UiState {
         } else if self.history_selection > 0 {
             self.history_selection -= 1;
         }
+        self.clamp_and_scroll_history(nodes.len());
     }
 
     pub(super) fn history_move_down(&mut self) {
@@ -524,9 +588,12 @@ impl UiState {
             return;
         }
         self.clear_history_preview();
-        if self.history_selection + 1 < nodes.len() {
+        if self.history_selection >= nodes.len() {
+            self.history_selection = nodes.len().saturating_sub(1);
+        } else if self.history_selection + 1 < nodes.len() {
             self.history_selection += 1;
         }
+        self.clamp_and_scroll_history(nodes.len());
     }
 
     pub(super) fn history_move_home(&mut self) {
@@ -544,6 +611,7 @@ impl UiState {
             self.history_selection = len - 1;
         }
         self.clear_history_preview();
+        self.clamp_and_scroll_history(len);
     }
 
     pub(super) fn history_move_left(&mut self) {
@@ -571,6 +639,7 @@ impl UiState {
                 }
             }
         }
+        self.refresh_history_bounds();
     }
 
     pub(super) fn history_move_right(&mut self) {
@@ -602,6 +671,7 @@ impl UiState {
             }
             _ => {}
         }
+        self.refresh_history_bounds();
     }
 
     pub(super) fn history_activate(&mut self) -> Option<HistoryAction> {
@@ -625,6 +695,11 @@ impl UiState {
                 title: format!("{run_id} • {job_name}"),
                 path,
             }),
+            HistoryNodeKey::ResourceDir { title, path } => Some(HistoryAction::ViewDir {
+                title: title.clone(),
+                path: path.clone(),
+            }),
+            HistoryNodeKey::ResourceInfo => None,
         }
     }
 
@@ -664,6 +739,50 @@ impl UiState {
             scroll_offset: 0,
         });
         self.focus = PaneFocus::Jobs;
+    }
+
+    pub(super) fn load_directory_preview(&mut self, title: String, path: &Path) -> Result<()> {
+        self.history_preview = None;
+        if !path.exists() {
+            self.set_history_preview_message(
+                title,
+                path,
+                format!("directory {} not found", path.display()),
+            );
+            return Ok(());
+        }
+        let mut lines = Vec::new();
+        lines.push(format!("Directory: {}", path.display()));
+        let mut count = 0usize;
+        let max_entries = 600;
+        let max_depth = 5;
+        for entry in WalkDir::new(path).max_depth(max_depth).sort_by_file_name() {
+            let entry = entry.with_context(|| "failed to read directory entry")?;
+            let depth = entry.depth();
+            let indent = "  ".repeat(depth);
+            let name = entry.file_name().to_string_lossy();
+            let marker = if entry.file_type().is_dir() {
+                "[d]"
+            } else {
+                "[f]"
+            };
+            lines.push(format!("{indent}{marker} {name}"));
+            count += 1;
+            if count >= max_entries {
+                lines.push(format!(
+                    "... truncated to {max_entries} entries (use pager to inspect directly)"
+                ));
+                break;
+            }
+        }
+        self.history_preview = Some(HistoryPreview {
+            title,
+            path: path.to_path_buf(),
+            lines,
+            scroll_offset: 0,
+        });
+        self.focus = PaneFocus::Jobs;
+        Ok(())
     }
 
     pub(super) fn on_active_selection_changed(&mut self) {
@@ -715,6 +834,24 @@ impl UiState {
 
     pub(super) fn history_viewport(height: u16) -> usize {
         usize::from(height.saturating_sub(2).max(1))
+    }
+
+    fn history_pane_height(&self) -> u16 {
+        self.history_height.max(1)
+    }
+
+    fn help_text_width(&self) -> u16 {
+        self.help_width.max(1)
+    }
+
+    fn clamp_and_scroll_history(&mut self, len: usize) {
+        self.clamp_history_selection(len);
+        self.ensure_history_visible(self.history_pane_height(), len);
+    }
+
+    fn refresh_history_bounds(&mut self) {
+        let len = self.history_nodes().len();
+        self.clamp_and_scroll_history(len);
     }
 
     pub(super) fn tab_lines(&self, available: usize) -> (Vec<Line<'static>>, u16) {
@@ -855,102 +992,88 @@ impl UiState {
         .wrap(Wrap { trim: false })
     }
 
-    pub(super) fn plan_panel(&self) -> Paragraph<'static> {
-        let lines = if self.plan_lines.is_empty() {
-            vec![Line::from("plan unavailable (run opal plan?)")]
+    pub(super) fn plan_text(&self) -> String {
+        if self.plan_text.is_empty() {
+            "plan unavailable (run opal plan?)".to_string()
         } else {
-            self.plan_lines.clone()
-        };
-        let mut paragraph = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Plan"))
-            .wrap(Wrap { trim: false });
-        if !self.plan_lines.is_empty() {
-            let scroll = self.plan_scroll.min(self.max_plan_scroll());
-            paragraph = paragraph.scroll((scroll, 0));
+            self.plan_text.clone()
         }
-        paragraph
     }
 
-    pub(super) fn plan_panel_height(&self) -> u16 {
-        if self.plan_lines.is_empty() {
-            3
+    fn resource_line(connector: &str, label: &str, color: Color) -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!("     {} ", connector),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(label.to_string(), Style::default().fg(color)),
+        ])
+    }
+
+    fn summarize_list(items: &[String]) -> String {
+        const MAX: usize = 3;
+        if items.len() <= MAX {
+            items.join(", ")
         } else {
-            let line_count = self.plan_lines.len().min(12);
-            (line_count as u16).saturating_add(2).max(4)
+            let shown = items
+                .iter()
+                .take(MAX)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{shown} (+{} more)", items.len() - MAX)
         }
     }
 
-    pub(super) fn update_plan_viewport(&mut self, height: u16) {
-        let viewport = height.saturating_sub(2).max(1);
-        self.plan_viewport = viewport;
-        let max_scroll = self.max_plan_scroll();
-        if self.plan_scroll > max_scroll {
-            self.plan_scroll = max_scroll;
-        }
-    }
-
-    pub(super) fn scroll_plan_line_up(&mut self) {
-        if self.plan_lines.is_empty() {
-            return;
-        }
-        self.plan_scroll = self.plan_scroll.saturating_sub(1);
-    }
-
-    pub(super) fn scroll_plan_line_down(&mut self) {
-        if self.plan_lines.is_empty() {
-            return;
-        }
-        let max = self.max_plan_scroll();
-        if self.plan_scroll < max {
-            self.plan_scroll = self.plan_scroll.saturating_add(1);
-        }
-    }
-
-    pub(super) fn scroll_plan_page_up(&mut self) {
-        if self.plan_lines.is_empty() {
-            return;
-        }
-        let delta = self.plan_viewport;
-        self.plan_scroll = self.plan_scroll.saturating_sub(delta);
-    }
-
-    pub(super) fn scroll_plan_page_down(&mut self) {
-        if self.plan_lines.is_empty() {
-            return;
-        }
-        let max = self.max_plan_scroll();
-        let delta = self.plan_viewport;
-        let next = self.plan_scroll.saturating_add(delta);
-        self.plan_scroll = next.min(max);
-    }
-
-    pub(super) fn scroll_plan_to_top(&mut self) {
-        self.plan_scroll = 0;
-    }
-
-    pub(super) fn scroll_plan_to_bottom(&mut self) {
-        if self.plan_lines.is_empty() {
-            self.plan_scroll = 0;
+    fn relative_display(&self, path: &str) -> String {
+        let raw = Path::new(path);
+        if raw.is_absolute()
+            && let Ok(relative) = raw.strip_prefix(&self.workdir)
+        {
+            let display = relative.display().to_string();
+            if display.is_empty() {
+                ".".to_string()
+            } else {
+                format!("./{display}")
+            }
         } else {
-            self.plan_scroll = self.max_plan_scroll();
+            path.to_string()
         }
     }
 
-    fn max_plan_scroll(&self) -> u16 {
-        if self.plan_lines.is_empty() {
+    fn current_help_lines(&self) -> Vec<Line<'static>> {
+        match self.help_view {
+            HelpView::Shortcuts => self.shortcut_help_lines(),
+            HelpView::Document(idx) => self.help_document_lines(idx),
+        }
+    }
+
+    fn max_help_scroll(&self) -> u16 {
+        let lines = self.current_help_lines();
+        let viewport = self.help_viewport as usize;
+        if viewport == 0 {
             return 0;
         }
-        let viewport = self.plan_viewport as usize;
-        let total = self.plan_lines.len();
-        if viewport >= total {
+        let width = usize::from(self.help_text_width());
+        let total_rows = total_rows(&lines, width);
+        if total_rows <= viewport {
             0
         } else {
-            (total - viewport) as u16
+            (total_rows - viewport).min(u16::MAX as usize) as u16
         }
     }
 
     pub(super) fn help_visible(&self) -> bool {
         self.show_help
+    }
+
+    pub(super) fn update_help_viewport(&mut self, width: u16, height: u16) {
+        self.help_viewport = height.saturating_sub(2).max(1);
+        self.help_width = width.saturating_sub(2).max(1);
+        let max_scroll = self.max_help_scroll();
+        if self.help_scroll > max_scroll {
+            self.help_scroll = max_scroll;
+        }
     }
 
     pub(super) fn toggle_help(&mut self) {
@@ -1021,13 +1144,11 @@ impl UiState {
     }
 
     pub(super) fn help_body(&self) -> Paragraph<'static> {
-        let mut body = match self.help_view {
-            HelpView::Shortcuts => Paragraph::new(self.shortcut_help_lines()),
-            HelpView::Document(idx) => Paragraph::new(self.help_document_lines(idx)),
-        };
-        body = body.wrap(Wrap { trim: false });
-        if matches!(self.help_view, HelpView::Document(_)) {
-            body = body.scroll((self.help_scroll, 0));
+        let lines = self.current_help_lines();
+        let mut body = Paragraph::new(lines).wrap(Wrap { trim: false });
+        if self.max_help_scroll() > 0 {
+            let scroll = self.help_scroll.min(self.max_help_scroll());
+            body = body.scroll((scroll, 0));
         }
         body
     }
@@ -1121,95 +1242,83 @@ impl UiState {
         }
     }
 
-    pub(super) fn scroll_help_document(&mut self, delta: i32) {
-        if let HelpView::Document(idx) = self.help_view
-            && let Some(doc) = self.help_docs.get(idx)
-        {
-            let max_scroll = doc.lines.len().saturating_sub(1).min(u16::MAX as usize) as i32;
-            if max_scroll <= 0 {
-                self.help_scroll = 0;
-                return;
-            }
-            let current = self.help_scroll as i32;
-            let next = (current + delta).clamp(0, max_scroll);
-            self.help_scroll = next as u16;
-        }
-    }
-
-    pub(super) fn scroll_help_doc_to_top(&mut self) {
-        if matches!(self.help_view, HelpView::Document(_)) {
+    pub(super) fn scroll_help(&mut self, delta: i32) {
+        let max_scroll = self.max_help_scroll() as i32;
+        if max_scroll <= 0 {
             self.help_scroll = 0;
+            return;
         }
+        let current = self.help_scroll as i32;
+        let next = (current + delta).clamp(0, max_scroll);
+        self.help_scroll = next as u16;
     }
 
-    pub(super) fn scroll_help_doc_to_bottom(&mut self) {
-        if let HelpView::Document(idx) = self.help_view
-            && let Some(doc) = self.help_docs.get(idx)
-        {
-            let max_scroll = doc.lines.len().saturating_sub(1).min(u16::MAX as usize) as u16;
-            self.help_scroll = max_scroll;
-        }
+    pub(super) fn scroll_help_to_top(&mut self) {
+        self.help_scroll = 0;
     }
 
-    pub(super) fn scroll_help_document_page_up(&mut self) {
-        self.scroll_help_document(-HELP_DOC_SCROLL_PAGE);
+    pub(super) fn scroll_help_to_bottom(&mut self) {
+        self.help_scroll = self.max_help_scroll();
     }
 
-    pub(super) fn scroll_help_document_page_down(&mut self) {
-        self.scroll_help_document(HELP_DOC_SCROLL_PAGE);
+    pub(super) fn scroll_help_page_up(&mut self) {
+        let delta = self.help_viewport as i32;
+        self.scroll_help(-delta.max(1));
+    }
+
+    pub(super) fn scroll_help_page_down(&mut self) {
+        let delta = self.help_viewport as i32;
+        self.scroll_help(delta.max(1));
     }
 
     fn shortcut_help_lines(&self) -> Vec<Line<'static>> {
+        let sections = [
+            Self::help_section(
+                "Jobs",
+                Color::Green,
+                &[
+                    ("j/k/←/→", "change tab"),
+                    ("↓/↑", "next/prev"),
+                    ("r", "restart job"),
+                    ("o", "open log"),
+                    ("x", "cancel job"),
+                ],
+            ),
+            Self::help_section("Manual", Color::Yellow, &[("m", "start pending job")]),
+            Self::help_section(
+                "Logs",
+                Color::Magenta,
+                &[
+                    ("Shift/Ctrl+↑/↓", "scroll"),
+                    ("g/G", "top/bottom"),
+                    ("Ctrl+u/d", "half page"),
+                    ("Ctrl+f/b", "page"),
+                    ("Ctrl+e/y", "line"),
+                    ("Space", "page down"),
+                ],
+            ),
+            Self::help_section(
+                "History/Panes",
+                Color::Cyan,
+                &[
+                    ("↑/↓/j/k", "move cursor"),
+                    ("←/→/h/l", "collapse"),
+                    ("Enter/Space", "open run/log"),
+                    ("Tab", "switch panes"),
+                    ("q", "quit"),
+                ],
+            ),
+            Self::help_section("Plan", Color::White, &[("p", "open plan in pager")]),
+        ];
+
         let mut lines = Vec::new();
-        lines.extend(Self::help_section(
-            "Jobs",
-            Color::Green,
-            &[
-                ("j/k/←/→", "change tab"),
-                ("↓/↑", "next/prev"),
-                ("r", "restart job"),
-                ("o", "open log"),
-                ("x", "cancel job"),
-            ],
-        ));
-        lines.extend(Self::help_section(
-            "Manual",
-            Color::Yellow,
-            &[("m", "start pending job")],
-        ));
-        lines.extend(Self::help_section(
-            "Logs",
-            Color::Magenta,
-            &[
-                ("Shift/Ctrl+↑/↓", "scroll"),
-                ("g/G", "top/bottom"),
-                ("Ctrl+u/d", "half page"),
-                ("Ctrl+f/b", "page"),
-                ("Ctrl+e/y", "line"),
-                ("Space", "page down"),
-            ],
-        ));
-        lines.extend(Self::help_section(
-            "History/Panes",
-            Color::Cyan,
-            &[
-                ("↑/↓/j/k", "move cursor"),
-                ("←/→/h/l", "collapse"),
-                ("Enter/Space", "open run/log"),
-                ("Tab", "switch panes"),
-                ("q", "quit"),
-            ],
-        ));
-        lines.extend(Self::help_section(
-            "Plan",
-            Color::White,
-            &[
-                ("[ / ]", "scroll plan line"),
-                ("{ / }", "scroll plan page"),
-                ("\\", "plan top"),
-                ("|", "plan bottom"),
-            ],
-        ));
+        lines.push(Line::from(Span::raw("")));
+        for chunk in sections.chunks(2) {
+            let left = chunk.first().cloned().unwrap_or_default();
+            let right = chunk.get(1).cloned().unwrap_or_default();
+            lines.extend(Self::merge_help_sections(left, right));
+            lines.push(Line::from(Span::raw("")));
+        }
         if !self.help_docs.is_empty() {
             lines.extend(self.help_docs_summary_lines());
         }
@@ -1240,6 +1349,28 @@ impl UiState {
             lines.push(Line::from(Span::raw(" ")));
         }
         lines
+    }
+
+    fn merge_help_sections(
+        left: Vec<Line<'static>>,
+        right: Vec<Line<'static>>,
+    ) -> Vec<Line<'static>> {
+        if right.is_empty() {
+            return left;
+        }
+        let width = 36usize;
+        let mut merged = Vec::new();
+        let max = left.len().max(right.len());
+        for idx in 0..max {
+            let left_line = left.get(idx).cloned().unwrap_or_else(|| Line::from(""));
+            let right_line = right.get(idx).cloned().unwrap_or_else(|| Line::from(""));
+            let mut spans = left_line.spans.clone();
+            let pad = width.saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>());
+            spans.push(Span::raw(" ".repeat(pad + 4)));
+            spans.extend(right_line.spans.iter().cloned());
+            merged.push(Line::from(spans));
+        }
+        merged
     }
 
     fn help_docs_summary_lines(&self) -> Vec<Line<'static>> {
@@ -1819,6 +1950,11 @@ enum HistoryNodeKey {
         job_name: String,
         log_path: Option<PathBuf>,
     },
+    ResourceDir {
+        title: String,
+        path: PathBuf,
+    },
+    ResourceInfo,
 }
 
 struct HistoryRunView {
@@ -1832,6 +1968,33 @@ struct HistoryPreview {
     path: PathBuf,
     lines: Vec<String>,
     scroll_offset: usize,
+}
+
+struct ResourceEntry {
+    key: HistoryNodeKey,
+    label: String,
+    color: Color,
+}
+
+impl ResourceEntry {
+    fn dir(label: String, path: PathBuf) -> Self {
+        Self {
+            key: HistoryNodeKey::ResourceDir {
+                title: label.clone(),
+                path,
+            },
+            label,
+            color: Color::Cyan,
+        }
+    }
+
+    fn info(label: String) -> Self {
+        Self {
+            key: HistoryNodeKey::ResourceInfo,
+            label,
+            color: Color::DarkGray,
+        }
+    }
 }
 
 impl HistoryPreview {
@@ -1957,7 +2120,7 @@ impl HelpDocument {
                 docs.push(doc);
             }
         }
-        docs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        docs.sort_by_key(|doc| doc.title.to_lowercase());
         docs
     }
 
@@ -2087,6 +2250,22 @@ pub(super) fn page_log_with_colors(path: &Path) -> Result<()> {
     }
 
     let _ = Command::new("cat").arg(path).status();
+    Ok(())
+}
+
+pub(super) fn page_text_with_pager(content: &str) -> Result<()> {
+    let pager = env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+    let (cmd, args) = parse_pager_command(&pager);
+    let mut child = Command::new(&cmd);
+    child.args(&args).stdin(Stdio::piped());
+    if let Ok(mut handle) = child.spawn() {
+        if let Some(mut stdin) = handle.stdin.take() {
+            stdin.write_all(content.as_bytes())?;
+        }
+        let _ = handle.wait();
+        return Ok(());
+    }
+    print!("{content}");
     Ok(())
 }
 

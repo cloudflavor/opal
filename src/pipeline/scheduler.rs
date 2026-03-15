@@ -41,6 +41,7 @@ pub fn spawn_job(
                     log_path: Some(log_path.clone()),
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("failed to acquire job slot: {err}")),
+                    cancelled: false,
                 });
                 return;
             }
@@ -65,6 +66,7 @@ pub fn spawn_job(
                         log_path: Some(log_path.clone()),
                         log_hash: log_hash.clone(),
                         result: Err(anyhow!("job task panicked: {err}")),
+                        cancelled: false,
                     },
                 },
                 Err(_) => {
@@ -79,6 +81,7 @@ pub fn spawn_job(
                             "job exceeded timeout of {}",
                             humantime::format_duration(limit)
                         )),
+                        cancelled: false,
                     }
                 }
             }
@@ -92,11 +95,13 @@ pub fn spawn_job(
                     log_path: Some(log_path.clone()),
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("job task panicked: {err}")),
+                    cancelled: false,
                 },
             }
         };
         if let Some(ui) = &ui
             && event.result.is_err()
+            && !event.cancelled
         {
             ui.job_finished(
                 &job_name,

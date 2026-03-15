@@ -1,4 +1,4 @@
-use crate::history::{HistoryEntry, HistoryStatus};
+use crate::history::{HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use std::path::PathBuf;
 
 pub const LOG_SCROLL_STEP: usize = 3;
@@ -17,6 +17,7 @@ pub enum HistoryAction {
     SelectJob(usize),
     ViewLog { title: String, path: PathBuf },
     ViewRun(String),
+    ViewDir { title: String, path: PathBuf },
 }
 
 #[derive(Clone)]
@@ -25,6 +26,23 @@ pub struct UiJobInfo {
     pub stage: String,
     pub log_path: PathBuf,
     pub log_hash: String,
+}
+
+#[derive(Clone, Default)]
+pub struct UiJobResources {
+    pub artifact_dir: Option<String>,
+    pub artifact_paths: Vec<String>,
+    pub caches: Vec<HistoryCache>,
+}
+
+impl From<&HistoryJob> for UiJobResources {
+    fn from(job: &HistoryJob) -> Self {
+        Self {
+            artifact_dir: job.artifact_dir.clone(),
+            artifact_paths: job.artifacts.clone(),
+            caches: job.caches.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
