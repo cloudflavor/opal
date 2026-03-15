@@ -21,7 +21,13 @@
    - The left column lists run history; use `↑/↓` to inspect past results.
    - Press `?` at any time to open the contextual help overlay. From there you can open these Markdown docs with `1-9` or `←/→`.
 
-5. **Inspect results**
+5. **Preview the DAG**
+   ```bash
+   opal plan --pipeline .gitlab-ci.yml --workdir .
+   ```
+   `opal plan` evaluates rules/filters and prints every stage, job, dependency, and manual gate so you can verify the DAG before any containers start.
+
+6. **Inspect results**
    - Highlight a job and press `o` to open its log in your pager (`$PAGER`, default `less -R`).
    - Artifacts are stored in `.opal/<run-id>/artifacts/<job>/`.
 
@@ -29,4 +35,4 @@
 
 - Pass `--max-parallel-jobs N` to increase concurrency.
 - Use `--env APP_*` (repeatable) to forward host environment variables into the execution sandbox.
-- When experimenting with `.gitlab-ci.yml`, run `opal plan` to see how jobs resolve before starting containers.
+- Use `opal plan` regularly to confirm rules, manual gates, and artifact flows before you launch a run.

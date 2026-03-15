@@ -22,12 +22,15 @@ impl UiHandle {
         jobs: Vec<UiJobInfo>,
         history: Vec<HistoryEntry>,
         current_run_id: String,
+        plan_lines: Vec<String>,
     ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let thread_tx = tx.clone();
         let handle = thread::spawn(move || {
-            if let Err(err) = UiRunner::new(jobs, history, current_run_id, rx, cmd_tx).run() {
+            if let Err(err) =
+                UiRunner::new(jobs, history, current_run_id, plan_lines, rx, cmd_tx).run()
+            {
                 eprintln!("ui error: {err:?}");
             }
         });

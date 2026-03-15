@@ -16,7 +16,7 @@ pub use types::{UiCommand, UiJobInfo, UiJobStatus};
 pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, rx, cmd_tx);
+    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, Vec::new(), rx, cmd_tx);
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }
@@ -34,7 +34,7 @@ pub fn view_pipeline_logs(root: &Path) -> Result<()> {
         .unwrap_or_else(|| "history-view".to_string());
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, rx, cmd_tx);
+    let runner = runner::UiRunner::new(Vec::new(), history, current_run_id, Vec::new(), rx, cmd_tx);
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }

@@ -37,4 +37,14 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 - Provide secrets in `.opal/env/NAME` or `.opal/env/NAME_FILE`. Opal mounts them read-only and populates `$NAME` / `$NAME_FILE`.
 - Pass `--base-image` to supply a default container when jobs do not specify one.
 
+## Planning pipelines
+
+Run `opal plan` when you want to inspect the DAG without touching containers. The command parses `.gitlab-ci.yml`, evaluates workflow/`rules`, and prints each stage with:
+
+- Job order plus dependency list (`depends on` shows implicit stage ordering when no explicit `needs` exist).
+- Manual/delayed gates, retry counts, timeouts, and whether a job may fail without stopping the pipeline.
+- Artifact paths, environments, and resource groups.
+
+It is the fastest way to understand why a job is (or is not) scheduled for the current branch/tag, and it surfaces external `needs` so you can adjust infrastructure before running the pipeline for real.
+
 This model mirrors GitLab closely while remaining deterministic and debuggable on a single machine. When in doubt, compare the DAG produced by `opal plan` with GitLab’s pipeline graph to ensure parity.

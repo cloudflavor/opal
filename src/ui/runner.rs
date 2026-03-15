@@ -37,6 +37,7 @@ impl UiRunner {
         jobs: Vec<UiJobInfo>,
         history: Vec<HistoryEntry>,
         current_run_id: String,
+        plan_lines: Vec<String>,
         rx: UnboundedReceiver<UiEvent>,
         commands: UnboundedSender<UiCommand>,
     ) -> Self {
@@ -47,7 +48,7 @@ impl UiRunner {
             rx,
             commands,
             terminal,
-            state: UiState::new(jobs, history, current_run_id),
+            state: UiState::new(jobs, history, current_run_id, plan_lines),
             pipeline_finished: false,
             exit_requested: false,
             abort_sent: false,
@@ -112,11 +113,13 @@ impl UiRunner {
             let tab_width = columns[1].width.saturating_sub(2).max(1);
             let (tabs, tab_height) = self.state.tabs(tab_width);
 
+            let plan_height = self.state.plan_panel_height();
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(tab_height),
                     Constraint::Length(4),
+                    Constraint::Length(plan_height),
                     Constraint::Min(0),
                 ])
                 .split(columns[1]);
@@ -126,10 +129,14 @@ impl UiRunner {
             let info = self.state.info_panel();
             frame.render_widget(info, layout[1]);
 
+            self.state.update_plan_viewport(layout[2].height);
+            let plan_panel = self.state.plan_panel();
+            frame.render_widget(plan_panel, layout[2]);
+
             let log_widget =
                 self.state
-                    .log_view(self.pipeline_finished, layout[2].width, layout[2].height);
-            frame.render_widget(log_widget, layout[2]);
+                    .log_view(self.pipeline_finished, layout[3].width, layout[3].height);
+            frame.render_widget(log_widget, layout[3]);
 
             if self.state.help_visible() {
                 let area = centered_rect(60, 80, frame.size());
@@ -235,6 +242,33 @@ impl UiRunner {
                 _ => {}
             }
             return Ok(());
+        }
+        match key.code {
+            KeyCode::Char('[') => {
+                self.state.scroll_plan_line_up();
+                return Ok(());
+            }
+            KeyCode::Char(']') => {
+                self.state.scroll_plan_line_down();
+                return Ok(());
+            }
+            KeyCode::Char('{') => {
+                self.state.scroll_plan_page_up();
+                return Ok(());
+            }
+            KeyCode::Char('}') => {
+                self.state.scroll_plan_page_down();
+                return Ok(());
+            }
+            KeyCode::Char('\\') => {
+                self.state.scroll_plan_to_top();
+                return Ok(());
+            }
+            KeyCode::Char('|') => {
+                self.state.scroll_plan_to_bottom();
+                return Ok(());
+            }
+            _ => {}
         }
         match key.code {
             KeyCode::Char('q') => {

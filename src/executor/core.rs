@@ -2,7 +2,9 @@ use super::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor, paths,
     script, services::ServiceRuntime,
 };
-use crate::display::{self, DisplayFormatter, indent_block, print_pipeline_summary};
+use crate::display::{
+    self, DisplayFormatter, collect_pipeline_plan, indent_block, print_pipeline_summary,
+};
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
 use crate::gitlab::{Job, PipelineGraph, ServiceConfig};
@@ -177,6 +179,8 @@ impl ExecutorCore {
 
     pub async fn run(&self) -> Result<()> {
         let plan = self.plan_jobs()?;
+        let display = self.display();
+        let plan_lines = collect_pipeline_plan(&display, &plan);
         let history_snapshot = self
             .history_entries
             .lock()
@@ -198,6 +202,7 @@ impl ExecutorCore {
                 jobs,
                 history_snapshot,
                 self.run_id.clone(),
+                plan_lines,
             )?)
         } else {
             None
@@ -230,7 +235,6 @@ impl ExecutorCore {
         }
 
         if !self.config.enable_tui {
-            let display = self.display();
             print_pipeline_summary(
                 &display,
                 &plan,

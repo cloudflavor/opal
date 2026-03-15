@@ -11,7 +11,8 @@ The Ratatui-based UI is optimized for keyboard navigation. This document complem
    - Green: success
    - Red: failed
 3. **Info panel** – Displays metadata for the selected job (stage, image, runtime, error message, and manual/needs state).
-4. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the full log in your pager.
+4. **Plan pane** – Shows the pipeline plan that Opal evaluated for this run (stage order, dependencies, manual/delayed gates, artifact summaries). Scroll with `[` / `]`, page with `{` / `}`, and jump to top/bottom with `\` / `|`. It's always visible so you can correlate what should happen with what's running in the log pane.
+5. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the full log in your pager.
 
 ## Help overlay
 

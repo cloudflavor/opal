@@ -21,4 +21,4 @@ opal/
 
 Keep contributor-facing documentation under `docs/`. The help viewer bundles everything in this directory when the binary is built, so end users always have up-to-date references even if they do not clone the repository.
 
-See `docs/quickstart.md` to run your first pipeline and `docs/ui.md` for the complete keyboard reference. For implementation details, refer to `docs/pipeline.md`.
+See `docs/quickstart.md` to run your first pipeline and `docs/ui.md` for the complete keyboard reference. Use `docs/plan.md` for a focused walkthrough of `opal plan`, and refer to `docs/pipeline.md` for deeper implementation details.

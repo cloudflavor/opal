@@ -34,6 +34,7 @@ pub struct Cli {
 #[derive(StructOpt)]
 pub enum Commands {
     Run(RunArgs),
+    Plan(PlanArgs),
     View(ViewArgs),
 }
 
@@ -90,6 +91,17 @@ pub struct RunArgs {
 
 #[derive(StructOpt)]
 pub struct ViewArgs {
+    #[structopt(short, long)]
+    /// Context directory (defaults to current working directory)
+    pub workdir: Option<PathBuf>,
+}
+
+#[derive(StructOpt)]
+pub struct PlanArgs {
+    /// Which .gitlab-ci.yml file to inspect (defaults to <workdir>/.gitlab-ci.yml)
+    #[structopt(short, long)]
+    pub pipeline: Option<PathBuf>,
+
     #[structopt(short, long)]
     /// Context directory (defaults to current working directory)
     pub workdir: Option<PathBuf>,

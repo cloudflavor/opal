@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
+use opal::display::{self, DisplayFormatter};
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
+use opal::gitlab::PipelineGraph;
+use opal::logging;
+use opal::pipeline::{self, RuleContext};
+use opal::terminal;
 use opal::ui;
 use opal::{
-    Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, RunArgs, ViewArgs,
+    Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, PlanArgs, RunArgs,
+    ViewArgs,
 };
 use std::env;
 use std::io::{self, IsTerminal};
@@ -96,6 +102,7 @@ async fn main() -> Result<()> {
 
             run_result.with_context(|| "failed to run pipeline")
         }
+        Commands::Plan(args) => run_plan(args),
         Commands::View(args) => run_view(args),
     }
 }
@@ -105,6 +112,36 @@ fn run_view(args: ViewArgs) -> Result<()> {
         .workdir
         .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
     ui::view_pipeline_logs(&workdir)
+}
+
+fn run_plan(args: PlanArgs) -> Result<()> {
+    let workdir = args
+        .workdir
+        .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+    let pipeline = args
+        .pipeline
+        .unwrap_or_else(|| workdir.join(".gitlab-ci.yml"));
+    let graph = PipelineGraph::from_path(&pipeline)
+        .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
+    let ctx = RuleContext::new(&workdir);
+    if !pipeline::rules::filters_allow(&graph.filters, &ctx) {
+        println!("pipeline skipped: top-level only/except filters exclude this ref");
+        return Ok(());
+    }
+    if let Some(workflow) = &graph.workflow
+        && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
+    {
+        println!("pipeline skipped: workflow rules excluded this run");
+        return Ok(());
+    }
+
+    let logs_dir = workdir.join(".opal/plan/logs");
+    let plan = pipeline::build_job_plan(&graph, Some(&ctx), |job| {
+        logging::job_log_info(&logs_dir, "plan-preview", job)
+    })?;
+    let display = DisplayFormatter::new(terminal::should_use_color());
+    display::print_pipeline_plan(&display, &plan, display::print_line);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
