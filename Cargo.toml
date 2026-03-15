@@ -1,7 +1,16 @@
 [package]
 name = "opal"
-version = "0.1.0"
+version = "0.1.0-alpha"
 edition = "2024"
+description = "Terminal-first GitLab pipeline runner with TUI, history browser, and embedded docs."
+license = "Apache-2.0"
+repository = "https://github.com/cloudflavor/opal"
+homepage = "https://github.com/cloudflavor/opal"
+documentation = "https://github.com/cloudflavor/opal/tree/main/docs"
+readme = "README.md"
+authors = ["Victor Palade <victor@cloudflavor.io>"]
+keywords = ["gitlab", "ci", "tui", "pipeline", "devops"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"
