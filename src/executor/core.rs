@@ -36,7 +36,7 @@ use tokio::{
 };
 use tracing::warn;
 
-pub(super) const CONTAINER_WORKDIR: &str = "/workspace";
+pub(super) const CONTAINER_ROOT: &str = "/builds";
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
 
@@ -51,7 +51,8 @@ pub struct ExecutorCore {
     run_id: String,
     verbose_scripts: bool,
     env_vars: Vec<(String, String)>,
-    host_env: HashMap<String, String>,
+    shared_env: HashMap<String, String>,
+    container_workdir: PathBuf,
     stage_positions: HashMap<String, usize>,
     stage_states: Arc<Mutex<HashMap<String, StageState>>>,
     job_attempts: Arc<Mutex<HashMap<String, usize>>>,
@@ -133,9 +134,16 @@ impl ExecutorCore {
                 s == "1" || s.eq_ignore_ascii_case("true")
             })
             .unwrap_or(false);
-        let host_env: HashMap<String, String> = std::env::vars().collect();
         let mut env_vars = collect_env_vars(&config.env_includes)?;
-        expand_env_list(&mut env_vars[..], &host_env);
+        let mut shared_env: HashMap<String, String> = env_vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        expand_env_list(&mut env_vars[..], &shared_env);
+        shared_env = env_vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let mut stage_positions = HashMap::new();
         let mut stage_states = HashMap::new();
         for (idx, stage) in g.stages.iter().enumerate() {
@@ -159,6 +167,13 @@ impl ExecutorCore {
         let running_containers = Arc::new(Mutex::new(HashMap::new()));
         let cancelled_jobs = Arc::new(Mutex::new(HashSet::new()));
 
+        let project_dir = config
+            .workdir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project");
+        let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
+
         Ok(Self {
             config,
             g,
@@ -169,7 +184,8 @@ impl ExecutorCore {
             run_id,
             verbose_scripts,
             env_vars,
-            host_env,
+            shared_env,
+            container_workdir,
             stage_positions,
             stage_states: Arc::new(Mutex::new(stage_states)),
             job_attempts: Arc::new(Mutex::new(HashMap::new())),
@@ -1144,7 +1160,7 @@ impl ExecutorCore {
                 &job.name,
                 &service_configs,
                 &env_vars,
-                &self.host_env,
+                &self.shared_env,
             )?;
             let service_network = service_runtime
                 .as_ref()
@@ -1155,7 +1171,7 @@ impl ExecutorCore {
                 &self.artifacts,
                 &self.cache,
                 &cache_env,
-                Path::new(CONTAINER_WORKDIR),
+                &self.container_workdir,
                 self.external_artifacts.as_ref(),
             )?;
             if let Some((host, container_path)) = self.secrets.volume_mount() {
@@ -1170,6 +1186,7 @@ impl ExecutorCore {
             let script_commands = self.expanded_commands(&job);
             let script_path = script::write_job_script(
                 &self.scripts_dir,
+                &self.container_workdir,
                 &job,
                 &script_commands,
                 self.verbose_scripts,
@@ -1400,7 +1417,7 @@ impl ExecutorCore {
     ) -> Result<Child> {
         let ctx = EngineCommandContext {
             workdir: &self.config.workdir,
-            container_root: Path::new(CONTAINER_WORKDIR),
+            container_root: &self.container_workdir,
             container_script,
             container_name,
             image,
@@ -1553,9 +1570,10 @@ impl ExecutorCore {
             &self.g.defaults.variables,
             job,
             &self.secrets,
-            Path::new(CONTAINER_WORKDIR),
+            &self.container_workdir,
+            Path::new(CONTAINER_ROOT),
             &self.run_id,
-            &self.host_env,
+            &self.shared_env,
         )
     }
 
@@ -1576,7 +1594,7 @@ impl ExecutorCore {
     }
 
     fn container_path_rel(&self, host_path: &Path) -> Result<PathBuf> {
-        paths::to_container_path(host_path, &self.config.workdir)
+        paths::to_container_path(host_path, &self.config.workdir, &self.container_workdir)
     }
 }
 

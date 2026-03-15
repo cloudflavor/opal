@@ -19,7 +19,7 @@ impl ServiceRuntime {
         job_name: &str,
         services: &[ServiceConfig],
         base_env: &[(String, String)],
-        host_env: &HashMap<String, String>,
+        shared_env: &HashMap<String, String>,
     ) -> Result<Option<Self>> {
         if services.is_empty() {
             return Ok(None);
@@ -48,7 +48,8 @@ impl ServiceRuntime {
                 job_name_slug(job_name),
                 idx
             );
-            if let Err(err) = runtime.start_service(&container_name, service, base_env, host_env) {
+            if let Err(err) = runtime.start_service(&container_name, service, base_env, shared_env)
+            {
                 runtime.cleanup();
                 return Err(err);
             }
@@ -81,7 +82,7 @@ impl ServiceRuntime {
         container_name: &str,
         service: &ServiceConfig,
         base_env: &[(String, String)],
-        host_env: &HashMap<String, String>,
+        shared_env: &HashMap<String, String>,
     ) -> Result<()> {
         let alias = service
             .alias
@@ -99,7 +100,7 @@ impl ServiceRuntime {
             .arg(&alias);
 
         let mut merged = merged_env(base_env, &service.variables);
-        expand_env_list(&mut merged[..], host_env);
+        expand_env_list(&mut merged[..], shared_env);
         for (key, value) in merged {
             command.arg("--env").arg(format!("{key}={value}"));
         }

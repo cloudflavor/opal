@@ -11,18 +11,14 @@ default:
   before_script:
     - rustc --version
     - cargo --version
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cargo/
 
 variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
-
-cache:
-  key: "$CI_COMMIT_REF_SLUG"
-  paths:
-    - target/
-    - .cargo/registry/
-    - .cargo/git/
 
 fetch-sources:
   stage: deps
@@ -49,7 +45,7 @@ unit-tests:
   artifacts:
     when: always
     paths:
-      - target/debug/deps/
+      - .cargo/target/debug/deps/
 
 build-release:
   stage: build
@@ -61,7 +57,7 @@ build-release:
   artifacts:
     expire_in: 1 week
     paths:
-      - target/release/opal
+      - .cargo/target/release/opal
 
 package-crate:
   stage: package
@@ -72,7 +68,7 @@ package-crate:
   artifacts:
     expire_in: 1 week
     paths:
-      - target/package/
+      - .cargo/target/package/
 
 release-artifacts:
   stage: release
@@ -99,8 +95,8 @@ release-artifacts:
         *) OS="$(echo "${OS_RAW}" | tr '[:upper:]' '[:lower:]')" ;;
       esac
       PLATFORM="${ARCH}-${OS}"
-      ARCHIVE="target/release/opal-${VERSION}-${PLATFORM}.tar.gz"
-      NOTES="target/release/release-notes-${PLATFORM}.txt"
+      ARCHIVE=".cargo/target/release/opal-${VERSION}-${PLATFORM}.tar.gz"
+      NOTES=".cargo/target/release/release-notes-${PLATFORM}.txt"
       mkdir -p target/release
       tar -czf "${ARCHIVE}" -C target/release opal
       SHA=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')

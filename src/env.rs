@@ -31,6 +31,7 @@ pub fn build_job_env(
     job: &Job,
     secrets: &SecretsStore,
     container_workdir: &Path,
+    container_root: &Path,
     run_id: &str,
     host_env: &HashMap<String, String>,
 ) -> Vec<(String, String)> {
@@ -58,6 +59,7 @@ pub fn build_job_env(
     push("CI_JOB_NAME", &job.name);
     push("CI_JOB_STAGE", &job.stage);
     push("CI_PROJECT_DIR", &container_workdir.display().to_string());
+    push("CI_BUILDS_DIR", &container_root.display().to_string());
     push("CI_PIPELINE_ID", run_id);
     if let Some(timeout) = job.timeout {
         push("CI_JOB_TIMEOUT", &timeout.as_secs().to_string());

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SECRETS_RELATIVE_DIR: &str = ".opal/env";
-pub const SECRETS_CONTAINER_DIR: &str = "/workspace/.opal/secrets";
+pub const SECRETS_CONTAINER_DIR: &str = ".opal/secrets";
 
 #[derive(Debug, Default, Clone)]
 pub struct SecretsStore {

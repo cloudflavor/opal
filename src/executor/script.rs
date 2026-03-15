@@ -5,10 +5,9 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::core::CONTAINER_WORKDIR;
-
 pub fn write_job_script(
     scripts_dir: &Path,
+    container_workdir: &Path,
     job: &Job,
     commands: &[String],
     verbose: bool,
@@ -23,7 +22,7 @@ pub fn write_job_script(
         .with_context(|| format!("failed to create script for {}", job.name))?;
     writeln!(file, "#!/usr/bin/env sh")?;
     writeln!(file, "set -eu")?;
-    writeln!(file, "cd {}", CONTAINER_WORKDIR)?;
+    writeln!(file, "cd {}", container_workdir.display())?;
     writeln!(file)?;
 
     for line in commands {
