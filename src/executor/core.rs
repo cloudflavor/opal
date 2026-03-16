@@ -159,7 +159,7 @@ impl ExecutorCore {
             .and_then(|n| n.to_str())
             .unwrap_or("project");
         let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
-        let container_session_dir = container_workdir.join(".opal").join(&run_id);
+        let container_session_dir = Path::new("/opal").join(&run_id);
 
         let core = Self {
             config,
