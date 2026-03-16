@@ -20,7 +20,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
 
-use super::state::{UiState, page_log_with_colors, page_text_with_pager};
+use super::state::{UiState, page_file_with_pager, page_log_with_colors, page_text_with_pager};
 use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo, UiJobResources};
 
 pub(super) struct UiRunner {
@@ -335,13 +335,13 @@ impl UiRunner {
                                 }
                             }
                             HistoryAction::ViewFile { title, path } => {
-                                if let Err(err) =
-                                    self.state.load_history_preview(title.clone(), &path)
-                                {
+                                if let Err(err) = self.suspend_terminal(|| {
+                                    page_file_with_pager(title.as_str(), &path)
+                                }) {
                                     self.state.set_history_preview_message(
                                         title,
                                         &path,
-                                        format!("failed to load file: {err}"),
+                                        format!("failed to open file: {err}"),
                                     );
                                 }
                             }

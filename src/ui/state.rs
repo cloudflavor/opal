@@ -11,7 +11,7 @@ use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, ScrollbarState, Wrap};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
@@ -60,6 +60,8 @@ pub(super) struct UiState {
     plan_text: String,
     workdir: PathBuf,
     history_height: u16,
+    loaded_dirs: HashSet<PathBuf>,
+    has_current_run: bool,
 }
 
 impl UiState {
@@ -87,6 +89,8 @@ impl UiState {
             collapsed_nodes.insert(Self::run_collapse_key(&entry.run_id), true);
         }
 
+        let has_current_run = !job_states.is_empty();
+
         Self {
             jobs: job_states,
             order,
@@ -109,6 +113,8 @@ impl UiState {
             plan_text,
             workdir,
             history_height: 0,
+            loaded_dirs: HashSet::new(),
+            has_current_run,
         }
     }
 
@@ -150,6 +156,12 @@ impl UiState {
     fn set_node_collapsed_key(&mut self, key: &HistoryNodeKey, collapsed: bool) {
         if let Some(k) = Self::node_collapse_key(key) {
             self.collapsed_nodes.insert(k, collapsed);
+        }
+    }
+
+    fn ensure_dir_loaded(&mut self, path: &Path) {
+        if path.exists() {
+            self.loaded_dirs.insert(path.to_path_buf());
         }
     }
 
@@ -312,7 +324,9 @@ impl UiState {
 
     fn history_tree_entries(&self) -> Vec<HistoryTreeEntry> {
         let mut roots = Vec::new();
-        roots.push(self.current_run_tree_entry());
+        if self.has_current_run {
+            roots.push(self.current_run_tree_entry());
+        }
         for entry in self.history.iter().rev() {
             roots.push(self.finished_run_tree_entry(entry));
         }
@@ -405,10 +419,15 @@ impl UiState {
                 title: title.clone(),
                 path: path.clone(),
             };
+            let children = if self.loaded_dirs.contains(&path) {
+                self.build_fs_tree_entries(&path, 0)
+            } else {
+                Vec::new()
+            };
             nodes.push(HistoryTreeEntry {
                 key: key.clone(),
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
-                children: self.build_fs_tree_entries(&path, 0),
+                children,
                 collapsed: self.is_node_collapsed_key(&key),
             });
         }
@@ -436,10 +455,15 @@ impl UiState {
                 title: title.clone(),
                 path: path.clone(),
             };
+            let children = if self.loaded_dirs.contains(&path) {
+                self.build_fs_tree_entries(&path, 0)
+            } else {
+                Vec::new()
+            };
             nodes.push(HistoryTreeEntry {
                 key: key.clone(),
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
-                children: self.build_fs_tree_entries(&path, 0),
+                children,
                 collapsed: self.is_node_collapsed_key(&key),
             });
         }
@@ -680,6 +704,7 @@ impl UiState {
             .entry(Self::run_collapse_key(&entry.run_id))
             .or_insert(true);
         self.history.push(entry);
+        self.loaded_dirs.clear();
     }
 
     pub(super) fn view_history_run(&mut self, run_id: &str) -> Result<()> {
@@ -705,6 +730,7 @@ impl UiState {
         });
         self.focus = PaneFocus::Jobs;
         self.on_active_selection_changed();
+        self.loaded_dirs.clear();
         Ok(())
     }
 
@@ -716,6 +742,7 @@ impl UiState {
             self.selected = self.jobs.len() - 1;
         }
         self.on_active_selection_changed();
+        self.loaded_dirs.clear();
     }
 
     pub(super) fn history_move_up(&mut self) {
@@ -835,8 +862,9 @@ impl UiState {
                     self.history_selection = idx + 1;
                 }
             }
-            HistoryNodeKey::ResourceDir { .. } => {
+            HistoryNodeKey::ResourceDir { path, .. } => {
                 if self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.ensure_dir_loaded(path);
                     self.set_node_collapsed_key(&nodes[idx].key, false);
                 } else if let Some(next) = nodes.get(idx + 1)
                     && next.parent_index == Some(idx)
@@ -844,8 +872,9 @@ impl UiState {
                     self.history_selection = idx + 1;
                 }
             }
-            HistoryNodeKey::FileEntry { is_dir, .. } if *is_dir => {
+            HistoryNodeKey::FileEntry { path, is_dir } if *is_dir => {
                 if self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.ensure_dir_loaded(path);
                     self.set_node_collapsed_key(&nodes[idx].key, false);
                 } else if let Some(next) = nodes.get(idx + 1)
                     && next.parent_index == Some(idx)
@@ -879,16 +908,20 @@ impl UiState {
                 title: format!("{run_id} • {job_name}"),
                 path,
             }),
-            HistoryNodeKey::ResourceDir { title, path } => Some(HistoryAction::ViewDir {
-                title: title.clone(),
-                path: path.clone(),
-            }),
+            HistoryNodeKey::ResourceDir { title, path } => {
+                self.ensure_dir_loaded(path);
+                Some(HistoryAction::ViewDir {
+                    title: title.clone(),
+                    path: path.clone(),
+                })
+            }
             HistoryNodeKey::FileEntry { path, is_dir } => {
                 let title = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.display().to_string());
                 if *is_dir {
+                    self.ensure_dir_loaded(path);
                     Some(HistoryAction::ViewDir {
                         title,
                         path: path.clone(),
@@ -2489,6 +2522,26 @@ pub(super) fn page_log_with_colors(path: &Path) -> Result<()> {
         }
     }
 
+    let _ = Command::new("cat").arg(path).status();
+    Ok(())
+}
+
+pub(super) fn page_file_with_pager(title: &str, path: &Path) -> Result<()> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open file {}", path.display()))?;
+    let pager = env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+    let (cmd, args) = parse_pager_command(&pager);
+    let mut child = Command::new(&cmd);
+    child.args(&args).stdin(Stdio::piped());
+    if let Ok(mut handle) = child.spawn() {
+        if let Some(mut stdin) = handle.stdin.take() {
+            writeln!(stdin, "==> {title} <==")?;
+            stdin.write_all(b"\n")?;
+            std::io::copy(&mut file, &mut stdin)?;
+        }
+        let _ = handle.wait();
+        return Ok(());
+    }
     let _ = Command::new("cat").arg(path).status();
     Ok(())
 }
