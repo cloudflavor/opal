@@ -123,4 +123,4 @@ publish-crate:
     - when: never
   script:
     - echo "publishing opal $CI_COMMIT_SHA"
-    # - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+    - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
