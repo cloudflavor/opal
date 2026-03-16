@@ -1,3 +1,4 @@
+use crate::git;
 use crate::gitlab::Job;
 use crate::secrets::SecretsStore;
 use anyhow::{Context, Result};
@@ -31,6 +32,7 @@ pub fn build_job_env(
     default_vars: &HashMap<String, String>,
     job: &Job,
     secrets: &SecretsStore,
+    host_workdir: &Path,
     container_workdir: &Path,
     container_root: &Path,
     run_id: &str,
@@ -62,6 +64,11 @@ pub fn build_job_env(
     push("CI_PROJECT_DIR", &container_workdir.display().to_string());
     push("CI_BUILDS_DIR", &container_root.display().to_string());
     push("CI_PIPELINE_ID", run_id);
+
+    for (key, value) in inferred_ci_env(host_workdir, host_env) {
+        push(&key, &value);
+    }
+
     if let Some(timeout) = job.timeout {
         push("CI_JOB_TIMEOUT", &timeout.as_secs().to_string());
     }
@@ -142,9 +149,91 @@ fn is_var_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
+fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut inferred = Vec::new();
+
+    insert_inferred_env(
+        &mut inferred,
+        "CI_PIPELINE_SOURCE",
+        host_env,
+        Some(|| Ok("push".to_string())),
+    );
+    insert_inferred_env(
+        &mut inferred,
+        "CI_COMMIT_BRANCH",
+        host_env,
+        Some(|| git::current_branch(workdir)),
+    );
+    insert_inferred_env(
+        &mut inferred,
+        "CI_COMMIT_TAG",
+        host_env,
+        Some(|| git::current_tag(workdir)),
+    );
+    insert_inferred_env(
+        &mut inferred,
+        "CI_DEFAULT_BRANCH",
+        host_env,
+        Some(|| git::default_branch(workdir)),
+    );
+
+    if host_env
+        .get("CI_COMMIT_REF_NAME")
+        .is_none_or(|value| value.is_empty())
+    {
+        if let Some(tag) = host_env
+            .get("CI_COMMIT_TAG")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .or_else(|| {
+                inferred
+                    .iter()
+                    .find(|(key, _)| key == "CI_COMMIT_TAG")
+                    .map(|(_, value)| value.clone())
+            })
+        {
+            inferred.push(("CI_COMMIT_REF_NAME".into(), tag));
+        } else if let Some(branch) = host_env
+            .get("CI_COMMIT_BRANCH")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .or_else(|| {
+                inferred
+                    .iter()
+                    .find(|(key, _)| key == "CI_COMMIT_BRANCH")
+                    .map(|(_, value)| value.clone())
+            })
+        {
+            inferred.push(("CI_COMMIT_REF_NAME".into(), branch));
+        }
+    }
+
+    inferred
+}
+
+fn insert_inferred_env<F>(
+    env: &mut Vec<(String, String)>,
+    key: &str,
+    host_env: &HashMap<String, String>,
+    fallback: Option<F>,
+) where
+    F: FnOnce() -> Result<String>,
+{
+    if host_env.get(key).is_some_and(|value| !value.is_empty()) {
+        return;
+    }
+    if let Some(fallback) = fallback
+        && let Ok(value) = fallback()
+        && !value.is_empty()
+    {
+        env.push((key.to_string(), value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::test_support::init_repo_with_commit_and_tag;
     use crate::gitlab::Job;
     use crate::secrets::SecretsStore;
     use std::collections::HashMap;
@@ -182,6 +271,7 @@ mod tests {
             &job,
             &SecretsStore::default(),
             Path::new("/workspace"),
+            Path::new("/workspace"),
             Path::new("/builds"),
             "1",
             &HashMap::from([("CI_PROJECT_DIR".into(), "/workspace".into())]),
@@ -189,5 +279,54 @@ mod tests {
         let map: HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get("CI_PROJECT_DIR").unwrap(), "/workspace");
         assert_eq!(map.get("CARGO_HOME").unwrap(), "/workspace/.cargo");
+    }
+
+    #[test]
+    fn infers_tagged_ref_vars_for_job_environment() {
+        let dir = init_repo_with_commit_and_tag("v1.2.3");
+
+        let job = Job {
+            name: "release-artifacts".into(),
+            stage: "release".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            rules: Vec::new(),
+            artifacts: Vec::new(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: Default::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+
+        let env = build_job_env(
+            &[],
+            &HashMap::new(),
+            &job,
+            &SecretsStore::default(),
+            dir.path(),
+            Path::new("/workspace"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::new(),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(map.get("CI_COMMIT_TAG").map(String::as_str), Some("v1.2.3"));
+        assert_eq!(
+            map.get("CI_COMMIT_REF_NAME").map(String::as_str),
+            Some("v1.2.3")
+        );
     }
 }

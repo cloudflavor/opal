@@ -8,6 +8,7 @@ pub mod display;
 pub mod engine;
 pub mod env;
 pub mod executor;
+pub mod git;
 pub mod gitlab;
 pub mod history;
 pub mod logging;

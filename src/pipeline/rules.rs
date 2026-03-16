@@ -1,11 +1,11 @@
+use crate::git;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
 use crate::gitlab::{Job, PipelineFilters};
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
 use regex::RegexBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -74,12 +74,12 @@ impl RuleContext {
             env.insert("CI_PIPELINE_SOURCE".into(), "push".into());
         }
         if !env.contains_key("CI_COMMIT_BRANCH")
-            && let Ok(branch) = git_current_branch(workspace)
+            && let Ok(branch) = git::current_branch(workspace)
         {
             env.insert("CI_COMMIT_BRANCH".into(), branch);
         }
         if !env.contains_key("CI_COMMIT_TAG")
-            && let Ok(tag) = git_current_tag(workspace)
+            && let Ok(tag) = git::current_tag(workspace)
         {
             env.insert("CI_COMMIT_TAG".into(), tag);
         }
@@ -99,7 +99,7 @@ impl RuleContext {
             }
         }
         if !env.contains_key("CI_DEFAULT_BRANCH")
-            && let Ok(branch) = git_default_branch(workspace)
+            && let Ok(branch) = git::default_branch(workspace)
         {
             env.insert("CI_DEFAULT_BRANCH".into(), branch);
         }
@@ -144,7 +144,7 @@ impl RuleContext {
         self.env_value("CI_COMMIT_SHA")
             .filter(|sha| !sha.is_empty())
             .map(|sha| sha.to_string())
-            .or_else(|| git_head_ref(&self.workspace).ok())
+            .or_else(|| git::head_ref(&self.workspace).ok())
     }
 
     fn expand_variables(&self, value: &str) -> String {
@@ -205,7 +205,7 @@ impl RuleContext {
                 {
                     Some(before)
                 } else if let Some(default_branch) = &self.default_compare_to {
-                    git_merge_base(
+                    git::merge_base(
                         &self.workspace,
                         default_branch,
                         self.head_reference().as_deref(),
@@ -325,7 +325,7 @@ fn matches_changes(changes: &RuleChangesRaw, ctx: &RuleContext) -> Result<bool> 
     }
     let compare_ref = ctx.compare_reference(changes.compare_to());
     let head_ref = ctx.head_reference();
-    let changed = git_changed_files(&ctx.workspace, compare_ref.as_deref(), head_ref.as_deref())?;
+    let changed = git::changed_files(&ctx.workspace, compare_ref.as_deref(), head_ref.as_deref())?;
     if changed.is_empty() {
         return Ok(false);
     }
@@ -379,130 +379,6 @@ fn walk_paths(root: &Path, matcher: &globset::GlobMatcher) -> Result<Vec<PathBuf
     Ok(matches)
 }
 
-fn git_changed_files(
-    workdir: &Path,
-    base: Option<&str>,
-    head: Option<&str>,
-) -> Result<HashSet<String>> {
-    let mut cmd = Command::new("git");
-    cmd.arg("diff").arg("--name-only");
-    match (base, head) {
-        (Some(base), Some(head)) => {
-            cmd.arg(base);
-            cmd.arg(head);
-        }
-        (Some(base), None) => {
-            cmd.arg(base);
-            cmd.arg("HEAD");
-        }
-        (None, Some(head)) => {
-            cmd.arg(head);
-        }
-        (None, None) => {
-            cmd.arg("HEAD~1");
-            cmd.arg("HEAD");
-        }
-    }
-    cmd.current_dir(workdir);
-    let output = cmd.output().context("failed to run git diff")?;
-    if !output.status.success() {
-        return Ok(HashSet::new());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut set = HashSet::new();
-    for line in stdout.lines() {
-        if !line.trim().is_empty() {
-            set.insert(line.trim().to_string());
-        }
-    }
-    Ok(set)
-}
-
-fn git_current_branch(workdir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("rev-parse")
-        .arg("--abbrev-ref")
-        .arg("HEAD")
-        .current_dir(workdir)
-        .output()
-        .context("failed to detect current branch")?;
-    if !output.status.success() {
-        return Err(anyhow!("git rev-parse returned non-zero"));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn git_head_ref(workdir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("rev-parse")
-        .arg("HEAD")
-        .current_dir(workdir)
-        .output()
-        .context("failed to detect HEAD reference")?;
-    if !output.status.success() {
-        return Err(anyhow!("git rev-parse returned non-zero"));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn git_current_tag(workdir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("tag")
-        .arg("--points-at")
-        .arg("HEAD")
-        .current_dir(workdir)
-        .output()
-        .context("failed to detect current tag")?;
-    if !output.status.success() {
-        return Err(anyhow!("git tag returned non-zero"));
-    }
-    let tag = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_string())
-        .ok_or_else(|| anyhow!("no tag points at HEAD"))?;
-    Ok(tag)
-}
-
-fn git_merge_base(workdir: &Path, base: &str, head: Option<&str>) -> Result<Option<String>> {
-    let mut cmd = Command::new("git");
-    cmd.arg("merge-base").arg(base);
-    if let Some(head) = head {
-        cmd.arg(head);
-    } else {
-        cmd.arg("HEAD");
-    }
-    cmd.current_dir(workdir);
-    let output = cmd.output().context("failed to run git merge-base")?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sha.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(sha))
-    }
-}
-
-fn git_default_branch(workdir: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("symbolic-ref")
-        .arg("refs/remotes/origin/HEAD")
-        .current_dir(workdir)
-        .output()
-        .context("failed to detect default branch")?;
-    if !output.status.success() {
-        return Err(anyhow!("git symbolic-ref returned non-zero"));
-    }
-    let ref_name = String::from_utf8_lossy(&output.stdout);
-    if let Some(pos) = ref_name.rfind('/') {
-        Ok(ref_name[pos + 1..].trim().to_string())
-    } else {
-        Ok("main".into())
-    }
-}
-
 fn parse_duration(value: &str) -> Option<Duration> {
     humantime::Duration::from_str(value).map(|d| d.into()).ok()
 }
@@ -516,35 +392,17 @@ fn eval_if_expr(expr: &str, ctx: &RuleContext) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::test_support::init_repo_with_commit_and_tag;
     use std::collections::HashMap;
-    use std::fs;
-    use std::path::Path;
-    use tempfile::tempdir;
 
     #[test]
     fn infers_commit_tag_from_repo_when_env_is_missing() {
-        let dir = tempdir().expect("tempdir");
-        run_git(dir.path(), &["init", "-b", "main"]);
-        run_git(dir.path(), &["config", "user.name", "Opal Tests"]);
-        run_git(dir.path(), &["config", "user.email", "opal@example.com"]);
-        fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
-        run_git(dir.path(), &["add", "README.md"]);
-        run_git(dir.path(), &["commit", "-m", "initial"]);
-        run_git(dir.path(), &["tag", "v1.2.3"]);
+        let dir = init_repo_with_commit_and_tag("v1.2.3");
 
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
         assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v1.2.3"));
         assert_eq!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
-    }
-
-    fn run_git(workdir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .status()
-            .unwrap_or_else(|err| panic!("failed to run git {:?}: {err}", args));
-        assert!(status.success(), "git {:?} failed with {status}", args);
     }
 }
 

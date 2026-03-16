@@ -1668,6 +1668,7 @@ impl ExecutorCore {
             &self.g.defaults.variables,
             job,
             &self.secrets,
+            &self.config.workdir,
             &self.container_workdir,
             Path::new(CONTAINER_ROOT),
             &self.run_id,
