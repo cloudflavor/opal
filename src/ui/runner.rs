@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, Clear};
+use ratatui::widgets::{Block, Borders, Clear, Scrollbar, ScrollbarOrientation};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
@@ -121,8 +121,15 @@ impl UiRunner {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0), Constraint::Length(1)])
                 .split(columns[0]);
-            let history = self.state.history_widget(history_split[0].height);
-            frame.render_widget(history, history_split[0]);
+            let history_area = history_split[0];
+            let (history_list, mut history_scrollbar) =
+                self.state.history_widget(history_area.height);
+            frame.render_widget(history_list, history_area);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                history_area,
+                &mut history_scrollbar,
+            );
             frame.render_widget(self.state.help_prompt(), history_split[1]);
 
             let tab_width = columns[1].width.saturating_sub(2).max(1);
@@ -324,6 +331,17 @@ impl UiRunner {
                                         title,
                                         &path,
                                         format!("failed to read directory: {err}"),
+                                    );
+                                }
+                            }
+                            HistoryAction::ViewFile { title, path } => {
+                                if let Err(err) =
+                                    self.state.load_history_preview(title.clone(), &path)
+                                {
+                                    self.state.set_history_preview_message(
+                                        title,
+                                        &path,
+                                        format!("failed to load file: {err}"),
                                     );
                                 }
                             }

@@ -18,6 +18,7 @@ pub enum HistoryAction {
     ViewLog { title: String, path: PathBuf },
     ViewRun(String),
     ViewDir { title: String, path: PathBuf },
+    ViewFile { title: String, path: PathBuf },
 }
 
 #[derive(Clone)]

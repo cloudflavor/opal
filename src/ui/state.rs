@@ -10,10 +10,10 @@ use owo_colors::OwoColorize;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, ScrollbarState, Wrap};
 use std::collections::HashMap;
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,6 +21,9 @@ use std::time::Instant;
 use walkdir::WalkDir;
 
 static EMBEDDED_DOCS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/docs");
+
+const HISTORY_TREE_MAX_FS_DEPTH: usize = 3;
+const HISTORY_TREE_MAX_FS_ENTRIES: usize = 200;
 
 #[derive(Clone)]
 struct HelpDocument {
@@ -44,7 +47,7 @@ pub(super) struct UiState {
     focus: PaneFocus,
     history_selection: usize,
     history_scroll: usize,
-    history_collapsed: HashMap<String, bool>,
+    collapsed_nodes: HashMap<String, bool>,
     history_preview: Option<HistoryPreview>,
     history_view: Option<HistoryRunView>,
     show_help: bool,
@@ -78,10 +81,10 @@ impl UiState {
             })
             .collect();
 
-        let mut history_collapsed = HashMap::new();
-        history_collapsed.insert(CURRENT_HISTORY_KEY.to_string(), false);
+        let mut collapsed_nodes = HashMap::new();
+        collapsed_nodes.insert(Self::run_collapse_key(CURRENT_HISTORY_KEY), false);
         for entry in &history {
-            history_collapsed.insert(entry.run_id.clone(), true);
+            collapsed_nodes.insert(Self::run_collapse_key(&entry.run_id), true);
         }
 
         Self {
@@ -93,7 +96,7 @@ impl UiState {
             focus: PaneFocus::Jobs,
             history_selection: 0,
             history_scroll: 0,
-            history_collapsed,
+            collapsed_nodes,
             history_preview: None,
             history_view: None,
             show_help: false,
@@ -106,6 +109,47 @@ impl UiState {
             plan_text,
             workdir,
             history_height: 0,
+        }
+    }
+
+    fn run_collapse_key(run_id: &str) -> String {
+        format!("run:{run_id}")
+    }
+
+    fn node_collapse_key(key: &HistoryNodeKey) -> Option<String> {
+        match key {
+            HistoryNodeKey::CurrentRun => Some(Self::run_collapse_key(CURRENT_HISTORY_KEY)),
+            HistoryNodeKey::FinishedRun { run_id } => Some(Self::run_collapse_key(run_id)),
+            HistoryNodeKey::ResourceDir { path, .. } => Some(format!("dir:{}", path.display())),
+            HistoryNodeKey::FileEntry { path, .. } => Some(format!("fs:{}", path.display())),
+            _ => None,
+        }
+    }
+
+    fn default_collapse_for_key(key: &HistoryNodeKey) -> bool {
+        match key {
+            HistoryNodeKey::CurrentRun => false,
+            HistoryNodeKey::FinishedRun { .. } => true,
+            HistoryNodeKey::ResourceDir { .. } => true,
+            HistoryNodeKey::FileEntry { is_dir, .. } => *is_dir,
+            _ => false,
+        }
+    }
+
+    fn is_node_collapsed_key(&self, key: &HistoryNodeKey) -> bool {
+        if let Some(k) = Self::node_collapse_key(key) {
+            self.collapsed_nodes
+                .get(&k)
+                .copied()
+                .unwrap_or(Self::default_collapse_for_key(key))
+        } else {
+            Self::default_collapse_for_key(key)
+        }
+    }
+
+    fn set_node_collapsed_key(&mut self, key: &HistoryNodeKey, collapsed: bool) {
+        if let Some(k) = Self::node_collapse_key(key) {
+            self.collapsed_nodes.insert(k, collapsed);
         }
     }
 
@@ -160,45 +204,45 @@ impl UiState {
         (paragraph, content_height)
     }
 
-    pub(super) fn history_widget(&mut self, height: u16) -> Paragraph<'static> {
+    pub(super) fn history_widget(&mut self, height: u16) -> (List<'static>, ScrollbarState) {
         let nodes = self.history_nodes();
         if nodes.is_empty() {
             self.history_selection = 0;
             self.history_scroll = 0;
             self.clear_history_preview();
-            return Paragraph::new(vec![Line::from("no runs recorded")])
-                .block(Block::default().borders(Borders::ALL).title("Runs"))
-                .wrap(Wrap { trim: false });
+            let list = List::new(vec![ListItem::new(Line::from("no runs recorded"))])
+                .block(Block::default().borders(Borders::ALL).title("Runs"));
+            return (list, ScrollbarState::default());
         }
 
         self.history_height = height;
         self.clamp_and_scroll_history(nodes.len());
 
         let viewport = Self::history_viewport(height);
-        let visible = if viewport == 0 {
-            &nodes[..]
+        let end = if viewport == 0 {
+            nodes.len()
         } else {
-            let end = (self.history_scroll + viewport).min(nodes.len());
-            &nodes[self.history_scroll..end]
+            (self.history_scroll + viewport).min(nodes.len())
         };
+        let visible = &nodes[self.history_scroll..end];
 
-        let lines: Vec<Line<'static>> = visible
+        let items: Vec<ListItem<'static>> = visible
             .iter()
             .enumerate()
             .map(|(offset, node)| {
                 let idx = self.history_scroll + offset;
                 let line = node.line.clone();
                 if self.focus == PaneFocus::History && idx == self.history_selection {
-                    Self::apply_history_highlight(line)
+                    ListItem::new(Self::apply_history_highlight(line))
                 } else {
-                    line
+                    ListItem::new(line)
                 }
             })
             .collect();
 
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Runs"))
-            .wrap(Wrap { trim: false })
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Runs"));
+        let scrollbar = ScrollbarState::new(nodes.len()).position(self.history_scroll);
+        (list, scrollbar)
     }
 
     pub(super) fn history_status_style(status: HistoryStatus) -> Style {
@@ -262,137 +306,111 @@ impl UiState {
     }
 
     pub(super) fn history_nodes(&self) -> Vec<HistoryRenderNode> {
-        let mut nodes = Vec::new();
+        let tree = self.history_tree_entries();
+        self.flatten_history_tree(&tree)
+    }
 
-        let current_collapsed = self.is_run_collapsed(CURRENT_HISTORY_KEY);
-        let mut header_spans = Vec::new();
-        header_spans.push(Span::styled(
-            format!("{} ", if current_collapsed { "▸" } else { "▾" }),
-            Style::default().fg(Color::DarkGray),
-        ));
-        header_spans.push(Span::styled(
-            format!("{} (active)", self.current_run_id),
-            Self::history_status_style(self.current_run_status()),
-        ));
-        if self.history_view.is_none() {
-            header_spans.push(Span::styled(
-                " [viewing]".to_string(),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-        nodes.push(HistoryRenderNode {
-            key: HistoryNodeKey::CurrentRun,
-            parent_index: None,
-            line: Line::from(header_spans),
-        });
-        let current_header_idx = nodes.len() - 1;
-        if !current_collapsed {
-            let total = self.jobs.len();
-            for (idx, job) in self.jobs.iter().enumerate() {
-                let connector = if idx + 1 == total { "└─" } else { "├─" };
-                nodes.push(HistoryRenderNode {
-                    key: HistoryNodeKey::CurrentJob(idx),
-                    parent_index: Some(current_header_idx),
-                    line: Self::history_job_line(
-                        connector,
-                        &job.name,
-                        &job.stage,
-                        &job.log_hash,
-                        Self::history_status_from_ui(job.status),
-                    ),
-                });
-                let job_idx = nodes.len() - 1;
-                if let Some(resources) = self.job_resources.get(&job.name) {
-                    self.append_job_resource_nodes(&mut nodes, job_idx, resources);
-                }
-            }
-        }
-
+    fn history_tree_entries(&self) -> Vec<HistoryTreeEntry> {
+        let mut roots = Vec::new();
+        roots.push(self.current_run_tree_entry());
         for entry in self.history.iter().rev() {
-            let collapsed = self.is_run_collapsed(&entry.run_id);
-            let mut spans = Vec::new();
-            spans.push(Span::styled(
-                format!("{} ", if collapsed { "▸" } else { "▾" }),
-                Style::default().fg(Color::DarkGray),
-            ));
-            spans.push(Span::styled(
-                entry.run_id.clone(),
-                Self::history_status_style(entry.status),
-            ));
-            spans.push(Span::styled(
-                format!(" ({})", entry.finished_at),
-                Style::default().fg(Color::DarkGray),
-            ));
-            if self
-                .history_view
-                .as_ref()
-                .map(|view| view.run_id == entry.run_id)
-                .unwrap_or(false)
-            {
-                spans.push(Span::styled(
-                    " [viewing]".to_string(),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            nodes.push(HistoryRenderNode {
-                key: HistoryNodeKey::FinishedRun {
-                    run_id: entry.run_id.clone(),
-                },
-                parent_index: None,
-                line: Line::from(spans),
-            });
-            let header_idx = nodes.len() - 1;
-            if collapsed {
-                continue;
-            }
-            let total = entry.jobs.len();
-            for (idx, job) in entry.jobs.iter().enumerate() {
-                let connector = if idx + 1 == total { "└─" } else { "├─" };
-                let log_path = job
-                    .log_path
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .or_else(|| Some(self.default_log_path(&entry.run_id, &job.log_hash)));
-                nodes.push(HistoryRenderNode {
-                    key: HistoryNodeKey::FinishedJob {
-                        run_id: entry.run_id.clone(),
-                        job_name: job.name.clone(),
-                        log_path,
-                    },
-                    parent_index: Some(header_idx),
-                    line: Self::history_job_line(
-                        connector,
-                        &job.name,
-                        &job.stage,
-                        &job.log_hash,
-                        job.status,
-                    ),
-                });
-                let job_idx = nodes.len() - 1;
-                let resources = UiJobResources::from(job);
-                self.append_job_resource_nodes(&mut nodes, job_idx, &resources);
-            }
+            roots.push(self.finished_run_tree_entry(entry));
         }
-
-        nodes
+        roots
     }
 
-    fn default_log_path(&self, run_id: &str, log_hash: &str) -> PathBuf {
-        runtime::logs_dir(run_id).join(format!("{log_hash}.log"))
+    fn current_run_tree_entry(&self) -> HistoryTreeEntry {
+        let mut children = Vec::new();
+        for (idx, job) in self.jobs.iter().enumerate() {
+            let resources = self.job_resources.get(&job.name);
+            children.push(HistoryTreeEntry {
+                key: HistoryNodeKey::CurrentJob(idx),
+                display: HistoryNodeDisplay::Job(JobDisplay {
+                    name: job.name.clone(),
+                    stage: job.stage.clone(),
+                    hash: job.log_hash.clone(),
+                    status: Self::history_status_from_ui(job.status),
+                }),
+                children: resources
+                    .map(|res| self.resource_tree_entries(res))
+                    .unwrap_or_default(),
+                collapsed: false,
+            });
+        }
+        HistoryTreeEntry {
+            key: HistoryNodeKey::CurrentRun,
+            display: HistoryNodeDisplay::RunHeader(RunHeaderDisplay {
+                run_id: self.current_run_id.clone(),
+                status: self.current_run_status(),
+                kind: RunHeaderKind::Current,
+                viewing: self.history_view.is_none(),
+            }),
+            children,
+            collapsed: self.is_run_collapsed(CURRENT_HISTORY_KEY),
+        }
     }
 
-    fn append_job_resource_nodes(
-        &self,
-        nodes: &mut Vec<HistoryRenderNode>,
-        parent_index: usize,
-        resources: &UiJobResources,
-    ) {
-        let mut entries = Vec::new();
+    fn finished_run_tree_entry(&self, entry: &HistoryEntry) -> HistoryTreeEntry {
+        let mut children = Vec::new();
+        for job in &entry.jobs {
+            let log_path = job
+                .log_path
+                .as_ref()
+                .map(PathBuf::from)
+                .or_else(|| Some(self.default_log_path(&entry.run_id, &job.log_hash)));
+            let resources = UiJobResources::from(job);
+            children.push(HistoryTreeEntry {
+                key: HistoryNodeKey::FinishedJob {
+                    run_id: entry.run_id.clone(),
+                    job_name: job.name.clone(),
+                    log_path,
+                },
+                display: HistoryNodeDisplay::Job(JobDisplay {
+                    name: job.name.clone(),
+                    stage: job.stage.clone(),
+                    hash: job.log_hash.clone(),
+                    status: job.status,
+                }),
+                children: self.resource_tree_entries(&resources),
+                collapsed: false,
+            });
+        }
+        HistoryTreeEntry {
+            key: HistoryNodeKey::FinishedRun {
+                run_id: entry.run_id.clone(),
+            },
+            display: HistoryNodeDisplay::RunHeader(RunHeaderDisplay {
+                run_id: entry.run_id.clone(),
+                status: entry.status,
+                kind: RunHeaderKind::Finished {
+                    finished_at: entry.finished_at.clone(),
+                },
+                viewing: self
+                    .history_view
+                    .as_ref()
+                    .map(|view| view.run_id == entry.run_id)
+                    .unwrap_or(false),
+            }),
+            children,
+            collapsed: self.is_run_collapsed(&entry.run_id),
+        }
+    }
+
+    fn resource_tree_entries(&self, resources: &UiJobResources) -> Vec<HistoryTreeEntry> {
+        let mut nodes = Vec::new();
         if let Some(dir) = &resources.artifact_dir {
-            entries.push(ResourceEntry::dir(
-                format!("Artifact dir: {}", self.relative_display(dir)),
-                PathBuf::from(dir),
-            ));
+            let title = format!("Artifact dir: {}", self.relative_display(dir));
+            let path = PathBuf::from(dir);
+            let key = HistoryNodeKey::ResourceDir {
+                title: title.clone(),
+                path: path.clone(),
+            };
+            nodes.push(HistoryTreeEntry {
+                key: key.clone(),
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
+                children: self.build_fs_tree_entries(&path, 0),
+                collapsed: self.is_node_collapsed_key(&key),
+            });
         }
         if !resources.artifact_paths.is_empty() {
             let display_paths: Vec<String> = resources
@@ -401,37 +419,140 @@ impl UiState {
                 .map(|p| self.relative_display(p))
                 .collect();
             let summary = Self::summarize_list(&display_paths);
-            entries.push(ResourceEntry::info(format!("Artifacts: {summary}")));
-        }
-        if !resources.caches.is_empty() {
-            let cache_summary = resources
-                .caches
-                .iter()
-                .map(|cache| {
-                    format!(
-                        "{} ({}) @ {}",
-                        cache.key,
-                        cache.policy,
-                        self.relative_display(&cache.host)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            entries.push(ResourceEntry::info(format!("Caches: {cache_summary}")));
-        }
-        if entries.is_empty() {
-            return;
-        }
-        let total = entries.len();
-        for (idx, entry) in entries.into_iter().enumerate() {
-            let connector = if idx + 1 == total { "└─" } else { "├─" };
-            let line = Self::resource_line(connector, &entry.label, entry.color);
-            nodes.push(HistoryRenderNode {
-                key: entry.key,
-                parent_index: Some(parent_index),
-                line,
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!("Artifacts: {summary}"),
+                    color: Color::DarkGray,
+                }),
+                children: Vec::new(),
+                collapsed: false,
             });
         }
+        for cache in &resources.caches {
+            let title = format!("Cache {} ({})", cache.key, cache.policy);
+            let path = PathBuf::from(&cache.host);
+            let key = HistoryNodeKey::ResourceDir {
+                title: title.clone(),
+                path: path.clone(),
+            };
+            nodes.push(HistoryTreeEntry {
+                key: key.clone(),
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
+                children: self.build_fs_tree_entries(&path, 0),
+                collapsed: self.is_node_collapsed_key(&key),
+            });
+        }
+        nodes
+    }
+
+    fn build_fs_tree_entries(&self, path: &Path, depth: usize) -> Vec<HistoryTreeEntry> {
+        if depth >= HISTORY_TREE_MAX_FS_DEPTH || !path.exists() {
+            return Vec::new();
+        }
+        let read_dir = match fs::read_dir(path) {
+            Ok(dir) => dir,
+            Err(_) => return Vec::new(),
+        };
+        let mut entries: Vec<_> = read_dir.filter_map(|entry| entry.ok()).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        let mut nodes = Vec::new();
+        for entry in entries.into_iter().take(HISTORY_TREE_MAX_FS_ENTRIES) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            let entry_path = entry.path();
+            let is_dir = file_type.is_dir();
+            let key = HistoryNodeKey::FileEntry {
+                path: entry_path.clone(),
+                is_dir,
+            };
+            let children = if is_dir {
+                self.build_fs_tree_entries(&entry_path, depth + 1)
+            } else {
+                Vec::new()
+            };
+            nodes.push(HistoryTreeEntry {
+                key: key.clone(),
+                display: HistoryNodeDisplay::FileEntry(FileEntryDisplay { name, is_dir }),
+                children,
+                collapsed: if is_dir {
+                    self.is_node_collapsed_key(&key)
+                } else {
+                    false
+                },
+            });
+        }
+        nodes
+    }
+
+    fn flatten_history_tree(&self, roots: &[HistoryTreeEntry]) -> Vec<HistoryRenderNode> {
+        let mut nodes = Vec::new();
+        for entry in roots {
+            self.flatten_history_tree_node(entry, &mut nodes, None, None);
+        }
+        nodes
+    }
+
+    fn flatten_history_tree_node(
+        &self,
+        entry: &HistoryTreeEntry,
+        nodes: &mut Vec<HistoryRenderNode>,
+        parent_index: Option<usize>,
+        connector: Option<&str>,
+    ) {
+        let line = self.render_history_tree_line(entry, connector);
+        nodes.push(HistoryRenderNode {
+            key: entry.key.clone(),
+            parent_index,
+            line,
+        });
+        let current_index = nodes.len() - 1;
+        if entry.collapsed {
+            return;
+        }
+        let total = entry.children.len();
+        for (idx, child) in entry.children.iter().enumerate() {
+            let child_connector = if idx + 1 == total { "└─" } else { "├─" };
+            self.flatten_history_tree_node(
+                child,
+                nodes,
+                Some(current_index),
+                Some(child_connector),
+            );
+        }
+    }
+
+    fn render_history_tree_line(
+        &self,
+        entry: &HistoryTreeEntry,
+        connector: Option<&str>,
+    ) -> Line<'static> {
+        match &entry.display {
+            HistoryNodeDisplay::RunHeader(header) => Self::run_header_line(header, entry.collapsed),
+            HistoryNodeDisplay::Job(job) => {
+                let symbol = connector.unwrap_or("└─");
+                Self::history_job_line(symbol, &job.name, &job.stage, &job.hash, job.status)
+            }
+            HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }) => {
+                let symbol = connector.unwrap_or("└─");
+                Self::resource_line(symbol, title, Color::Cyan)
+            }
+            HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, color }) => {
+                let symbol = connector.unwrap_or("└─");
+                Self::resource_line(symbol, label, *color)
+            }
+            HistoryNodeDisplay::FileEntry(entry) => {
+                let symbol = connector.unwrap_or("└─");
+                Self::file_entry_line(symbol, &entry.name, entry.is_dir)
+            }
+        }
+    }
+
+    fn default_log_path(&self, run_id: &str, log_hash: &str) -> PathBuf {
+        runtime::logs_dir(run_id).join(format!("{log_hash}.log"))
     }
 
     pub(super) fn history_job_line(
@@ -462,6 +583,31 @@ impl UiState {
             UiJobStatus::Skipped => HistoryStatus::Skipped,
             UiJobStatus::Running | UiJobStatus::Pending => HistoryStatus::Running,
         }
+    }
+
+    fn run_header_line(display: &RunHeaderDisplay, collapsed: bool) -> Line<'static> {
+        let mut spans = Vec::new();
+        spans.push(Span::styled(
+            format!("{} ", if collapsed { "▸" } else { "▾" }),
+            Style::default().fg(Color::DarkGray),
+        ));
+        let label = match &display.kind {
+            RunHeaderKind::Current => format!("{} (active)", display.run_id),
+            RunHeaderKind::Finished { finished_at } => {
+                format!("{} ({finished_at})", display.run_id)
+            }
+        };
+        spans.push(Span::styled(
+            label,
+            Self::history_status_style(display.status),
+        ));
+        if display.viewing {
+            spans.push(Span::styled(
+                " [viewing]".to_string(),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        Line::from(spans)
     }
 
     pub(super) fn current_run_status(&self) -> HistoryStatus {
@@ -500,15 +646,17 @@ impl UiState {
     }
 
     pub(super) fn is_run_collapsed(&self, key: &str) -> bool {
-        if key == CURRENT_HISTORY_KEY {
-            self.history_collapsed.get(key).copied().unwrap_or(false)
-        } else {
-            self.history_collapsed.get(key).copied().unwrap_or(true)
-        }
+        let map_key = Self::run_collapse_key(key);
+        let default = key != CURRENT_HISTORY_KEY;
+        self.collapsed_nodes
+            .get(&map_key)
+            .copied()
+            .unwrap_or(default)
     }
 
     pub(super) fn set_run_collapsed(&mut self, key: &str, collapsed: bool) {
-        self.history_collapsed.insert(key.to_string(), collapsed);
+        let map_key = Self::run_collapse_key(key);
+        self.collapsed_nodes.insert(map_key, collapsed);
     }
 
     pub(super) fn toggle_focus(&mut self) {
@@ -528,8 +676,8 @@ impl UiState {
     }
 
     pub(super) fn push_history_entry(&mut self, entry: HistoryEntry) {
-        self.history_collapsed
-            .entry(entry.run_id.clone())
+        self.collapsed_nodes
+            .entry(Self::run_collapse_key(&entry.run_id))
             .or_insert(true);
         self.history.push(entry);
     }
@@ -637,6 +785,20 @@ impl UiState {
                     self.set_run_collapsed(run_id, true);
                 }
             }
+            HistoryNodeKey::ResourceDir { .. } => {
+                if !self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.set_node_collapsed_key(&nodes[idx].key, true);
+                } else if let Some(parent) = nodes[idx].parent_index {
+                    self.history_selection = parent;
+                }
+            }
+            HistoryNodeKey::FileEntry { is_dir, .. } if *is_dir => {
+                if !self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.set_node_collapsed_key(&nodes[idx].key, true);
+                } else if let Some(parent) = nodes[idx].parent_index {
+                    self.history_selection = parent;
+                }
+            }
             _ => {
                 if let Some(parent) = nodes[idx].parent_index {
                     self.history_selection = parent;
@@ -673,6 +835,24 @@ impl UiState {
                     self.history_selection = idx + 1;
                 }
             }
+            HistoryNodeKey::ResourceDir { .. } => {
+                if self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.set_node_collapsed_key(&nodes[idx].key, false);
+                } else if let Some(next) = nodes.get(idx + 1)
+                    && next.parent_index == Some(idx)
+                {
+                    self.history_selection = idx + 1;
+                }
+            }
+            HistoryNodeKey::FileEntry { is_dir, .. } if *is_dir => {
+                if self.is_node_collapsed_key(&nodes[idx].key) {
+                    self.set_node_collapsed_key(&nodes[idx].key, false);
+                } else if let Some(next) = nodes.get(idx + 1)
+                    && next.parent_index == Some(idx)
+                {
+                    self.history_selection = idx + 1;
+                }
+            }
             _ => {}
         }
         self.refresh_history_bounds();
@@ -703,6 +883,23 @@ impl UiState {
                 title: title.clone(),
                 path: path.clone(),
             }),
+            HistoryNodeKey::FileEntry { path, is_dir } => {
+                let title = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                if *is_dir {
+                    Some(HistoryAction::ViewDir {
+                        title,
+                        path: path.clone(),
+                    })
+                } else {
+                    Some(HistoryAction::ViewFile {
+                        title,
+                        path: path.clone(),
+                    })
+                }
+            }
             HistoryNodeKey::ResourceInfo => None,
         }
     }
@@ -1011,6 +1208,17 @@ impl UiState {
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(label.to_string(), Style::default().fg(color)),
+        ])
+    }
+
+    fn file_entry_line(connector: &str, name: &str, is_dir: bool) -> Line<'static> {
+        let color = if is_dir { Color::Cyan } else { Color::Gray };
+        Line::from(vec![
+            Span::styled(
+                format!("     {} ", connector),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(name.to_string(), Style::default().fg(color)),
         ])
     }
 
@@ -1944,6 +2152,56 @@ pub(super) struct HistoryRenderNode {
 }
 
 #[derive(Clone)]
+struct HistoryTreeEntry {
+    key: HistoryNodeKey,
+    display: HistoryNodeDisplay,
+    children: Vec<HistoryTreeEntry>,
+    collapsed: bool,
+}
+
+#[derive(Clone)]
+enum HistoryNodeDisplay {
+    RunHeader(RunHeaderDisplay),
+    Job(JobDisplay),
+    Resource(ResourceDisplay),
+    FileEntry(FileEntryDisplay),
+}
+
+#[derive(Clone)]
+struct RunHeaderDisplay {
+    run_id: String,
+    status: HistoryStatus,
+    kind: RunHeaderKind,
+    viewing: bool,
+}
+
+#[derive(Clone)]
+enum RunHeaderKind {
+    Current,
+    Finished { finished_at: String },
+}
+
+#[derive(Clone)]
+struct JobDisplay {
+    name: String,
+    stage: String,
+    hash: String,
+    status: HistoryStatus,
+}
+
+#[derive(Clone)]
+enum ResourceDisplay {
+    Directory { title: String },
+    Info { label: String, color: Color },
+}
+
+#[derive(Clone)]
+struct FileEntryDisplay {
+    name: String,
+    is_dir: bool,
+}
+
+#[derive(Clone)]
 enum HistoryNodeKey {
     CurrentRun,
     CurrentJob(usize),
@@ -1960,6 +2218,10 @@ enum HistoryNodeKey {
         path: PathBuf,
     },
     ResourceInfo,
+    FileEntry {
+        path: PathBuf,
+        is_dir: bool,
+    },
 }
 
 struct HistoryRunView {
@@ -1973,33 +2235,6 @@ struct HistoryPreview {
     path: PathBuf,
     lines: Vec<String>,
     scroll_offset: usize,
-}
-
-struct ResourceEntry {
-    key: HistoryNodeKey,
-    label: String,
-    color: Color,
-}
-
-impl ResourceEntry {
-    fn dir(label: String, path: PathBuf) -> Self {
-        Self {
-            key: HistoryNodeKey::ResourceDir {
-                title: label.clone(),
-                path,
-            },
-            label,
-            color: Color::Cyan,
-        }
-    }
-
-    fn info(label: String) -> Self {
-        Self {
-            key: HistoryNodeKey::ResourceInfo,
-            label,
-            color: Color::DarkGray,
-        }
-    }
 }
 
 impl HistoryPreview {
