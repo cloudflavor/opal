@@ -4,6 +4,9 @@ use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
 use std::process::{Command, Stdio};
 
+const DEFAULT_MEMORY_LIMIT: &str = "1638m"; // ~1.6 GB
+const DEFAULT_CPU_LIMIT: &str = "4";
+
 #[derive(Debug, Clone)]
 pub struct ContainerExecutor {
     core: ExecutorCore,
@@ -48,6 +51,10 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(ctx.container_name)
             .arg("--workdir")
             .arg(ctx.container_root)
+            .arg("--cpus")
+            .arg(DEFAULT_CPU_LIMIT)
+            .arg("--memory")
+            .arg(DEFAULT_MEMORY_LIMIT)
             .arg("--dns")
             .arg("1.1.1.1")
             .arg("--volume")

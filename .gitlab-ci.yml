@@ -45,7 +45,7 @@ unit-tests:
   artifacts:
     when: always
     paths:
-      - .cargo/target/debug/deps/
+      - target/debug/deps/
 
 build-release:
   stage: build
@@ -57,7 +57,7 @@ build-release:
   artifacts:
     expire_in: 1 week
     paths:
-      - .cargo/target/release/opal
+      - target/release/opal
 
 package-crate:
   stage: package
@@ -68,7 +68,7 @@ package-crate:
   artifacts:
     expire_in: 1 week
     paths:
-      - .cargo/target/package/
+      - target/package/
 
 release-artifacts:
   stage: release
@@ -95,8 +95,10 @@ release-artifacts:
         *) OS="$(echo "${OS_RAW}" | tr '[:upper:]' '[:lower:]')" ;;
       esac
       PLATFORM="${ARCH}-${OS}"
-      ARCHIVE=".cargo/target/release/opal-${VERSION}-${PLATFORM}.tar.gz"
-      NOTES=".cargo/target/release/release-notes-${PLATFORM}.txt"
+      RELEASE_DIR="releases"
+      mkdir -p "${RELEASE_DIR}"
+      ARCHIVE="${RELEASE_DIR}/opal-${VERSION}-${PLATFORM}.tar.gz"
+      NOTES="${RELEASE_DIR}/release-notes-${PLATFORM}.txt"
       mkdir -p target/release
       tar -czf "${ARCHIVE}" -C target/release opal
       SHA=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
@@ -107,8 +109,8 @@ release-artifacts:
       } > "${NOTES}"
   artifacts:
     paths:
-      - target/release/*.tar.gz
-      - target/release/release-notes-*.txt
+      - releases/*.tar.gz
+      - releases/release-notes-*.txt
 
 publish-crate:
   stage: publish

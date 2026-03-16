@@ -25,6 +25,7 @@ pub fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_job_env(
     base_env: &[(String, String)],
     default_vars: &HashMap<String, String>,
@@ -181,6 +182,7 @@ mod tests {
             &job,
             &SecretsStore::default(),
             Path::new("/workspace"),
+            Path::new("/builds"),
             "1",
             &HashMap::from([("CI_PROJECT_DIR".into(), "/workspace".into())]),
         );
