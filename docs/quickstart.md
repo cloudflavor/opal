@@ -29,7 +29,7 @@
 
 6. **Inspect results**
    - Highlight a job and press `o` to open its log in your pager (`$PAGER`, default `less -R`).
-   - Artifacts are stored in `~/.opal/<project>/<run-id>/artifacts/<job>/`.
+   - Artifacts are stored in `$OPAL_HOME/<pipeline>/<job>/artifacts/` (default `~/.opal/<pipeline>/<job>/artifacts/`).
 
 ## Tips
 

@@ -1,46 +1,45 @@
-use crate::naming::project_slug;
-use dirs::{config_dir, data_dir, home_dir};
+use dirs::{config_dir, home_dir};
+use std::env;
 use std::path::{Path, PathBuf};
 
-const RUNTIME_DIR: &str = ".opal";
+const DEFAULT_HOME_DIR: &str = ".opal";
+const REPO_CONFIG_DIR: &str = ".opal";
 
-fn base_runtime_dir(workdir: &Path) -> PathBuf {
-    if let Some(home) = home_dir() {
-        return home.join(RUNTIME_DIR);
+fn opal_home() -> PathBuf {
+    if let Some(path) = env::var_os("OPAL_HOME")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
     }
-    if let Some(data) = data_dir() {
-        return data.join(RUNTIME_DIR);
-    }
-    workdir.join(RUNTIME_DIR)
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(DEFAULT_HOME_DIR)
 }
 
-fn project_component(workdir: &Path) -> String {
-    project_slug(&workdir.to_string_lossy())
+pub fn runs_root() -> PathBuf {
+    opal_home()
 }
 
-pub fn runtime_root(workdir: &Path) -> PathBuf {
-    base_runtime_dir(workdir).join(project_component(workdir))
+pub fn session_dir(run_id: &str) -> PathBuf {
+    runs_root().join(run_id)
 }
 
-pub fn session_dir(workdir: &Path, run_id: &str) -> PathBuf {
-    runtime_root(workdir).join(run_id)
+pub fn logs_dir(run_id: &str) -> PathBuf {
+    session_dir(run_id).join("logs")
 }
 
-pub fn logs_dir(workdir: &Path, run_id: &str) -> PathBuf {
-    session_dir(workdir, run_id).join("logs")
+pub fn cache_root() -> PathBuf {
+    opal_home().join("cache")
 }
 
-pub fn cache_root(workdir: &Path) -> PathBuf {
-    runtime_root(workdir).join("cache")
-}
-
-pub fn history_path(workdir: &Path) -> PathBuf {
-    runtime_root(workdir).join("history.json")
+pub fn history_path() -> PathBuf {
+    opal_home().join("history.json")
 }
 
 pub fn config_dirs(workdir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    paths.push(workdir.join(RUNTIME_DIR).join("config.toml"));
+    paths.push(workdir.join(REPO_CONFIG_DIR).join("config.toml"));
+    paths.push(opal_home().join("config.toml"));
     if let Some(mut dir) = config_dir() {
         dir.push("opal");
         dir.push("config.toml");

@@ -378,10 +378,7 @@ impl UiState {
     }
 
     fn default_log_path(&self, run_id: &str, log_hash: &str) -> PathBuf {
-        runtime::runtime_root(&self.workdir)
-            .join(run_id)
-            .join("logs")
-            .join(format!("{log_hash}.log"))
+        runtime::logs_dir(run_id).join(format!("{log_hash}.log"))
     }
 
     fn append_job_resource_nodes(
@@ -1807,13 +1804,12 @@ impl UiJobState {
         }
     }
 
-    fn from_history(run_id: &str, job: &HistoryJob, workdir: &Path) -> Self {
-        let log_path = job.log_path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
-            runtime::runtime_root(workdir)
-                .join(run_id)
-                .join("logs")
-                .join(format!("{}.log", job.log_hash))
-        });
+    fn from_history(run_id: &str, job: &HistoryJob, _workdir: &Path) -> Self {
+        let log_path = job
+            .log_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| runtime::logs_dir(run_id).join(format!("{}.log", job.log_hash)));
         Self {
             name: job.name.clone(),
             stage: job.stage.clone(),

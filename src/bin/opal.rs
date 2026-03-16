@@ -137,7 +137,7 @@ fn run_plan(args: PlanArgs) -> Result<()> {
         return Ok(());
     }
 
-    let logs_dir = runtime::runtime_root(&workdir).join("plan/logs");
+    let logs_dir = runtime::runs_root().join("plan/logs");
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("failed to create plan log dir {}", logs_dir.display()))?;
     let plan = pipeline::build_job_plan(&graph, Some(&ctx), |job| {

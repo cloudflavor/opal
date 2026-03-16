@@ -33,4 +33,4 @@ Mouse events are optional but supported:
 
 - If the UI freezes, ensure your terminal supports alternate-screen mode and 256 colors.
 - Press `Ctrl+C` to exit immediately; Opal will attempt to stop running jobs.
-- Logs live under `~/.opal/<project>/<run-id>/logs/<job>.log` if you need to inspect them outside the UI.
+- Logs live under `$OPAL_HOME/<pipeline>/<job>/logs/<job>.log` (default `~/.opal/<pipeline>/<job>/logs/<job>.log`) if you need to inspect them outside the UI.

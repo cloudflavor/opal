@@ -32,6 +32,7 @@ impl PodmanExecutor {
 struct PodmanCommandBuilder<'a> {
     ctx: &'a EngineCommandContext<'a>,
     command: Command,
+    workspace_mount: String,
 }
 
 impl<'a> PodmanCommandBuilder<'a> {
@@ -45,10 +46,12 @@ impl<'a> PodmanCommandBuilder<'a> {
             .arg("--name")
             .arg(ctx.container_name)
             .arg("--workdir")
-            .arg(ctx.container_root)
-            .arg("--volume")
-            .arg(&workspace_mount);
-        Self { ctx, command }
+            .arg(ctx.container_root);
+        Self {
+            ctx,
+            command,
+            workspace_mount,
+        }
     }
 
     fn with_volumes(mut self) -> Self {
@@ -74,6 +77,8 @@ impl<'a> PodmanCommandBuilder<'a> {
 
     fn build(mut self) -> Command {
         self.command
+            .arg("--volume")
+            .arg(&self.workspace_mount)
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);

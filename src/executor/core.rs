@@ -50,6 +50,7 @@ pub struct ExecutorCore {
     scripts_dir: PathBuf,
     logs_dir: PathBuf,
     session_dir: PathBuf,
+    container_session_dir: PathBuf,
     run_id: String,
     verbose_scripts: bool,
     env_vars: Vec<(String, String)>,
@@ -79,11 +80,11 @@ impl ExecutorCore {
     pub fn new(config: ExecutorConfig) -> Result<Self> {
         let g = PipelineGraph::from_path(&config.pipeline)?;
         let run_id = generate_run_id(&config);
-        let runtime_root = runtime::runtime_root(&config.workdir);
-        fs::create_dir_all(&runtime_root)
-            .with_context(|| format!("failed to create {:?}", runtime_root))?;
+        let runs_root = runtime::runs_root();
+        fs::create_dir_all(&runs_root)
+            .with_context(|| format!("failed to create {:?}", runs_root))?;
 
-        let session_dir = runtime_root.join(&run_id);
+        let session_dir = runtime::session_dir(&run_id);
         if session_dir.exists() {
             fs::remove_dir_all(&session_dir)
                 .with_context(|| format!("failed to clean {:?}", session_dir))?;
@@ -95,11 +96,11 @@ impl ExecutorCore {
         fs::create_dir_all(&scripts_dir)
             .with_context(|| format!("failed to create {:?}", scripts_dir))?;
 
-        let logs_dir = session_dir.join("logs");
+        let logs_dir = runtime::logs_dir(&run_id);
         fs::create_dir_all(&logs_dir)
             .with_context(|| format!("failed to create {:?}", logs_dir))?;
 
-        let history_path = runtime::history_path(&config.workdir);
+        let history_path = runtime::history_path();
         let history_entries = match history::load(&history_path) {
             Ok(entries) => entries,
             Err(err) => {
@@ -138,7 +139,7 @@ impl ExecutorCore {
 
         let secrets = SecretsStore::load(&config.workdir)?;
         let artifacts = ArtifactManager::new(session_dir.clone());
-        let cache_root = runtime::cache_root(&config.workdir);
+        let cache_root = runtime::cache_root();
         fs::create_dir_all(&cache_root)
             .with_context(|| format!("failed to create cache root {:?}", cache_root))?;
         let cache = CacheManager::new(cache_root);
@@ -158,6 +159,7 @@ impl ExecutorCore {
             .and_then(|n| n.to_str())
             .unwrap_or("project");
         let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
+        let container_session_dir = container_workdir.join("opal").join(&run_id);
 
         let core = Self {
             config,
@@ -166,6 +168,7 @@ impl ExecutorCore {
             scripts_dir,
             logs_dir,
             session_dir,
+            container_session_dir,
             run_id,
             verbose_scripts,
             env_vars,
@@ -1163,6 +1166,11 @@ impl ExecutorCore {
                 &self.container_workdir,
                 self.external_artifacts.as_ref(),
             )?;
+            mounts.push(VolumeMount {
+                host: self.session_dir.clone(),
+                container: self.container_session_dir.clone(),
+                read_only: false,
+            });
             if let Some((host, container_path)) = self.secrets.volume_mount() {
                 mounts.push(VolumeMount {
                     host,
@@ -1684,7 +1692,13 @@ impl ExecutorCore {
     }
 
     fn container_path_rel(&self, host_path: &Path) -> Result<PathBuf> {
-        paths::to_container_path(host_path, &self.config.workdir, &self.container_workdir)
+        paths::to_container_path(
+            host_path,
+            &[
+                (&*self.config.workdir, &*self.container_workdir),
+                (&*self.session_dir, &*self.container_session_dir),
+            ],
+        )
     }
 }
 

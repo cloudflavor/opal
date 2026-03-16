@@ -14,11 +14,11 @@ default:
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
-      - .cargo/
+      - /builds/.cargo/
 
 variables:
   CARGO_TERM_COLOR: always
-  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  CARGO_HOME: "$CI_BUILDS_DIR/.cargo"
 
 fetch-sources:
   stage: deps

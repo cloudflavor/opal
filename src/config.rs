@@ -9,6 +9,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct OpalConfig {
+    pub container: Option<ContainerEngineConfig>,
     pub engines: EngineSettings,
     #[serde(rename = "registry")]
     pub registries: Vec<RegistryAuth>,
@@ -63,6 +64,9 @@ impl OpalConfig {
     }
 
     pub fn container_settings(&self) -> Option<&ContainerEngineConfig> {
+        if let Some(cfg) = self.container.as_ref() {
+            return Some(cfg);
+        }
         self.engines.container.as_ref()
     }
 
@@ -81,7 +85,13 @@ impl OpalConfig {
         Ok(results)
     }
 
-    fn merge(&mut self, other: OpalConfig) {
+    fn merge(&mut self, mut other: OpalConfig) {
+        if let Some(new_container) = other.container.take() {
+            match &mut self.container {
+                Some(existing) => existing.merge(new_container),
+                slot @ None => *slot = Some(new_container),
+            }
+        }
         self.engines.merge(other.engines);
         self.registries.extend(other.registries);
     }

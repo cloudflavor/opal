@@ -35,6 +35,7 @@ impl ContainerExecutor {
 struct ContainerCommandBuilder<'a> {
     ctx: &'a EngineCommandContext<'a>,
     command: Command,
+    workspace_mount: String,
 }
 
 impl<'a> ContainerCommandBuilder<'a> {
@@ -60,8 +61,11 @@ impl<'a> ContainerCommandBuilder<'a> {
         if let Some(dns) = ctx.dns.filter(|value| !value.is_empty()) {
             command.arg("--dns").arg(dns);
         }
-        command.arg("--volume").arg(&workspace_mount);
-        Self { ctx, command }
+        Self {
+            ctx,
+            command,
+            workspace_mount,
+        }
     }
 
     fn with_volumes(mut self) -> Self {
@@ -87,6 +91,8 @@ impl<'a> ContainerCommandBuilder<'a> {
 
     fn build(mut self) -> Command {
         self.command
+            .arg("--volume")
+            .arg(&self.workspace_mount)
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);

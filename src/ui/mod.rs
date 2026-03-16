@@ -34,8 +34,8 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
     runner.run()
 }
 
-pub fn view_pipeline_logs(root: &Path) -> Result<()> {
-    let history_path = runtime::history_path(root);
+pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
+    let history_path = runtime::history_path();
     let history = history::load(&history_path)
         .with_context(|| format!("failed to load history at {}", history_path.display()))?;
     if history.is_empty() {
