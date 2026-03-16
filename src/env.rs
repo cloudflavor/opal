@@ -90,7 +90,7 @@ pub fn expand_env_list(env: &mut [(String, String)], host_env: &HashMap<String, 
     }
 }
 
-fn expand_value(value: &str, lookup: &HashMap<String, String>) -> String {
+pub fn expand_value(value: &str, lookup: &HashMap<String, String>) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut idx = 0;
     let mut output = String::new();

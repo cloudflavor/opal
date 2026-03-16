@@ -2,11 +2,12 @@ use super::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor, paths,
     script, services::ServiceRuntime,
 };
+use crate::config::ResolvedRegistryAuth;
 use crate::display::{
     self, DisplayFormatter, collect_pipeline_plan, indent_block, print_pipeline_summary,
 };
 use crate::engine::EngineCommandContext;
-use crate::env::{build_job_env, collect_env_vars, expand_env_list};
+use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
 use crate::gitlab::{CachePolicy, Job, PipelineGraph, ServiceConfig};
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
@@ -20,13 +21,14 @@ use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::{should_use_color, stream_lines};
 use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobResources, UiJobStatus};
-use crate::{EngineKind, ExecutorConfig};
+use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
@@ -77,11 +79,11 @@ impl ExecutorCore {
     pub fn new(config: ExecutorConfig) -> Result<Self> {
         let g = PipelineGraph::from_path(&config.pipeline)?;
         let run_id = generate_run_id(&config);
-        let sessions_root = config.workdir.join(".opal");
-        fs::create_dir_all(&sessions_root)
-            .with_context(|| format!("failed to create {:?}", sessions_root))?;
+        let runtime_root = runtime::runtime_root(&config.workdir);
+        fs::create_dir_all(&runtime_root)
+            .with_context(|| format!("failed to create {:?}", runtime_root))?;
 
-        let session_dir = sessions_root.join(&run_id);
+        let session_dir = runtime_root.join(&run_id);
         if session_dir.exists() {
             fs::remove_dir_all(&session_dir)
                 .with_context(|| format!("failed to clean {:?}", session_dir))?;
@@ -93,28 +95,11 @@ impl ExecutorCore {
         fs::create_dir_all(&scripts_dir)
             .with_context(|| format!("failed to create {:?}", scripts_dir))?;
 
-        let logs_root = config
-            .log_dir
-            .clone()
-            .map(|dir| {
-                if dir.is_absolute() {
-                    dir
-                } else {
-                    config.workdir.join(dir)
-                }
-            })
-            .unwrap_or_else(|| sessions_root.join("logs"));
-        fs::create_dir_all(&logs_root)
-            .with_context(|| format!("failed to create {:?}", logs_root))?;
-        let logs_dir = logs_root.join(&run_id);
-        if logs_dir.exists() {
-            fs::remove_dir_all(&logs_dir)
-                .with_context(|| format!("failed to clean {:?}", logs_dir))?;
-        }
+        let logs_dir = session_dir.join("logs");
         fs::create_dir_all(&logs_dir)
             .with_context(|| format!("failed to create {:?}", logs_dir))?;
 
-        let history_path = sessions_root.join("history.json");
+        let history_path = runtime::history_path(&config.workdir);
         let history_entries = match history::load(&history_path) {
             Ok(entries) => entries,
             Err(err) => {
@@ -153,7 +138,7 @@ impl ExecutorCore {
 
         let secrets = SecretsStore::load(&config.workdir)?;
         let artifacts = ArtifactManager::new(session_dir.clone());
-        let cache_root = sessions_root.join("cache");
+        let cache_root = runtime::cache_root(&config.workdir);
         fs::create_dir_all(&cache_root)
             .with_context(|| format!("failed to create cache root {:?}", cache_root))?;
         let cache = CacheManager::new(cache_root);
@@ -174,7 +159,7 @@ impl ExecutorCore {
             .unwrap_or("project");
         let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
 
-        Ok(Self {
+        let core = Self {
             config,
             g,
             use_color,
@@ -197,7 +182,11 @@ impl ExecutorCore {
             external_artifacts,
             running_containers,
             cancelled_jobs,
-        })
+        };
+
+        core.ensure_registry_logins()?;
+
+        Ok(core)
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -1181,7 +1170,7 @@ impl ExecutorCore {
                     read_only: true,
                 });
             }
-            let job_image = self.resolve_job_image(&job)?;
+            let job_image = self.resolve_job_image_with_env(&job, Some(&cache_env))?;
             let container_name = run_info.container_name.clone();
             let script_commands = self.expanded_commands(&job);
             let script_path = script::write_job_script(
@@ -1415,6 +1404,7 @@ impl ExecutorCore {
         env_vars: &[(String, String)],
         network: Option<&str>,
     ) -> Result<Child> {
+        let container_cfg = self.config.settings.container_settings();
         let ctx = EngineCommandContext {
             workdir: &self.config.workdir,
             container_root: &self.container_workdir,
@@ -1424,6 +1414,9 @@ impl ExecutorCore {
             mounts,
             env_vars,
             network,
+            cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
+            memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
+            dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
         };
 
         let mut command = match self.config.engine {
@@ -1437,6 +1430,85 @@ impl ExecutorCore {
         command
             .spawn()
             .with_context(|| format!("failed to run {:?} command", self.config.engine))
+    }
+
+    fn ensure_registry_logins(&self) -> Result<()> {
+        let auths = self.config.settings.registry_auth_for(self.config.engine)?;
+        for auth in &auths {
+            match self.config.engine {
+                EngineKind::ContainerCli => self.container_registry_login(auth)?,
+                EngineKind::Docker | EngineKind::Orbstack => {
+                    self.standard_registry_login("docker", auth)?
+                }
+                EngineKind::Podman => self.standard_registry_login("podman", auth)?,
+                EngineKind::Nerdctl => self.standard_registry_login("nerdctl", auth)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn container_registry_login(&self, auth: &ResolvedRegistryAuth) -> Result<()> {
+        let mut command = Command::new("container");
+        command.arg("registry").arg("login");
+        if let Some(scheme) = auth.scheme.as_deref() {
+            command.arg("--scheme").arg(scheme);
+        }
+        command
+            .arg("--username")
+            .arg(&auth.username)
+            .arg("--password-stdin")
+            .arg(&auth.server)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        let mut child = command.spawn().with_context(|| {
+            format!("failed to run container registry login for {}", auth.server)
+        })?;
+        child
+            .stdin
+            .as_mut()
+            .context("missing stdin for container registry login")?
+            .write_all(auth.password.as_bytes())?;
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(anyhow!(
+                "container registry login for {} failed with status {:?}",
+                auth.server,
+                status.code()
+            ));
+        }
+        Ok(())
+    }
+
+    fn standard_registry_login(&self, binary: &str, auth: &ResolvedRegistryAuth) -> Result<()> {
+        let mut command = Command::new(binary);
+        command
+            .arg("login")
+            .arg("--username")
+            .arg(&auth.username)
+            .arg("--password-stdin")
+            .arg(&auth.server)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("failed to run {} login for {}", binary, auth.server))?;
+        child
+            .stdin
+            .as_mut()
+            .context("missing stdin for registry login")?
+            .write_all(auth.password.as_bytes())?;
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(anyhow!(
+                "{} login for {} failed with status {:?}",
+                binary,
+                auth.server,
+                status.code()
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
@@ -1511,19 +1583,37 @@ impl ExecutorCore {
         })
     }
     fn resolve_job_image(&self, job: &Job) -> Result<String> {
-        if let Some(image) = job.image.clone() {
-            return Ok(image);
+        self.resolve_job_image_with_env(job, None)
+    }
+
+    fn resolve_job_image_with_env(
+        &self,
+        job: &Job,
+        env_lookup: Option<&HashMap<String, String>>,
+    ) -> Result<String> {
+        let template = if let Some(image) = job.image.as_ref() {
+            image.clone()
+        } else if let Some(image) = self.g.defaults.image.as_ref() {
+            image.clone()
+        } else if let Some(image) = self.config.image.clone() {
+            image
+        } else {
+            return Err(anyhow!(
+                "job '{}' has no image (use --base-image or set image in pipeline/job)",
+                job.name
+            ));
+        };
+
+        if !template.contains('$') {
+            return Ok(template);
         }
-        if let Some(image) = self.g.defaults.image.clone() {
-            return Ok(image);
+
+        if let Some(map) = env_lookup {
+            Ok(expand_value(&template, map))
+        } else {
+            let owned_lookup: HashMap<String, String> = self.job_env(job).into_iter().collect();
+            Ok(expand_value(&template, &owned_lookup))
         }
-        if let Some(image) = &self.config.image {
-            return Ok(image.clone());
-        }
-        Err(anyhow!(
-            "job '{}' has no image (use --base-image or set image in pipeline/job)",
-            job.name
-        ))
     }
 
     fn next_attempt(&self, job_name: &str) -> usize {

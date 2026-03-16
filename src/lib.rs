@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use structopt::StructOpt;
 
+pub mod config;
 pub mod display;
 pub mod engine;
 pub mod env;
@@ -13,6 +14,7 @@ pub mod logging;
 pub mod naming;
 pub mod pipeline;
 pub mod runner;
+pub mod runtime;
 pub mod secrets;
 pub mod terminal;
 pub mod ui;
@@ -63,10 +65,6 @@ pub struct RunArgs {
     #[structopt(long = "max-parallel-jobs", default_value = "5")]
     /// Maximum number of jobs to run concurrently
     pub max_parallel_jobs: usize,
-
-    #[structopt(long = "log-dir")]
-    /// Optional directory to store job logs (default: .opal/logs/<run_id>)
-    pub log_dir: Option<PathBuf>,
 
     #[structopt(
         long = "engine",
@@ -160,10 +158,10 @@ pub struct ExecutorConfig {
     pub pipeline: PathBuf,
     pub env_includes: Vec<String>,
     pub max_parallel_jobs: usize,
-    pub log_dir: Option<PathBuf>,
     pub enable_tui: bool,
     pub engine: EngineKind,
     pub gitlab: Option<GitLabRemoteConfig>,
+    pub settings: config::OpalConfig,
 }
 
 #[derive(Clone, Debug)]

@@ -40,6 +40,8 @@ struct ContainerCommandBuilder<'a> {
 impl<'a> ContainerCommandBuilder<'a> {
     fn new(ctx: &'a EngineCommandContext<'a>) -> Self {
         let workspace_mount = format!("{}:{}", ctx.workdir.display(), ctx.container_root.display());
+        let cpus = ctx.cpus.unwrap_or(DEFAULT_CPU_LIMIT);
+        let memory = ctx.memory.unwrap_or(DEFAULT_MEMORY_LIMIT);
         let mut command = Command::new("container");
         command
             .stdout(Stdio::piped())
@@ -52,13 +54,13 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg("--workdir")
             .arg(ctx.container_root)
             .arg("--cpus")
-            .arg(DEFAULT_CPU_LIMIT)
+            .arg(cpus)
             .arg("--memory")
-            .arg(DEFAULT_MEMORY_LIMIT)
-            .arg("--dns")
-            .arg("1.1.1.1")
-            .arg("--volume")
-            .arg(&workspace_mount);
+            .arg(memory);
+        if let Some(dns) = ctx.dns.filter(|value| !value.is_empty()) {
+            command.arg("--dns").arg(dns);
+        }
+        command.arg("--volume").arg(&workspace_mount);
         Self { ctx, command }
     }
 

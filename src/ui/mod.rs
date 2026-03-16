@@ -5,6 +5,7 @@ pub mod types;
 
 use crate::history;
 use crate::history::HistoryEntry;
+use crate::runtime;
 use crate::ui::types::UiEvent;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -34,7 +35,7 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
 }
 
 pub fn view_pipeline_logs(root: &Path) -> Result<()> {
-    let history_path = root.join(".opal").join("history.json");
+    let history_path = runtime::history_path(root);
     let history = history::load(&history_path)
         .with_context(|| format!("failed to load history at {}", history_path.display()))?;
     if history.is_empty() {

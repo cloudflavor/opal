@@ -27,9 +27,9 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 ## Artifacts & logs
 
-- Each job’s filesystem writes go into `.opal/<run-id>/artifacts/<job-slug>/`.
+- Each job’s filesystem writes go into `~/.opal/<project>/<run-id>/artifacts/<job-slug>/`.
 - Declared `artifacts.paths` are copied into that directory and can be consumed by downstream jobs that request `needs: { artifacts: true }`.
-- Logs stream to `.opal/logs/<run-id>/<job>.log` for long-term archiving. The TUI also keeps an in-memory buffer and highlights diff-like lines (`+`/`-`).
+- Logs stream to `~/.opal/<project>/<run-id>/logs/<job>.log` for long-term archiving. The TUI also keeps an in-memory buffer and highlights diff-like lines (`+`/`-`).
 
 ## Customization
 

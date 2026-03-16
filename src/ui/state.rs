@@ -3,6 +3,7 @@ use super::types::{
     PaneFocus, UiJobInfo, UiJobResources, UiJobStatus,
 };
 use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
+use crate::runtime;
 use anyhow::{Context, Result, anyhow};
 use include_dir::{Dir, include_dir};
 use owo_colors::OwoColorize;
@@ -347,12 +348,11 @@ impl UiState {
             let total = entry.jobs.len();
             for (idx, job) in entry.jobs.iter().enumerate() {
                 let connector = if idx + 1 == total { "└─" } else { "├─" };
-                let log_path = job.log_path.as_ref().map(PathBuf::from).or_else(|| {
-                    Some(PathBuf::from(format!(
-                        ".opal/logs/{}/{}.log",
-                        entry.run_id, job.log_hash
-                    )))
-                });
+                let log_path = job
+                    .log_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .or_else(|| Some(self.default_log_path(&entry.run_id, &job.log_hash)));
                 nodes.push(HistoryRenderNode {
                     key: HistoryNodeKey::FinishedJob {
                         run_id: entry.run_id.clone(),
@@ -375,6 +375,13 @@ impl UiState {
         }
 
         nodes
+    }
+
+    fn default_log_path(&self, run_id: &str, log_hash: &str) -> PathBuf {
+        runtime::runtime_root(&self.workdir)
+            .join(run_id)
+            .join("logs")
+            .join(format!("{log_hash}.log"))
     }
 
     fn append_job_resource_nodes(
@@ -544,7 +551,7 @@ impl UiState {
         let jobs: Vec<UiJobState> = entry
             .jobs
             .iter()
-            .map(|job| UiJobState::from_history(run_id, job))
+            .map(|job| UiJobState::from_history(run_id, job, &self.workdir))
             .collect();
         self.history_view = Some(HistoryRunView {
             run_id: run_id.to_string(),
@@ -1800,11 +1807,13 @@ impl UiJobState {
         }
     }
 
-    fn from_history(run_id: &str, job: &HistoryJob) -> Self {
-        let log_path =
-            job.log_path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
-                PathBuf::from(format!(".opal/logs/{run_id}/{}.log", job.log_hash))
-            });
+    fn from_history(run_id: &str, job: &HistoryJob, workdir: &Path) -> Self {
+        let log_path = job.log_path.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+            runtime::runtime_root(workdir)
+                .join(run_id)
+                .join("logs")
+                .join(format!("{}.log", job.log_hash))
+        });
         Self {
             name: job.name.clone(),
             stage: job.stage.clone(),

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use opal::config::OpalConfig;
 use opal::display::{self, DisplayFormatter};
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
@@ -10,9 +11,10 @@ use opal::terminal;
 use opal::ui;
 use opal::{
     Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, PlanArgs, RunArgs,
-    ViewArgs,
+    ViewArgs, runtime,
 };
 use std::env;
+use std::fs;
 use std::io::{self, IsTerminal};
 use structopt::StructOpt;
 use tracing_subscriber::EnvFilter;
@@ -42,7 +44,6 @@ async fn main() -> Result<()> {
                 base_image,
                 env_includes,
                 max_parallel_jobs,
-                log_dir,
                 engine,
                 no_tui,
                 gitlab_base_url,
@@ -52,6 +53,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
             let resolved_pipeline =
                 pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
+            let settings = OpalConfig::load(&resolved_workdir)?;
 
             let engine_kind = resolve_engine(engine);
             let gitlab = gitlab_token.map(|token| GitLabRemoteConfig {
@@ -66,10 +68,10 @@ async fn main() -> Result<()> {
                 pipeline: resolved_pipeline,
                 env_includes,
                 max_parallel_jobs,
-                log_dir,
                 enable_tui: !no_tui,
                 engine: engine_kind,
                 gitlab,
+                settings,
             };
 
             let run_result = match engine_kind {
@@ -135,7 +137,9 @@ fn run_plan(args: PlanArgs) -> Result<()> {
         return Ok(());
     }
 
-    let logs_dir = workdir.join(".opal/plan/logs");
+    let logs_dir = runtime::runtime_root(&workdir).join("plan/logs");
+    fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("failed to create plan log dir {}", logs_dir.display()))?;
     let plan = pipeline::build_job_plan(&graph, Some(&ctx), |job| {
         logging::job_log_info(&logs_dir, "plan-preview", job)
     })?;
