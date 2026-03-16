@@ -8,7 +8,7 @@
 
 2. **Prepare a workspace**
    - Place your project in a directory containing `.gitlab-ci.yml`.
-   - Optional: add `.opal/env` with key-value files for secrets and set executable scripts under `.opal/hooks`.
+   - Optional: add `.opal/env` with key-value files for secrets (each filename becomes a `$NAME` and `$NAME_FILE` inside containers) and set executable scripts under `.opal/hooks`.
 
 3. **Run the pipeline**
    ```bash

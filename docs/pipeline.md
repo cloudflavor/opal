@@ -33,8 +33,37 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 ## Customization
 
-- Use `--env GLOB` (repeat) to forward selected host environment variables into every job.
-- Provide secrets in `.opal/env/NAME` or `.opal/env/NAME_FILE`. Opal mounts them read-only and populates `$NAME` / `$NAME_FILE`.
+### Forwarding host env vars
+
+- Use `--env GLOB` (repeat) to forward selected host environment variables into every job. The glob uses [`globset`](https://docs.rs/globset/latest/globset/) syntax, so `*` and `?` work the way they do in shells:
+
+  ```bash
+  opal run --env CI_* --env 'AWS_ACCESS_KEY_ID' --env 'APP_??'
+  ```
+
+  The example above forwards everything starting with `CI_`, both AWS credentials, and any `APP_` var with exactly two characters after the underscore. Patterns are evaluated against the host’s environment, and the matches are injected before job-level variables, so jobs can override them if needed.
+
+  Repeat `--env` for each glob you need. Use quotes when your pattern includes characters your shell might expand (e.g., `?`).
+
+### Repository secrets (`.opal/env`)
+
+- Add plain files under `.opal/env` in your repo; the filename becomes the secret name. For example:
+
+  ```
+  .opal/env/
+  ├─ GITLAB_TOKEN        # contains the token text
+  └─ MY_CERT.crt         # binary cert, can be any name
+  ```
+
+- During a run Opal:
+  - Copies the whole directory into the container at `.opal/secrets/…`, mounted read-only.
+  - Sets `$GITLAB_TOKEN` to the file contents (if UTF‑8) and `$GITLAB_TOKEN_FILE=.opal/secrets/GITLAB_TOKEN`.
+  - Always sets `$<NAME>_FILE` so you can read binary data even when the value isn’t UTF‑8.
+  - Masks the plaintext values in logs (anything matching the file contents is replaced with `[MASKED]` before printing).
+
+  This mirrors GitLab’s `_FILE` behavior, so jobs that already expect `_FILE` env vars work unchanged. Keep `.opal/env` out of version control (the default `.gitignore` already ignores it).
+
+- Pass `--base-image` to supply a default container when jobs do not specify one.
 - Pass `--base-image` to supply a default container when jobs do not specify one.
 
 ## Planning pipelines
