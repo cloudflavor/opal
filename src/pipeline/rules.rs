@@ -65,7 +65,11 @@ pub struct RuleContext {
 
 impl RuleContext {
     pub fn new(workspace: &Path) -> Self {
-        let mut env: HashMap<String, String> = std::env::vars().collect();
+        let run_manual = std::env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
+        Self::from_env(workspace, std::env::vars().collect(), run_manual)
+    }
+
+    fn from_env(workspace: &Path, mut env: HashMap<String, String>, run_manual: bool) -> Self {
         if !env.contains_key("CI_PIPELINE_SOURCE") {
             env.insert("CI_PIPELINE_SOURCE".into(), "push".into());
         }
@@ -74,12 +78,31 @@ impl RuleContext {
         {
             env.insert("CI_COMMIT_BRANCH".into(), branch);
         }
+        if !env.contains_key("CI_COMMIT_TAG")
+            && let Ok(tag) = git_current_tag(workspace)
+        {
+            env.insert("CI_COMMIT_TAG".into(), tag);
+        }
+        if !env.contains_key("CI_COMMIT_REF_NAME") {
+            if let Some(tag) = env
+                .get("CI_COMMIT_TAG")
+                .filter(|tag| !tag.is_empty())
+                .cloned()
+            {
+                env.insert("CI_COMMIT_REF_NAME".into(), tag);
+            } else if let Some(branch) = env
+                .get("CI_COMMIT_BRANCH")
+                .filter(|branch| !branch.is_empty())
+                .cloned()
+            {
+                env.insert("CI_COMMIT_REF_NAME".into(), branch);
+            }
+        }
         if !env.contains_key("CI_DEFAULT_BRANCH")
             && let Ok(branch) = git_default_branch(workspace)
         {
             env.insert("CI_DEFAULT_BRANCH".into(), branch);
         }
-        let run_manual = std::env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
         let default_compare_to = env.get("CI_DEFAULT_BRANCH").cloned();
         Self {
             workspace: workspace.to_path_buf(),
@@ -422,6 +445,25 @@ fn git_head_ref(workdir: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn git_current_tag(workdir: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("tag")
+        .arg("--points-at")
+        .arg("HEAD")
+        .current_dir(workdir)
+        .output()
+        .context("failed to detect current tag")?;
+    if !output.status.success() {
+        return Err(anyhow!("git tag returned non-zero"));
+    }
+    let tag = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .ok_or_else(|| anyhow!("no tag points at HEAD"))?;
+    Ok(tag)
+}
+
 fn git_merge_base(workdir: &Path, base: &str, head: Option<&str>) -> Result<Option<String>> {
     let mut cmd = Command::new("git");
     cmd.arg("merge-base").arg(base);
@@ -469,6 +511,41 @@ fn eval_if_expr(expr: &str, ctx: &RuleContext) -> Result<bool> {
     let mut parser = ExprParser::new(expr, ctx);
     let value = parser.parse_expression()?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn infers_commit_tag_from_repo_when_env_is_missing() {
+        let dir = tempdir().expect("tempdir");
+        run_git(dir.path(), &["init", "-b", "main"]);
+        run_git(dir.path(), &["config", "user.name", "Opal Tests"]);
+        run_git(dir.path(), &["config", "user.email", "opal@example.com"]);
+        fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
+        run_git(dir.path(), &["add", "README.md"]);
+        run_git(dir.path(), &["commit", "-m", "initial"]);
+        run_git(dir.path(), &["tag", "v1.2.3"]);
+
+        let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
+
+        assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v1.2.3"));
+        assert_eq!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
+    }
+
+    fn run_git(workdir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .status()
+            .unwrap_or_else(|err| panic!("failed to run git {:?}: {err}", args));
+        assert!(status.success(), "git {:?} failed with {status}", args);
+    }
 }
 
 struct ExprParser {
