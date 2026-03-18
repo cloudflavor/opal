@@ -1,4 +1,4 @@
-use crate::gitlab::Job;
+use crate::model::JobSpec;
 use crate::secrets::SecretsStore;
 use anyhow::Result;
 use owo_colors::OwoColorize;
@@ -132,7 +132,7 @@ fn strip_control_sequences(line: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
-pub fn job_log_info(logs_dir: &Path, run_id: &str, job: &Job) -> (PathBuf, String) {
+pub fn job_log_info(logs_dir: &Path, run_id: &str, job: &JobSpec) -> (PathBuf, String) {
     let mut hasher = Sha256::new();
     hasher.update(run_id.as_bytes());
     hasher.update(job.stage.as_bytes());

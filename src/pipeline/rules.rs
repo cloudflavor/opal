@@ -1,6 +1,7 @@
 use crate::git;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
 use crate::gitlab::{Job, PipelineFilters};
+use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
@@ -64,6 +65,22 @@ pub struct RuleContext {
     default_compare_to: Option<String>,
 }
 
+pub trait RuleJob {
+    fn rules(&self) -> &[JobRule];
+}
+
+impl RuleJob for Job {
+    fn rules(&self) -> &[JobRule] {
+        &self.rules
+    }
+}
+
+impl RuleJob for JobSpec {
+    fn rules(&self) -> &[JobRule] {
+        &self.rules
+    }
+}
+
 impl RuleContext {
     pub fn new(workspace: &Path) -> Self {
         let run_manual = std::env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
@@ -99,12 +116,12 @@ impl RuleContext {
                 env.insert("CI_COMMIT_REF_NAME".into(), branch);
             }
         }
-        if !env.contains_key("CI_COMMIT_REF_SLUG") {
-            if let Some(ref_name) = env.get("CI_COMMIT_REF_NAME").cloned() {
-                let slug = job_name_slug(&ref_name);
-                if !slug.is_empty() {
-                    env.insert("CI_COMMIT_REF_SLUG".into(), slug);
-                }
+        if !env.contains_key("CI_COMMIT_REF_SLUG")
+            && let Some(ref_name) = env.get("CI_COMMIT_REF_NAME").cloned()
+        {
+            let slug = job_name_slug(&ref_name);
+            if !slug.is_empty() {
+                env.insert("CI_COMMIT_REF_SLUG".into(), slug);
             }
         }
         if !env.contains_key("CI_DEFAULT_BRANCH")
@@ -235,12 +252,12 @@ impl RuleContext {
     }
 }
 
-pub fn evaluate_rules(job: &Job, ctx: &RuleContext) -> Result<RuleEvaluation> {
-    if job.rules.is_empty() {
+pub fn evaluate_rules(job: &impl RuleJob, ctx: &RuleContext) -> Result<RuleEvaluation> {
+    if job.rules().is_empty() {
         return Ok(RuleEvaluation::default());
     }
 
-    for rule in &job.rules {
+    for rule in job.rules() {
         if !rule_matches(rule, ctx)? {
             continue;
         }

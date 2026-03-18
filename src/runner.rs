@@ -1,4 +1,4 @@
-use crate::gitlab::Job;
+use crate::model::JobSpec;
 use crate::pipeline::VolumeMount;
 use crate::ui::UiBridge;
 use std::path::Path;
@@ -9,7 +9,7 @@ pub struct ExecuteContext<'a> {
     pub mounts: &'a [VolumeMount],
     pub image: &'a str,
     pub container_name: &'a str,
-    pub job: &'a Job,
+    pub job: &'a JobSpec,
     pub ui: Option<&'a UiBridge>,
     pub env_vars: &'a [(String, String)],
     pub network: Option<&'a str>,

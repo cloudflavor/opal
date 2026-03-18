@@ -8,9 +8,10 @@ use crate::display::{
 };
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
-use crate::gitlab::{CachePolicy, Job, PipelineGraph, ServiceConfig};
+use crate::gitlab::PipelineGraph;
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
+use crate::model::{CachePolicySpec, JobSpec, PipelineSpec, ServiceSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, HaltKind, JobEvent, JobPlan,
@@ -49,6 +50,7 @@ const MAX_CONTAINER_NAME: usize = 63;
 pub struct ExecutorCore {
     pub config: ExecutorConfig,
     g: PipelineGraph,
+    pipeline: PipelineSpec,
     use_color: bool,
     scripts_dir: PathBuf,
     logs_dir: PathBuf,
@@ -82,6 +84,7 @@ struct JobResourceInfo {
 impl ExecutorCore {
     pub fn new(config: ExecutorConfig) -> Result<Self> {
         let g = PipelineGraph::from_path(&config.pipeline)?;
+        let pipeline = PipelineSpec::try_from(&g)?;
         let run_id = generate_run_id(&config);
         let runs_root = runtime::runs_root();
         fs::create_dir_all(&runs_root)
@@ -168,6 +171,7 @@ impl ExecutorCore {
         let core = Self {
             config,
             g,
+            pipeline,
             use_color,
             scripts_dir,
             logs_dir,
@@ -291,14 +295,14 @@ impl ExecutorCore {
                 variants: HashMap::new(),
             });
         }
-        pipeline::build_job_plan(&self.g, Some(&ctx), |job| self.job_log_info(job))
+        pipeline::build_job_plan(&self.pipeline, Some(&ctx), |job| self.job_log_info(job))
     }
 
     fn collect_job_resources(&self, plan: &JobPlan) -> HashMap<String, JobResourceInfo> {
         plan.nodes
             .values()
             .map(|planned| {
-                let artifact_dir = if planned.job.artifacts.is_empty() {
+                let artifact_dir = if planned.job.artifacts.paths.is_empty() {
                     None
                 } else {
                     Some(
@@ -311,6 +315,7 @@ impl ExecutorCore {
                 let artifact_paths = planned
                     .job
                     .artifacts
+                    .paths
                     .iter()
                     .map(|path| path.display().to_string())
                     .collect();
@@ -1106,7 +1111,7 @@ impl ExecutorCore {
                 let needs_label = display.bold_cyan("    needs:");
                 display::print_line(format!("{} {}", needs_label, needs));
             }
-            if let Some(paths) = display.format_paths(&job.artifacts) {
+            if let Some(paths) = display.format_paths(&job.artifacts.paths) {
                 let artifacts_label = display.bold_cyan("    artifacts:");
                 display::print_line(format!("{} {}", artifacts_label, paths));
             }
@@ -1169,16 +1174,16 @@ impl ExecutorCore {
             if let Some(runtime) = service_runtime.as_ref() {
                 env_vars.extend(runtime.link_env().iter().cloned());
             }
-            let mut mounts = mounts::collect_volume_mounts(
-                &job,
-                plan.as_ref(),
-                &self.g,
-                &self.artifacts,
-                &self.cache,
-                &cache_env,
-                &self.container_workdir,
-                self.external_artifacts.as_ref(),
-            )?;
+            let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
+                job: &job,
+                plan: plan.as_ref(),
+                pipeline: &self.pipeline,
+                artifacts: &self.artifacts,
+                cache: &self.cache,
+                cache_env: &cache_env,
+                container_root: &self.container_workdir,
+                external: self.external_artifacts.as_ref(),
+            })?;
             mounts.push(VolumeMount {
                 host: self.session_dir.clone(),
                 container: self.container_session_dir.clone(),
@@ -1558,7 +1563,7 @@ impl ExecutorCore {
     fn capture_child_output(
         &self,
         proc: &mut Child,
-        job: &Job,
+        job: &JobSpec,
         log_path: &Path,
         ui: Option<&UiBridge>,
     ) -> Result<()> {
@@ -1603,18 +1608,18 @@ impl ExecutorCore {
             Ok(())
         })
     }
-    fn resolve_job_image(&self, job: &Job) -> Result<String> {
+    fn resolve_job_image(&self, job: &JobSpec) -> Result<String> {
         self.resolve_job_image_with_env(job, None)
     }
 
     fn resolve_job_image_with_env(
         &self,
-        job: &Job,
+        job: &JobSpec,
         env_lookup: Option<&HashMap<String, String>>,
     ) -> Result<String> {
         let template = if let Some(image) = job.image.as_ref() {
             image.clone()
-        } else if let Some(image) = self.g.defaults.image.as_ref() {
+        } else if let Some(image) = self.pipeline.defaults.image.as_ref() {
             image.clone()
         } else if let Some(image) = self.config.image.clone() {
             image
@@ -1647,7 +1652,7 @@ impl ExecutorCore {
         *entry
     }
 
-    fn job_container_name(&self, stage_name: &str, job: &Job, attempt: usize) -> String {
+    fn job_container_name(&self, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
         let base = format!(
             "opal-{}-{}-{}-{:02}",
             self.run_id,
@@ -1661,7 +1666,7 @@ impl ExecutorCore {
         self.short_container_name(stage_name, job, attempt)
     }
 
-    fn short_container_name(&self, stage_name: &str, job: &Job, attempt: usize) -> String {
+    fn short_container_name(&self, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.run_id.as_bytes());
         hasher.update(stage_name.as_bytes());
@@ -1674,10 +1679,10 @@ impl ExecutorCore {
         format!("opal-{short}-{:02}", attempt)
     }
 
-    fn expanded_commands(&self, job: &Job) -> Vec<String> {
+    fn expanded_commands(&self, job: &JobSpec) -> Vec<String> {
         let mut cmds = Vec::new();
         if job.inherit_default_before_script {
-            cmds.extend(self.g.defaults.before_script.iter().cloned());
+            cmds.extend(self.pipeline.defaults.before_script.iter().cloned());
         }
         if let Some(custom) = &job.before_script {
             cmds.extend(custom.iter().cloned());
@@ -1687,15 +1692,15 @@ impl ExecutorCore {
             cmds.extend(custom.iter().cloned());
         }
         if job.inherit_default_after_script {
-            cmds.extend(self.g.defaults.after_script.iter().cloned());
+            cmds.extend(self.pipeline.defaults.after_script.iter().cloned());
         }
         cmds
     }
 
-    fn job_env(&self, job: &Job) -> Vec<(String, String)> {
+    fn job_env(&self, job: &JobSpec) -> Vec<(String, String)> {
         build_job_env(
             &self.env_vars,
-            &self.g.defaults.variables,
+            &self.pipeline.defaults.variables,
             job,
             &self.secrets,
             &self.config.workdir,
@@ -1706,9 +1711,9 @@ impl ExecutorCore {
         )
     }
 
-    fn job_services(&self, job: &Job) -> Vec<ServiceConfig> {
+    fn job_services(&self, job: &JobSpec) -> Vec<ServiceSpec> {
         if job.services.is_empty() {
-            self.g.defaults.services.clone()
+            self.pipeline.defaults.services.clone()
         } else {
             job.services.clone()
         }
@@ -1718,7 +1723,7 @@ impl ExecutorCore {
         DisplayFormatter::new(self.use_color)
     }
 
-    fn job_log_info(&self, job: &Job) -> (PathBuf, String) {
+    fn job_log_info(&self, job: &JobSpec) -> (PathBuf, String) {
         logging::job_log_info(&self.logs_dir, &self.run_id, job)
     }
 
@@ -1749,10 +1754,10 @@ fn release_resource_lock(
     }
 }
 
-fn cache_policy_label(policy: CachePolicy) -> &'static str {
+fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
     match policy {
-        CachePolicy::Pull => "pull",
-        CachePolicy::Push => "push",
-        CachePolicy::PullPush => "pull-push",
+        CachePolicySpec::Pull => "pull",
+        CachePolicySpec::Push => "push",
+        CachePolicySpec::PullPush => "pull-push",
     }
 }

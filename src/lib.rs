@@ -12,6 +12,7 @@ pub mod git;
 pub mod gitlab;
 pub mod history;
 pub mod logging;
+pub mod model;
 pub mod naming;
 pub mod pipeline;
 pub mod runner;

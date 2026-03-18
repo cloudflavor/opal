@@ -6,6 +6,7 @@ use opal::executor::{
 };
 use opal::gitlab::PipelineGraph;
 use opal::logging;
+use opal::model::PipelineSpec;
 use opal::pipeline::{self, RuleContext};
 use opal::terminal;
 use opal::ui;
@@ -127,6 +128,7 @@ fn run_plan(args: PlanArgs) -> Result<()> {
         .unwrap_or_else(|| workdir.join(".gitlab-ci.yml"));
     let graph = PipelineGraph::from_path(&pipeline)
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
+    let pipeline_spec = PipelineSpec::try_from(&graph)?;
     let ctx = RuleContext::new(&workdir);
     if !pipeline::rules::filters_allow(&graph.filters, &ctx) {
         println!("pipeline skipped: top-level only/except filters exclude this ref");
@@ -142,7 +144,7 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     let logs_dir = runtime::runs_root().join("plan/logs");
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("failed to create plan log dir {}", logs_dir.display()))?;
-    let plan = pipeline::build_job_plan(&graph, Some(&ctx), |job| {
+    let plan = pipeline::build_job_plan(&pipeline_spec, Some(&ctx), |job| {
         logging::job_log_info(&logs_dir, "plan-preview", job)
     })?;
     let display = DisplayFormatter::new(terminal::should_use_color());

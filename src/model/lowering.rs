@@ -1,0 +1,63 @@
+use crate::gitlab::PipelineGraph;
+use crate::model::{
+    JobSpec, PipelineDefaultsSpec, PipelineFilterSpec, PipelineSpec, StageSpec, WorkflowSpec,
+};
+use anyhow::{Result, anyhow};
+use std::collections::HashMap;
+
+impl TryFrom<&PipelineGraph> for PipelineSpec {
+    type Error = anyhow::Error;
+
+    fn try_from(graph: &PipelineGraph) -> Result<Self> {
+        let mut jobs = HashMap::new();
+        let mut stages = Vec::with_capacity(graph.stages.len());
+
+        for stage in &graph.stages {
+            let mut stage_jobs = Vec::with_capacity(stage.jobs.len());
+            for node_idx in &stage.jobs {
+                let job = graph
+                    .graph
+                    .node_weight(*node_idx)
+                    .ok_or_else(|| anyhow!("missing job for stage '{}'", stage.name))?;
+                stage_jobs.push(job.name.clone());
+                jobs.insert(job.name.clone(), JobSpec::from(job));
+            }
+            stages.push(StageSpec {
+                name: stage.name.clone(),
+                jobs: stage_jobs,
+            });
+        }
+
+        Ok(PipelineSpec {
+            stages,
+            jobs,
+            defaults: PipelineDefaultsSpec::from(&graph.defaults),
+            workflow: graph.workflow.as_ref().map(WorkflowSpec::from),
+            filters: PipelineFilterSpec::from(&graph.filters),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::gitlab::PipelineGraph;
+    use crate::model::{ParallelConfigSpec, PipelineSpec};
+
+    #[test]
+    fn lowers_pipeline_graph_to_pipeline_spec() {
+        let graph = PipelineGraph::from_path("pipelines/tests/needs-and-artifacts.gitlab-ci.yml")
+            .expect("pipeline parses");
+        let spec = PipelineSpec::try_from(&graph).expect("pipeline lowers");
+
+        assert_eq!(spec.stages.len(), graph.stages.len());
+        assert!(spec.jobs.contains_key("build-matrix"));
+        assert!(matches!(
+            spec.jobs
+                .get("build-matrix")
+                .expect("job exists")
+                .parallel
+                .as_ref(),
+            Some(ParallelConfigSpec::Matrix(_))
+        ));
+    }
+}

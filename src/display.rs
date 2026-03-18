@@ -1,5 +1,6 @@
-use crate::gitlab::{
-    CacheConfig, CachePolicy, DependencySource, EnvironmentAction, Job, JobDependency,
+use crate::model::{
+    CachePolicySpec, CacheSpec, DependencySourceSpec, EnvironmentActionSpec, JobDependencySpec,
+    JobSpec,
 };
 use crate::pipeline::{JobPlan, JobStatus, JobSummary, PlannedJob, RuleWhen, VolumeMount};
 use ascii_tree::{Tree, write_tree};
@@ -69,7 +70,7 @@ impl DisplayFormatter {
         self.bold_cyan("    logs:")
     }
 
-    pub fn format_needs(&self, job: &Job) -> Option<String> {
+    pub fn format_needs(&self, job: &JobSpec) -> Option<String> {
         if job.needs.is_empty() {
             return None;
         }
@@ -78,14 +79,14 @@ impl DisplayFormatter {
             .needs
             .iter()
             .map(|need| match &need.source {
-                DependencySource::Local => {
+                DependencySourceSpec::Local => {
                     if need.needs_artifacts {
                         format!("{} (artifacts)", need.job)
                     } else {
                         need.job.clone()
                     }
                 }
-                DependencySource::External(ext) => {
+                DependencySourceSpec::External(ext) => {
                     let mut label = format!("{}::{}", ext.project, need.job);
                     if need.needs_artifacts {
                         label.push_str(" (external artifacts)");
@@ -320,7 +321,7 @@ fn emit_plan_job<F>(
         emit_line,
     );
 
-    if let Some(paths) = display.format_paths(&planned.job.artifacts) {
+    if let Some(paths) = display.format_paths(&planned.job.artifacts.paths) {
         emit_line(format!("{} {}", display.bold_cyan("    artifacts:"), paths));
     }
     emit_section(
@@ -423,7 +424,7 @@ fn format_environment(planned: &PlannedJob) -> Option<String> {
     if let Some(duration) = env.auto_stop_in {
         extra.push(format!("auto_stop {}", format_duration(duration)));
     }
-    if env.action == EnvironmentAction::Stop {
+    if env.action == EnvironmentActionSpec::Stop {
         extra.push("stop".to_string());
     }
     if !extra.is_empty() {
@@ -459,7 +460,7 @@ fn plan_dependency_lines(planned: &PlannedJob) -> Vec<String> {
         .collect()
 }
 
-fn plan_needs_lines(job: &Job) -> Vec<String> {
+fn plan_needs_lines(job: &JobSpec) -> Vec<String> {
     if job.needs.is_empty() {
         return Vec::new();
     }
@@ -470,11 +471,11 @@ fn plan_needs_lines(job: &Job) -> Vec<String> {
         .collect()
 }
 
-fn format_need_line(need: &JobDependency, has_dependency: bool) -> String {
+fn format_need_line(need: &JobDependencySpec, has_dependency: bool) -> String {
     let mut tags = Vec::new();
     match &need.source {
-        DependencySource::Local => tags.push("local".to_string()),
-        DependencySource::External(ext) => tags.push(format!("external {}", ext.project)),
+        DependencySourceSpec::Local => tags.push("local".to_string()),
+        DependencySourceSpec::External(ext) => tags.push(format!("external {}", ext.project)),
     }
     if need.needs_artifacts {
         tags.push("artifacts".to_string());
@@ -497,7 +498,7 @@ fn format_need_line(need: &JobDependency, has_dependency: bool) -> String {
     }
 }
 
-fn plan_dependencies_list(job: &Job) -> Vec<String> {
+fn plan_dependencies_list(job: &JobSpec) -> Vec<String> {
     if job.dependencies.is_empty() {
         return Vec::new();
     }
@@ -514,14 +515,14 @@ fn plan_dependencies_list(job: &Job) -> Vec<String> {
         .collect()
 }
 
-fn plan_cache_lines(job: &Job) -> Vec<String> {
+fn plan_cache_lines(job: &JobSpec) -> Vec<String> {
     if job.cache.is_empty() {
         return Vec::new();
     }
     job.cache.iter().map(format_cache_line).collect()
 }
 
-fn format_cache_line(cache: &CacheConfig) -> String {
+fn format_cache_line(cache: &CacheSpec) -> String {
     let policy = cache_policy_label(cache.policy);
     let paths = if cache.paths.is_empty() {
         "no paths specified".to_string()
@@ -636,6 +637,7 @@ fn dependency_mounts(plan: &JobPlan, dep_name: &str) -> Vec<String> {
         .map(|dep| {
             dep.job
                 .artifacts
+                .paths
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
@@ -652,7 +654,7 @@ fn need_tree_nodes(plan: &JobPlan, planned: &PlannedJob) -> Vec<Tree> {
         .collect()
 }
 
-fn build_need_tree_node(plan: &JobPlan, planned: &PlannedJob, need: &JobDependency) -> Tree {
+fn build_need_tree_node(plan: &JobPlan, planned: &PlannedJob, need: &JobDependencySpec) -> Tree {
     let mut children = Vec::new();
     children.push(tree_leaf(format!("source: {}", describe_need_source(need))));
     children.push(tree_leaf(format!(
@@ -703,14 +705,15 @@ fn build_need_tree_node(plan: &JobPlan, planned: &PlannedJob, need: &JobDependen
     Tree::Node(need.job.clone(), children)
 }
 
-fn artifact_tree_nodes(job: &Job) -> Vec<Tree> {
+fn artifact_tree_nodes(job: &JobSpec) -> Vec<Tree> {
     job.artifacts
+        .paths
         .iter()
         .map(|path| tree_leaf(path.display().to_string()))
         .collect()
 }
 
-fn cache_tree_nodes(job: &Job) -> Vec<Tree> {
+fn cache_tree_nodes(job: &JobSpec) -> Vec<Tree> {
     job.cache
         .iter()
         .map(|cache| {
@@ -735,18 +738,18 @@ fn cache_tree_nodes(job: &Job) -> Vec<Tree> {
         .collect()
 }
 
-fn describe_need_source(need: &JobDependency) -> String {
+fn describe_need_source(need: &JobDependencySpec) -> String {
     match &need.source {
-        DependencySource::Local => "local".to_string(),
-        DependencySource::External(ext) => format!("external {}", ext.project),
+        DependencySourceSpec::Local => "local".to_string(),
+        DependencySourceSpec::External(ext) => format!("external {}", ext.project),
     }
 }
 
-fn cache_policy_label(policy: CachePolicy) -> &'static str {
+fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
     match policy {
-        CachePolicy::Pull => "pull",
-        CachePolicy::Push => "push",
-        CachePolicy::PullPush => "pull-push",
+        CachePolicySpec::Pull => "pull",
+        CachePolicySpec::Push => "push",
+        CachePolicySpec::PullPush => "pull-push",
     }
 }
 

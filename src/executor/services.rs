@@ -1,6 +1,6 @@
 use crate::EngineKind;
 use crate::env::expand_env_list;
-use crate::gitlab::ServiceConfig;
+use crate::model::ServiceSpec;
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -25,7 +25,7 @@ impl ServiceRuntime {
         engine: EngineKind,
         run_id: &str,
         job_name: &str,
-        services: &[ServiceConfig],
+        services: &[ServiceSpec],
         base_env: &[(String, String)],
         shared_env: &HashMap<String, String>,
     ) -> Result<Option<Self>> {
@@ -119,7 +119,7 @@ impl ServiceRuntime {
     fn start_service(
         &mut self,
         container_name: &str,
-        service: &ServiceConfig,
+        service: &ServiceSpec,
         alias: &str,
         base_env: &[(String, String)],
         shared_env: &HashMap<String, String>,
@@ -283,29 +283,28 @@ fn discover_container_ports(image: &str) -> Result<Vec<ServicePort>> {
     for info in infos {
         for variant in info.variants {
             for entry in variant.config.history {
-                if let Some(cmd) = entry.created_by {
-                    if let Some(idx) = cmd.find("EXPOSE map[") {
-                        let rest = &cmd[idx + "EXPOSE map[".len()..];
-                        if let Some(end) = rest.find(']') {
-                            let map = &rest[..end];
-                            for token in map.split_whitespace() {
-                                let cleaned =
-                                    token.trim_matches(|c| c == ',' || c == '{' || c == '}');
-                                if cleaned.is_empty() {
-                                    continue;
-                                }
-                                let mut parts = cleaned.split('/');
-                                let port_str = parts.next().unwrap_or("");
-                                let proto_part = parts.next().unwrap_or("tcp");
-                                if let Ok(port) = port_str.parse::<u16>() {
-                                    let proto = proto_part
-                                        .split(':')
-                                        .next()
-                                        .unwrap_or("tcp")
-                                        .to_ascii_lowercase();
-                                    if seen.insert((port, proto.clone())) {
-                                        ports.push(ServicePort { port, proto });
-                                    }
+                if let Some(cmd) = entry.created_by
+                    && let Some(idx) = cmd.find("EXPOSE map[")
+                {
+                    let rest = &cmd[idx + "EXPOSE map[".len()..];
+                    if let Some(end) = rest.find(']') {
+                        let map = &rest[..end];
+                        for token in map.split_whitespace() {
+                            let cleaned = token.trim_matches(|c| c == ',' || c == '{' || c == '}');
+                            if cleaned.is_empty() {
+                                continue;
+                            }
+                            let mut parts = cleaned.split('/');
+                            let port_str = parts.next().unwrap_or("");
+                            let proto_part = parts.next().unwrap_or("tcp");
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                let proto = proto_part
+                                    .split(':')
+                                    .next()
+                                    .unwrap_or("tcp")
+                                    .to_ascii_lowercase();
+                                if seen.insert((port, proto.clone())) {
+                                    ports.push(ServicePort { port, proto });
                                 }
                             }
                         }

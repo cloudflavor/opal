@@ -1,4 +1,4 @@
-use crate::gitlab::{CacheConfig, CachePolicy};
+use crate::model::{CachePolicySpec, CacheSpec};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ pub struct CacheMountSpec {
 #[derive(Debug, Clone)]
 pub struct CacheEntryInfo {
     pub key: String,
-    pub policy: CachePolicy,
+    pub policy: CachePolicySpec,
     pub host: PathBuf,
     pub paths: Vec<PathBuf>,
 }
@@ -32,7 +32,7 @@ impl CacheManager {
 
     pub fn mount_specs(
         &self,
-        caches: &[CacheConfig],
+        caches: &[CacheSpec],
         env: &HashMap<String, String>,
     ) -> Result<Vec<CacheMountSpec>> {
         if caches.is_empty() {
@@ -70,7 +70,7 @@ impl CacheManager {
 
     pub fn describe_entries(
         &self,
-        caches: &[CacheConfig],
+        caches: &[CacheSpec],
         env: &HashMap<String, String>,
     ) -> Vec<CacheEntryInfo> {
         caches

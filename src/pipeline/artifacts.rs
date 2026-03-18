@@ -1,4 +1,4 @@
-use crate::gitlab::Job;
+use crate::model::JobSpec;
 use crate::naming::{job_name_slug, project_slug};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
@@ -18,15 +18,15 @@ impl ArtifactManager {
         Self { root }
     }
 
-    pub fn prepare_targets(&self, job: &Job) -> Result<()> {
-        if job.artifacts.is_empty() {
+    pub fn prepare_targets(&self, job: &JobSpec) -> Result<()> {
+        if job.artifacts.paths.is_empty() {
             return Ok(());
         }
         let root = self.job_artifacts_root(&job.name);
         fs::create_dir_all(&root)
             .with_context(|| format!("failed to prepare artifacts for {}", job.name))?;
 
-        for relative in &job.artifacts {
+        for relative in &job.artifacts.paths {
             let host = self.job_artifact_host_path(&job.name, relative);
             match artifact_kind(relative) {
                 ArtifactPathKind::Directory => {
@@ -47,12 +47,12 @@ impl ArtifactManager {
         Ok(())
     }
 
-    pub fn job_mount_specs(&self, job: &Job) -> Vec<(PathBuf, PathBuf)> {
+    pub fn job_mount_specs(&self, job: &JobSpec) -> Vec<(PathBuf, PathBuf)> {
         use std::collections::HashSet;
 
         let mut specs = Vec::new();
         let mut seen = HashSet::new();
-        for relative in &job.artifacts {
+        for relative in &job.artifacts.paths {
             let rel_path = artifact_relative_path(relative);
             let mount_rel = match artifact_kind(relative) {
                 ArtifactPathKind::Directory => rel_path.clone(),
@@ -74,7 +74,7 @@ impl ArtifactManager {
     pub fn dependency_mount_specs(
         &self,
         job_name: &str,
-        job: Option<&Job>,
+        job: Option<&JobSpec>,
         optional: bool,
     ) -> Vec<(PathBuf, PathBuf)> {
         let Some(dep_job) = job else {
@@ -82,7 +82,7 @@ impl ArtifactManager {
         };
 
         let mut specs = Vec::new();
-        for relative in &dep_job.artifacts {
+        for relative in &dep_job.artifacts.paths {
             let host = self.job_artifact_host_path(job_name, relative);
             if !host.exists() {
                 if !optional {

@@ -1,5 +1,5 @@
 use crate::git;
-use crate::gitlab::Job;
+use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use crate::secrets::SecretsStore;
 use anyhow::{Context, Result};
@@ -31,7 +31,7 @@ pub fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
 pub fn build_job_env(
     base_env: &[(String, String)],
     default_vars: &HashMap<String, String>,
-    job: &Job,
+    job: &JobSpec,
     secrets: &SecretsStore,
     host_workdir: &Path,
     container_workdir: &Path,
@@ -211,8 +211,7 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
     if host_env
         .get("CI_COMMIT_REF_SLUG")
         .is_none_or(|value| value.is_empty())
-    {
-        if let Some(ref_name) = host_env
+        && let Some(ref_name) = host_env
             .get("CI_COMMIT_REF_NAME")
             .filter(|value| !value.is_empty())
             .cloned()
@@ -222,11 +221,10 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
                     .find(|(key, _)| key == "CI_COMMIT_REF_NAME")
                     .map(|(_, value)| value.clone())
             })
-        {
-            let slug = job_name_slug(&ref_name);
-            if !slug.is_empty() {
-                inferred.push(("CI_COMMIT_REF_SLUG".into(), slug));
-            }
+    {
+        let slug = job_name_slug(&ref_name);
+        if !slug.is_empty() {
+            inferred.push(("CI_COMMIT_REF_SLUG".into(), slug));
         }
     }
 
@@ -256,13 +254,13 @@ fn insert_inferred_env<F>(
 mod tests {
     use super::*;
     use crate::git::test_support::init_repo_with_commit_and_tag;
-    use crate::gitlab::Job;
+    use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
     use crate::secrets::SecretsStore;
     use std::collections::HashMap;
 
     #[test]
     fn expands_env_references() {
-        let job = Job {
+        let job = JobSpec {
             name: "lint".into(),
             stage: "test".into(),
             commands: Vec::new(),
@@ -274,13 +272,13 @@ mod tests {
             inherit_default_before_script: true,
             inherit_default_after_script: true,
             rules: Vec::new(),
-            artifacts: Vec::new(),
+            artifacts: ArtifactSpec::default(),
             cache: Vec::new(),
             image: None,
             variables: HashMap::from([("CARGO_HOME".into(), "$CI_PROJECT_DIR/.cargo".into())]),
             services: Vec::new(),
             timeout: None,
-            retry: Default::default(),
+            retry: RetryPolicySpec::default(),
             interruptible: false,
             resource_group: None,
             parallel: None,
@@ -307,7 +305,7 @@ mod tests {
     fn infers_tagged_ref_vars_for_job_environment() {
         let dir = init_repo_with_commit_and_tag("v1.2.3");
 
-        let job = Job {
+        let job = JobSpec {
             name: "release-artifacts".into(),
             stage: "release".into(),
             commands: Vec::new(),
@@ -319,13 +317,13 @@ mod tests {
             inherit_default_before_script: true,
             inherit_default_after_script: true,
             rules: Vec::new(),
-            artifacts: Vec::new(),
+            artifacts: ArtifactSpec::default(),
             cache: Vec::new(),
             image: None,
             variables: HashMap::new(),
             services: Vec::new(),
             timeout: None,
-            retry: Default::default(),
+            retry: RetryPolicySpec::default(),
             interruptible: false,
             resource_group: None,
             parallel: None,

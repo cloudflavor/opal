@@ -1,4 +1,4 @@
-use crate::gitlab::Job;
+use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result};
 use std::fs::{self, File};
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub fn write_job_script(
     scripts_dir: &Path,
     container_workdir: &Path,
-    job: &Job,
+    job: &JobSpec,
     commands: &[String],
     verbose: bool,
 ) -> Result<PathBuf> {
