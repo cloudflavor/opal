@@ -37,6 +37,7 @@ Apply these rules whenever working on Rust code.
 ## Keep The Code Idiomatic
 
 - Do not hardcode values that should be configurable or derived.
+- Do not put fucntional code in mod.rs, only add modules and module exports.
 - Prefer references over unnecessary owned allocations where reasonable.
 - Avoid unnecessary `.clone()` and copying.
 - Do not add disproportionate complexity only to avoid a small clone.
