@@ -1,0 +1,172 @@
+stages:
+  - setup
+  - build
+  - test
+  - deploy
+  - cleanup
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+    - echo ">> ${CI_JOB_NAME} (${CI_JOB_STAGE})"
+  after_script:
+    - echo "<< ${CI_JOB_NAME} finished"
+
+.shared:
+  script:
+    - echo "shared bootstrap for $CI_JOB_NAME"
+    - 'echo "flag: $SHARED_FLAG"'
+  variables:
+    SHARED_FLAG: shared-from-reference
+
+shared-reference-check:
+  stage: setup
+  script: !reference [.shared, script]
+  variables:
+    SHARED_FLAG: !reference [.shared, variables, SHARED_FLAG]
+    COPIED_FROM_SHARED: !reference [.shared, variables, SHARED_FLAG]
+
+prepare-artifacts:
+  stage: setup
+  needs:
+    - shared-reference-check
+  script:
+    - mkdir -p tests-temp/shared tests-temp/artifacts
+    - printf "pipeline=%s\nsha=%s\n" "${CI_PIPELINE_ID:-local}" "${CI_COMMIT_SHA:-HEAD}" > tests-temp/shared/metadata.txt
+    - cp tests-temp/shared/metadata.txt tests-temp/artifacts/from-setup.txt
+  artifacts:
+    when: always
+    paths:
+      - tests-temp/shared/
+      - tests-temp/artifacts/
+
+docs-preview:
+  stage: build
+  rules:
+    - changes:
+        - docs/**/*.md
+      when: on_success
+    - exists:
+        - docs/index.md
+      when: manual
+      allow_failure: true
+    - when: never
+  script:
+    - mkdir -p docs-preview
+    - echo "docs preview for ${CI_COMMIT_REF_NAME:-local}" > docs-preview/info.txt
+  artifacts:
+    paths:
+      - docs-preview/
+
+optional-smoke:
+  stage: build
+  rules:
+    - if: '$ENABLE_OPTIONAL == "1"'
+      when: on_success
+    - when: never
+  script:
+    - mkdir -p tests-temp/optional
+    - echo "optional path enabled" > tests-temp/optional/info.txt
+  artifacts:
+    paths:
+      - tests-temp/optional/
+
+build-matrix:
+  stage: build
+  needs:
+    - prepare-artifacts
+  parallel:
+    matrix:
+      - TARGET: ["linux", "mac"]
+        PROFILE: ["debug", "release"]
+  script:
+    - mkdir -p tests-temp/build
+    - printf "target=%s\nprofile=%s\n" "$TARGET" "$PROFILE" > "tests-temp/build/${TARGET}-${PROFILE}.txt"
+  artifacts:
+    paths:
+      - tests-temp/build/
+
+lint:
+  stage: test
+  needs: []
+  script:
+    - echo "linting workspace"
+
+package-linux:
+  stage: test
+  needs:
+    - job: prepare-artifacts
+      artifacts: true
+    - job: 'build-matrix: [linux, release]'
+      artifacts: true
+    - job: docs-preview
+      optional: true
+    - job: optional-smoke
+      optional: true
+  dependencies:
+    - prepare-artifacts
+    - 'build-matrix: [linux, release]'
+  script:
+    - cat tests-temp/shared/metadata.txt
+    - cat tests-temp/build/linux-release.txt
+    - mkdir -p tests-temp/package
+    - paste -sd ' | ' tests-temp/shared/metadata.txt tests-temp/build/linux-release.txt > tests-temp/package/summary.txt
+  artifacts:
+    paths:
+      - tests-temp/package/
+
+smoke-tests:
+  stage: test
+  needs:
+    - job: package-linux
+      artifacts: true
+    - job: 'build-matrix: [mac, release]'
+      optional: true
+  script:
+    - echo "package contents:"
+    - cat tests-temp/package/summary.txt
+
+deploy-summary:
+  stage: deploy
+  needs:
+    - package-linux
+    - smoke-tests
+  script:
+    - echo "deploying ${CI_COMMIT_REF_SLUG:-local}"
+    - cat tests-temp/package/summary.txt
+  environment:
+    name: review/${CI_COMMIT_REF_SLUG:-local}
+    url: https://example.com/${CI_COMMIT_REF_SLUG:-local}
+
+tagged-release:
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+    - when: never
+  script:
+    - echo "publishing ${CI_COMMIT_TAG}"
+
+delayed-rollout:
+  stage: deploy
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: delayed
+      start_in: 5 minutes
+    - when: never
+  script:
+    - echo "scheduled rollout for ${CI_PIPELINE_ID:-local}"
+
+cleanup-always:
+  stage: cleanup
+  when: always
+  needs: []
+  script:
+    - echo "cleanup complete for ${CI_PIPELINE_ID:-local}"

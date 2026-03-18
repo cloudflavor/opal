@@ -2,3 +2,5 @@
 notes/
 *.opal*
 .opal/env/
+tests-temp/
+.codex

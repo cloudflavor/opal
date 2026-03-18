@@ -1,0 +1,75 @@
+stages:
+  - fetch
+  - test
+  - deploy
+
+default:
+  image: docker.io/library/alpine:3.19
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - tests-temp/cache-data/
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: cache
+  before_script:
+    - set -eu
+
+fetch-sources:
+  stage: fetch
+  script:
+    - mkdir -p tests-temp/cache-data
+    - date > tests-temp/cache-data/last-run.txt
+  artifacts:
+    paths:
+      - tests-temp/cache-data/
+
+service-consumer:
+  stage: test
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: redis
+      command: ["redis-server"]
+  script:
+    - echo "service reachable via $REDIS_PORT_6379_TCP_ADDR"
+
+resource-lock-a:
+  stage: test
+  needs:
+    - fetch-sources
+  resource_group: prod-lock
+  retry: 2
+  timeout: 10m
+  script:
+    - echo "lock A running"
+    - sleep 2
+
+resource-lock-b:
+  stage: test
+  needs:
+    - fetch-sources
+  resource_group: prod-lock
+  interruptible: true
+  script:
+    - echo "lock B queued"
+    - sleep 2
+
+external-cache-check:
+  stage: test
+  dependencies:
+    - fetch-sources
+  script:
+    - cat tests-temp/cache-data/last-run.txt
+    - echo "cache key $CI_COMMIT_REF_SLUG"
+
+deploy-review:
+  stage: deploy
+  needs:
+    - resource-lock-a
+    - resource-lock-b
+  environment:
+    name: review/resources
+    url: https://example.com/review
+  script:
+    - echo "deploying with cache stamp"
+    - cat tests-temp/cache-data/last-run.txt

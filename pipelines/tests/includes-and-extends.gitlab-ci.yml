@@ -1,0 +1,41 @@
+include:
+  - local: includes/templates.yml
+
+stages:
+  - lint
+  - build
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - echo "root before"
+  after_script:
+    - echo "root after"
+
+lint-job:
+  stage: lint
+  extends: .lint-shared
+  script:
+    - echo "lint override"
+  variables:
+    TEMPLATE_FLAG: "overridden-from-main"
+
+no-inherit-build:
+  stage: build
+  extends: .build-shared
+  inherit:
+    default:
+      - after_script
+  before_script:
+    - echo "custom build before"
+  script:
+    - echo "inherit flag = ${SKIP_INHERIT:-0}"
+    - if [ "${SKIP_INHERIT:-0}" = "1" ]; then echo "no default before"; fi
+
+direct-job:
+  stage: build
+  script:
+    - echo "direct job uses !reference values"
+    - echo "copied=${COPIED_FLAG}"
+  variables:
+    COPIED_FLAG: !reference [.base-job, variables, TEMPLATE_FLAG]

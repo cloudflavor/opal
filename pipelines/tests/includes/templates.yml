@@ -1,0 +1,21 @@
+.base-job:
+  before_script:
+    - echo "default before (template)"
+  after_script:
+    - echo "default after (template)"
+  variables:
+    TEMPLATE_FLAG: "from-template"
+  script:
+    - echo "base job from template"
+
+.lint-shared:
+  extends: .base-job
+  script:
+    - echo "lint shared from template"
+    - echo "flag=${TEMPLATE_FLAG}"
+
+.build-shared:
+  extends: .base-job
+  script:
+    - echo "build shared from template"
+    - echo "flag=${TEMPLATE_FLAG}"

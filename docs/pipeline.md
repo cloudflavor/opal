@@ -66,6 +66,12 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 - Pass `--base-image` to supply a default container when jobs do not specify one.
 - Pass `--base-image` to supply a default container when jobs do not specify one.
 
+### Tracing job scripts
+
+- Use `opal run --trace-scripts …` when you want every job to echo its commands as they execute. The flag makes Opal write each generated script with `set -x`, so you will see the shell-expanded command stream (`+ cargo fmt`, etc.) in the log.
+- Alternatively set `OPAL_DEBUG=1` in the environment to enable the same behavior without touching CLI flags (useful when scripting or when you need trace logs globally).
+- The tracing flag stacks with any verbosity coming from the job itself; Opal still forces `set -eu` so jobs fail fast while showing the debug output.
+
 ## Planning pipelines
 
 Run `opal plan` when you want to inspect the DAG without touching containers. The command parses `.gitlab-ci.yml`, evaluates workflow/`rules`, and prints each stage with:

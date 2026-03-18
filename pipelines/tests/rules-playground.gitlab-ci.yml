@@ -1,0 +1,94 @@
+stages:
+  - rules
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+always-visible:
+  stage: rules
+  rules:
+    - when: always
+  script:
+    - echo "runs in every pipeline"
+
+main-branch-only:
+  stage: rules
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - when: never
+  script:
+    - echo "current branch ${CI_COMMIT_BRANCH}"
+
+tag-approval:
+  stage: rules
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: false
+    - when: never
+  script:
+    - echo "approve tag ${CI_COMMIT_TAG}"
+
+scheduled-maintenance:
+  stage: rules
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  script:
+    - echo "pipeline source ${CI_PIPELINE_SOURCE}"
+
+docs-changes:
+  stage: rules
+  rules:
+    - changes:
+        - docs/**/*.md
+      when: on_success
+    - when: never
+  script:
+    - echo "docs changed in this pipeline"
+
+config-exists:
+  stage: rules
+  rules:
+    - exists:
+        - Cargo.toml
+        - README.md
+      when: manual
+      allow_failure: true
+    - when: never
+  script:
+    - echo "repository files exist"
+
+delayed-verifier:
+  stage: rules
+  rules:
+    - if: '$RUN_DELAYED == "1"'
+      when: delayed
+      start_in: 10 seconds
+    - when: never
+  script:
+    - echo "delayed check triggered"
+
+docs-or-flag:
+  stage: rules
+  rules:
+    - if: '$FORCE_DOCS == "1"'
+      when: manual
+      allow_failure: true
+    - changes:
+        - docs/**/*.md
+      when: on_success
+    - when: never
+  script:
+    - echo "docs rule satisfied (FORCE_DOCS=${FORCE_DOCS:-0})"

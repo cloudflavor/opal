@@ -1,0 +1,49 @@
+stages:
+  - build
+  - test
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never
+
+default:
+  image: docker.io/library/alpine:3.19
+
+only-branches:
+  stage: build
+  only:
+    - branches
+  except:
+    - /^release\/.*$/
+  script:
+    - echo "running on branch ${CI_COMMIT_BRANCH:-unknown}"
+
+release-build:
+  stage: build
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+    - when: never
+  script:
+    - echo "release branch build"
+
+docs-changes-or-flag:
+  stage: test
+  rules:
+    - changes:
+        - docs/**/*
+      when: on_success
+    - if: '$FORCE_DOCS == "1"'
+      when: manual
+      allow_failure: true
+    - when: never
+  script:
+    - echo "docs changed or manual trigger"
+
+tag-only:
+  stage: test
+  only:
+    - tags
+  script:
+    - echo "running on tag ${CI_COMMIT_TAG}"

@@ -9,16 +9,19 @@ stages:
 default:
   image: docker.io/rustlang/rust:nightly
   before_script:
+    - rustup default nightly
     - rustc --version
     - cargo --version
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
       - /builds/.cargo/
+      - /builds/.rustup/
 
 variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_BUILDS_DIR/.cargo"
+  RUSTUP_HOME: "$CI_BUILDS_DIR/.rustup"
 
 fetch-sources:
   stage: deps
@@ -31,7 +34,6 @@ lint:
   needs:
     - fetch-sources
   script:
-    - rustup component add rustfmt clippy
     - cargo fmt --all -- --check
     - cargo clippy --workspace --all-targets -- -D warnings
 
@@ -79,34 +81,7 @@ release-artifacts:
       when: on_success
     - when: never
   script:
-    - |
-      set -euo pipefail
-      VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_REF_NAME}"
-      ARCH_RAW="$(uname -m)"
-      OS_RAW="$(uname -s)"
-      case "${ARCH_RAW}" in
-        x86_64|amd64) ARCH="x86_64" ;;
-        arm64|aarch64) ARCH="aarch64" ;;
-        *) ARCH="${ARCH_RAW}" ;;
-      esac
-      case "${OS_RAW}" in
-        Darwin) OS="apple-darwin" ;;
-        Linux) OS="unknown-linux-gnu" ;;
-        *) OS="$(echo "${OS_RAW}" | tr '[:upper:]' '[:lower:]')" ;;
-      esac
-      PLATFORM="${ARCH}-${OS}"
-      RELEASE_DIR="releases"
-      mkdir -p "${RELEASE_DIR}"
-      ARCHIVE="${RELEASE_DIR}/opal-${VERSION}-${PLATFORM}.tar.gz"
-      NOTES="${RELEASE_DIR}/release-notes-${PLATFORM}.txt"
-      mkdir -p target/release
-      tar -czf "${ARCHIVE}" -C target/release opal
-      SHA=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
-      {
-        echo "Release archive: ${ARCHIVE}"
-        echo "SHA-256: ${SHA}"
-        echo "Target: ${PLATFORM}"
-      } > "${NOTES}"
+    - ./scripts/build-release-artifacts.sh
   artifacts:
     paths:
       - releases/*.tar.gz
