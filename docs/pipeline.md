@@ -4,7 +4,7 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 ## Parsing
 
-- All `include:` directives are resolved recursively. Local `path:` entries read from disk; remote/project references reuse GitLab’s semantics when possible.
+- Supported `include:` directives are resolved recursively from the local filesystem. Opal currently handles string paths plus `local:`, `file:`, and `files:` include entries.
 - `default.*` values (scripts, variables, image) merge into every job unless explicitly overridden.
 - Hidden/template jobs (names beginning with `.`) may be referenced via `extends`. Cycles are detected and reported.
 - `workflow:rules`, `rules`, `only`, and `except` are partially supported. Unsupported keywords are logged so you know which GitLab features still need work.
