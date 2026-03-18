@@ -1,0 +1,4 @@
+schema_version: 1
+display_name: Rust Engineering
+short_description: Apply Rust implementation, review, testing, and validation standards.
+default_prompt: Work on Rust code using the rust-engineering skill. Keep changes small, verify external behavior with documentation when needed, add tests, and validate with formatting, linting, compilation, and the relevant test suite.
