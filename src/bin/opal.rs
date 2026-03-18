@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
                 base_image,
                 env_includes,
                 max_parallel_jobs,
+                trace_scripts,
                 engine,
                 no_tui,
                 gitlab_base_url,
@@ -72,6 +73,7 @@ async fn main() -> Result<()> {
                 engine: engine_kind,
                 gitlab,
                 settings,
+                trace_scripts,
             };
 
             let run_result = match engine_kind {

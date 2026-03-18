@@ -23,8 +23,10 @@ use crate::terminal::{should_use_color, stream_lines};
 use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobResources, UiJobStatus};
 use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
+use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -41,6 +43,7 @@ use tracing::warn;
 pub(super) const CONTAINER_ROOT: &str = "/builds";
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
+const MAX_CONTAINER_NAME: usize = 63;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
@@ -114,12 +117,13 @@ impl ExecutorCore {
         };
 
         let use_color = should_use_color();
-        let verbose_scripts = env::var_os("OPAL_DEBUG")
+        let env_verbose = env::var_os("OPAL_DEBUG")
             .map(|val| {
                 let s = val.to_string_lossy();
                 s == "1" || s.eq_ignore_ascii_case("true")
             })
             .unwrap_or(false);
+        let verbose_scripts = config.trace_scripts || env_verbose;
         let mut env_vars = collect_env_vars(&config.env_includes)?;
         let mut shared_env: HashMap<String, String> = env_vars
             .iter()
@@ -193,7 +197,7 @@ impl ExecutorCore {
     }
 
     pub async fn run(&self) -> Result<()> {
-        let plan = self.plan_jobs()?;
+        let plan = Arc::new(self.plan_jobs()?);
         let resource_map = self.collect_job_resources(&plan);
         let display = self.display();
         let plan_text = collect_pipeline_plan(&display, &plan).join("\n");
@@ -232,7 +236,7 @@ impl ExecutorCore {
         let ui_bridge = ui_handle.as_ref().map(|handle| Arc::new(handle.bridge()));
 
         let (mut summaries, result) = self
-            .execute_plan(&plan, ui_bridge.clone(), command_rx.as_mut())
+            .execute_plan(plan.clone(), ui_bridge.clone(), command_rx.as_mut())
             .await;
 
         if let Some(handle) = &ui_handle {
@@ -240,7 +244,7 @@ impl ExecutorCore {
         }
 
         if let Some(commands) = command_rx.as_mut() {
-            self.handle_restart_commands(&plan, ui_bridge.clone(), commands, &mut summaries)
+            self.handle_restart_commands(plan.clone(), ui_bridge.clone(), commands, &mut summaries)
                 .await?;
         }
 
@@ -273,6 +277,7 @@ impl ExecutorCore {
                 nodes: HashMap::new(),
                 dependents: HashMap::new(),
                 order_index: HashMap::new(),
+                variants: HashMap::new(),
             });
         }
         if let Some(workflow) = &self.g.workflow
@@ -283,6 +288,7 @@ impl ExecutorCore {
                 nodes: HashMap::new(),
                 dependents: HashMap::new(),
                 order_index: HashMap::new(),
+                variants: HashMap::new(),
             });
         }
         pipeline::build_job_plan(&self.g, Some(&ctx), |job| self.job_log_info(job))
@@ -357,7 +363,7 @@ impl ExecutorCore {
 
     async fn execute_plan(
         &self,
-        plan: &JobPlan,
+        plan: Arc<JobPlan>,
         ui: Option<Arc<UiBridge>>,
         mut commands: Option<&mut mpsc::UnboundedReceiver<UiCommand>>,
     ) -> (Vec<JobSummary>, Result<()>) {
@@ -551,6 +557,7 @@ impl ExecutorCore {
                 running.insert(name.clone());
                 pipeline::spawn_job(
                     exec.clone(),
+                    plan.clone(),
                     planned,
                     run_info,
                     semaphore.clone(),
@@ -895,7 +902,7 @@ impl ExecutorCore {
 
     async fn handle_restart_commands(
         &self,
-        plan: &JobPlan,
+        plan: Arc<JobPlan>,
         ui: Option<Arc<UiBridge>>,
         commands: &mut mpsc::UnboundedReceiver<UiCommand>,
         summaries: &mut Vec<JobSummary>,
@@ -931,12 +938,13 @@ impl ExecutorCore {
                     let exec = self.clone();
                     let ui_clone = ui.clone();
                     let run_info_clone = run_info.clone();
+                    let job_plan = plan.clone();
                     let event = task::spawn_blocking(move || {
-                        exec.run_planned_job(planned, run_info_clone, ui_clone)
+                        exec.run_planned_job(job_plan, planned, run_info_clone, ui_clone)
                     })
                     .await
                     .context("job restart task failed")?;
-                    self.update_summaries_from_event(plan, event, summaries);
+                    self.update_summaries_from_event(plan.as_ref(), event, summaries);
                 }
                 UiCommand::StartManual { .. } => {}
                 UiCommand::CancelJob { .. } => {}
@@ -1126,6 +1134,7 @@ impl ExecutorCore {
 
     pub(crate) fn run_planned_job(
         &self,
+        plan: Arc<JobPlan>,
         planned: PlannedJob,
         run_info: JobRunInfo,
         ui: Option<Arc<UiBridge>>,
@@ -1143,7 +1152,7 @@ impl ExecutorCore {
 
         let result = (|| -> Result<()> {
             self.artifacts.prepare_targets(&job)?;
-            let env_vars = self.job_env(&job);
+            let mut env_vars = self.job_env(&job);
             let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
             let service_configs = self.job_services(&job);
             let service_runtime = ServiceRuntime::start(
@@ -1157,8 +1166,12 @@ impl ExecutorCore {
             let service_network = service_runtime
                 .as_ref()
                 .map(|runtime| runtime.network_name().to_string());
+            if let Some(runtime) = service_runtime.as_ref() {
+                env_vars.extend(runtime.link_env().iter().cloned());
+            }
             let mut mounts = mounts::collect_volume_mounts(
                 &job,
+                plan.as_ref(),
                 &self.g,
                 &self.artifacts,
                 &self.cache,
@@ -1635,13 +1648,30 @@ impl ExecutorCore {
     }
 
     fn job_container_name(&self, stage_name: &str, job: &Job, attempt: usize) -> String {
-        format!(
+        let base = format!(
             "opal-{}-{}-{}-{:02}",
             self.run_id,
             stage_name_slug(stage_name),
             job_name_slug(&job.name),
             attempt
-        )
+        );
+        if base.len() <= MAX_CONTAINER_NAME {
+            return base;
+        }
+        self.short_container_name(stage_name, job, attempt)
+    }
+
+    fn short_container_name(&self, stage_name: &str, job: &Job, attempt: usize) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.run_id.as_bytes());
+        hasher.update(stage_name.as_bytes());
+        hasher.update(job.name.as_bytes());
+        let digest = hasher.finalize();
+        let mut short = String::with_capacity(16);
+        for byte in digest.iter().take(6) {
+            let _ = FmtWrite::write_fmt(&mut short, format_args!("{:02x}", byte));
+        }
+        format!("opal-{short}-{:02}", attempt)
     }
 
     fn expanded_commands(&self, job: &Job) -> Vec<String> {

@@ -1,5 +1,6 @@
 use crate::git;
 use crate::gitlab::Job;
+use crate::naming::job_name_slug;
 use crate::secrets::SecretsStore;
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSetBuilder};
@@ -205,6 +206,27 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
             })
         {
             inferred.push(("CI_COMMIT_REF_NAME".into(), branch));
+        }
+    }
+    if host_env
+        .get("CI_COMMIT_REF_SLUG")
+        .is_none_or(|value| value.is_empty())
+    {
+        if let Some(ref_name) = host_env
+            .get("CI_COMMIT_REF_NAME")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .or_else(|| {
+                inferred
+                    .iter()
+                    .find(|(key, _)| key == "CI_COMMIT_REF_NAME")
+                    .map(|(_, value)| value.clone())
+            })
+        {
+            let slug = job_name_slug(&ref_name);
+            if !slug.is_empty() {
+                inferred.push(("CI_COMMIT_REF_SLUG".into(), slug));
+            }
         }
     }
 

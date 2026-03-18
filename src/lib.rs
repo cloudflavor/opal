@@ -67,6 +67,10 @@ pub struct RunArgs {
     /// Maximum number of jobs to run concurrently
     pub max_parallel_jobs: usize,
 
+    #[structopt(long = "trace-scripts")]
+    /// Print each job command as it runs (enables shell `set -x`)
+    pub trace_scripts: bool,
+
     #[structopt(
         long = "engine",
         default_value = "auto",
@@ -163,6 +167,7 @@ pub struct ExecutorConfig {
     pub engine: EngineKind,
     pub gitlab: Option<GitLabRemoteConfig>,
     pub settings: config::OpalConfig,
+    pub trace_scripts: bool,
 }
 
 #[derive(Clone, Debug)]

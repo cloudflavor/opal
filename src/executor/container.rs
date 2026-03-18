@@ -2,6 +2,7 @@ use super::core::ExecutorCore;
 use crate::engine::EngineCommandContext;
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
+use std::env;
 use std::process::{Command, Stdio};
 
 const DEFAULT_MEMORY_LIMIT: &str = "1638m"; // ~1.6 GB
@@ -48,8 +49,6 @@ impl<'a> ContainerCommandBuilder<'a> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .arg("run")
-            .arg("--arch")
-            .arg("x86_64")
             .arg("--name")
             .arg(ctx.container_name)
             .arg("--workdir")
@@ -58,6 +57,9 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(cpus)
             .arg("--memory")
             .arg(memory);
+        if let Some(arch) = container_arch_override().or_else(host_container_arch) {
+            command.arg("--arch").arg(arch);
+        }
         if let Some(dns) = ctx.dns.filter(|value| !value.is_empty()) {
             command.arg("--dns").arg(dns);
         }
@@ -96,6 +98,30 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);
+        if env::var("OPAL_DEBUG_CONTAINER")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            let program = self.command.get_program().to_string_lossy();
+            let args: Vec<String> = self
+                .command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect();
+            eprintln!("[opal] container command: {} {}", program, args.join(" "));
+        }
         self.command
     }
+}
+
+fn container_arch_override() -> Option<String> {
+    env::var("OPAL_CONTAINER_ARCH")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn host_container_arch() -> Option<String> {
+    // Apple's container CLI currently expects x86_64 guests even on Apple silicon hosts.
+    // Default to x86_64 unless OPAL_CONTAINER_ARCH overrides it.
+    Some("x86_64".to_string())
 }

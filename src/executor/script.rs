@@ -1,5 +1,5 @@
 use crate::gitlab::Job;
-use crate::naming::{escape_double_quotes, job_name_slug};
+use crate::naming::job_name_slug;
 use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::io::Write;
@@ -21,16 +21,17 @@ pub fn write_job_script(
     let mut file = File::create(&script_path)
         .with_context(|| format!("failed to create script for {}", job.name))?;
     writeln!(file, "#!/usr/bin/env sh")?;
-    writeln!(file, "set -eu")?;
+    if verbose {
+        writeln!(file, "set -eux")?;
+    } else {
+        writeln!(file, "set -eu")?;
+    }
     writeln!(file, "cd {}", container_workdir.display())?;
     writeln!(file)?;
 
     for line in commands {
         if line.trim().is_empty() {
             continue;
-        }
-        if verbose {
-            writeln!(file, "printf '+ %s\\n' \"{}\"", escape_double_quotes(line))?;
         }
         writeln!(file, "{}", line)?;
     }
