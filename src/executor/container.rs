@@ -60,7 +60,11 @@ impl<'a> ContainerCommandBuilder<'a> {
         if let Some(arch) = container_arch_override().or_else(host_container_arch) {
             command.arg("--arch").arg(arch);
         }
-        if let Some(dns) = ctx.dns.filter(|value| !value.is_empty()) {
+        if let Some(dns) = ctx
+            .dns
+            .filter(|value| !value.is_empty())
+            .or(Some("1.1.1.1"))
+        {
             command.arg("--dns").arg(dns);
         }
         Self {
