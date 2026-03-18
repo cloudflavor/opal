@@ -75,6 +75,7 @@ impl ArtifactManager {
         &self,
         job_name: &str,
         job: Option<&Job>,
+        optional: bool,
     ) -> Vec<(PathBuf, PathBuf)> {
         let Some(dep_job) = job else {
             return Vec::new();
@@ -82,9 +83,11 @@ impl ArtifactManager {
 
         let mut specs = Vec::new();
         for relative in &dep_job.artifacts {
-            let host = self.job_artifact_host_path(&dep_job.name, relative);
+            let host = self.job_artifact_host_path(job_name, relative);
             if !host.exists() {
-                warn!(job = job_name, path = %relative.display(), "artifact missing");
+                if !optional {
+                    warn!(job = job_name, path = %relative.display(), "artifact missing");
+                }
                 continue;
             }
             specs.push((host, relative.clone()));

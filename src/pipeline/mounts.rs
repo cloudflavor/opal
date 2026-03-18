@@ -1,6 +1,7 @@
 use crate::gitlab::{DependencySource, Job, PipelineGraph};
 use crate::pipeline::{
     ArtifactManager, CacheManager, CacheMountSpec, artifacts::ExternalArtifactsManager,
+    planner::JobPlan,
 };
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
@@ -38,6 +39,7 @@ fn mount_external_artifacts(root: &Path, collector: &mut MountCollector<'_>) -> 
 
 pub fn collect_volume_mounts(
     job: &Job,
+    plan: &JobPlan,
     graph: &PipelineGraph,
     artifacts: &ArtifactManager,
     cache: &CacheManager,
@@ -61,17 +63,38 @@ pub fn collect_volume_mounts(
                 let dep_job = graph
                     .graph
                     .node_weights()
-                    .find(|d| d.name == dependency.job);
-                if dep_job.is_none() {
-                    warn!(
-                        job = dependency.job,
-                        "dependency not present in pipeline graph"
-                    );
-                    continue;
+                    .find(|d| d.name == dependency.job)
+                    .cloned();
+                let Some(dep_job) = dep_job else {
+                    if dependency.optional {
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "job '{}' depends on unknown job '{}'",
+                        job.name,
+                        dependency.job
+                    ));
+                };
+                let variant_names = plan.variants_for_dependency(dependency);
+                if variant_names.is_empty() {
+                    if dependency.optional {
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "job '{}' requires artifacts from '{}', but it did not run",
+                        job.name,
+                        dependency.job
+                    ));
                 }
-                for (host, relative) in artifacts.dependency_mount_specs(&dependency.job, dep_job) {
-                    let container = collector.container_path(&relative);
-                    collector.push(host, container, true);
+                for variant in variant_names {
+                    for (host, relative) in artifacts.dependency_mount_specs(
+                        &variant,
+                        Some(&dep_job),
+                        dependency.optional,
+                    ) {
+                        let container = collector.container_path(&relative);
+                        collector.push(host, container, true);
+                    }
                 }
             }
             DependencySource::External(ext) => {
@@ -117,6 +140,18 @@ pub fn collect_volume_mounts(
     }
 
     for dep_name in &job.dependencies {
+        if let Some(dep_planned) = plan.nodes.get(dep_name) {
+            for relative in &dep_planned.job.artifacts {
+                let host = artifacts.job_artifact_host_path(&dep_planned.job.name, relative);
+                if !host.exists() {
+                    warn!(job = dep_planned.job.name, path = %relative.display(), "artifact missing");
+                    continue;
+                }
+                let container = collector.container_path(relative);
+                collector.push(host, container, true);
+            }
+            continue;
+        }
         let dep_job = graph.graph.node_weights().find(|d| d.name == *dep_name);
         let Some(dep_job) = dep_job else {
             warn!(job = dep_name, "dependency not present in pipeline graph");

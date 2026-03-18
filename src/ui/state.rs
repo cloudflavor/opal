@@ -1179,30 +1179,42 @@ impl UiState {
             format!(" ({})", job.log_hash),
             Self::apply_highlight(Style::default().fg(Color::Yellow), highlight),
         ));
-        match job.status {
-            UiJobStatus::Running => {
-                spans.push(Span::styled(
-                    " • RUNNING",
-                    Self::apply_highlight(
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                        highlight,
-                    ),
-                ));
+        if job.manual_pending {
+            spans.push(Span::styled(
+                " • MANUAL",
+                Self::apply_highlight(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                    highlight,
+                ),
+            ));
+        } else {
+            match job.status {
+                UiJobStatus::Running => {
+                    spans.push(Span::styled(
+                        " • RUNNING",
+                        Self::apply_highlight(
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                            highlight,
+                        ),
+                    ));
+                }
+                UiJobStatus::Pending => {
+                    spans.push(Span::styled(
+                        " • WAITING ON DEPS",
+                        Self::apply_highlight(
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                            highlight,
+                        ),
+                    ));
+                }
+                _ => {}
             }
-            UiJobStatus::Pending => {
-                spans.push(Span::styled(
-                    " • WAITING ON DEPS",
-                    Self::apply_highlight(
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                        highlight,
-                    ),
-                ));
-            }
-            _ => {}
         }
 
         spans

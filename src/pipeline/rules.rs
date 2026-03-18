@@ -1,6 +1,7 @@
 use crate::git;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
 use crate::gitlab::{Job, PipelineFilters};
+use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
 use regex::RegexBuilder;
@@ -96,6 +97,14 @@ impl RuleContext {
                 .cloned()
             {
                 env.insert("CI_COMMIT_REF_NAME".into(), branch);
+            }
+        }
+        if !env.contains_key("CI_COMMIT_REF_SLUG") {
+            if let Some(ref_name) = env.get("CI_COMMIT_REF_NAME").cloned() {
+                let slug = job_name_slug(&ref_name);
+                if !slug.is_empty() {
+                    env.insert("CI_COMMIT_REF_SLUG".into(), slug);
+                }
             }
         }
         if !env.contains_key("CI_DEFAULT_BRANCH")
@@ -239,7 +248,8 @@ pub fn evaluate_rules(job: &Job, ctx: &RuleContext) -> Result<RuleEvaluation> {
     }
 
     Ok(RuleEvaluation {
-        included: true,
+        included: false,
+        when: RuleWhen::Never,
         ..RuleEvaluation::default()
     })
 }
@@ -255,7 +265,7 @@ pub fn evaluate_workflow(rules: &[JobRule], ctx: &RuleContext) -> Result<bool> {
         let evaluation = apply_rule(rule, ctx);
         return Ok(evaluation.included);
     }
-    Ok(true)
+    Ok(false)
 }
 
 fn rule_matches(rule: &JobRule, ctx: &RuleContext) -> Result<bool> {

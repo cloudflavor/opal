@@ -14,8 +14,8 @@ use tracing::warn;
 
 use super::graph::{
     CacheConfig, CachePolicy, DependencySource, EnvironmentAction, EnvironmentConfig,
-    ExternalDependency, Job, JobDependency, ParallelConfig, PipelineDefaults, PipelineGraph,
-    RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
+    ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry, ParallelVariable,
+    PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -486,16 +486,21 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
 
 fn parse_string_list(value: Value, field: &str) -> Result<Vec<String>> {
     match value {
-        Value::Sequence(entries) => entries
-            .into_iter()
-            .map(|val| match val {
-                Value::String(text) => Ok(text),
-                other => bail!("{field} entries must be strings, got {other:?}"),
-            })
-            .collect(),
-        Value::String(text) => Ok(vec![text]),
+        Value::Sequence(entries) => {
+            let mut out = Vec::new();
+            for entry in entries {
+                let text = yaml_command_string(entry)
+                    .map_err(|err| anyhow!("{field} entries must be strings ({err})"))?;
+                out.push(text);
+            }
+            Ok(out)
+        }
         Value::Null => Ok(Vec::new()),
-        other => bail!("{field} must be a string or sequence, got {other:?}"),
+        other => {
+            let text = yaml_command_string(other)
+                .map_err(|err| anyhow!("{field} must be a string or sequence ({err})"))?;
+            Ok(vec![text])
+        }
     }
 }
 
@@ -507,6 +512,36 @@ fn parse_cache_value(value: Value) -> Result<Vec<CacheConfig>> {
             .collect::<Result<Vec<_>>>(),
         Value::Null => Ok(Vec::new()),
         other => Ok(vec![parse_cache_entry(other)?]),
+    }
+}
+
+fn yaml_command_string(value: Value) -> Result<String, String> {
+    match value {
+        Value::String(text) => Ok(text),
+        Value::Number(number) => Ok(number.to_string()),
+        Value::Bool(boolean) => Ok(boolean.to_string()),
+        Value::Null => Ok(String::new()),
+        Value::Mapping(map) => mapping_command_string(map),
+        other => Err(format!("got {other:?}")),
+    }
+}
+
+fn mapping_command_string(map: Mapping) -> Result<String, String> {
+    if map.len() != 1 {
+        return Err(format!(
+            "mapping entries must contain exactly one command, got {map:?}"
+        ));
+    }
+    let (key, value) = map.into_iter().next().expect("checked length");
+    let key_text = match key {
+        Value::String(text) => text,
+        other => return Err(format!("mapping keys must be strings, got {other:?}")),
+    };
+    let value_text = yaml_command_string(value)?;
+    if value_text.is_empty() {
+        Ok(format!("{key_text}:"))
+    } else {
+        Ok(format!("{key_text}: {value_text}"))
     }
 }
 
@@ -614,7 +649,7 @@ fn parse_parallel_value(value: Value) -> Result<ParallelConfig> {
     }
 }
 
-fn parse_parallel_matrix(value: Value) -> Result<Vec<HashMap<String, Vec<String>>>> {
+fn parse_parallel_matrix(value: Value) -> Result<Vec<ParallelMatrixEntry>> {
     match value {
         Value::Sequence(entries) => entries
             .into_iter()
@@ -624,12 +659,12 @@ fn parse_parallel_matrix(value: Value) -> Result<Vec<HashMap<String, Vec<String>
     }
 }
 
-fn parse_parallel_matrix_entry(value: Value) -> Result<HashMap<String, Vec<String>>> {
+fn parse_parallel_matrix_entry(value: Value) -> Result<ParallelMatrixEntry> {
     let mapping = match value {
         Value::Mapping(map) => map,
         other => bail!("parallel matrix entries must be mappings, got {other:?}"),
     };
-    let mut result = HashMap::new();
+    let mut variables = Vec::new();
     for (key, value) in mapping {
         let name = match key {
             Value::String(name) => name,
@@ -652,9 +687,12 @@ fn parse_parallel_matrix_entry(value: Value) -> Result<HashMap<String, Vec<Strin
                 name
             );
         }
-        result.insert(name, values);
+        variables.push(ParallelVariable { name, values });
     }
-    Ok(result)
+    if variables.is_empty() {
+        bail!("parallel matrix entries must define at least one variable");
+    }
+    Ok(ParallelMatrixEntry { variables })
 }
 
 fn parse_filter_list(value: Value, field: &str) -> Result<Vec<String>> {
@@ -1060,11 +1098,14 @@ struct RawEnvironment {
     action: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum Script {
-    Single(String),
-    Multiple(Vec<String>),
+#[derive(Debug, Default, Deserialize)]
+#[serde(transparent)]
+struct Script(StringList);
+
+impl Script {
+    fn into_commands(self) -> Vec<String> {
+        self.0.into_vec()
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1171,100 +1212,29 @@ impl<'de> serde::Deserialize<'de> for ServiceCommand {
     where
         D: serde::Deserializer<'de>,
     {
-        struct VisitorImpl;
-
-        impl<'de> serde::de::Visitor<'de> for VisitorImpl {
-            type Value = ServiceCommand;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("string or sequence of strings")
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(ServiceCommand(vec![v.to_string()]))
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut items = Vec::new();
-                while let Some(entry) = seq.next_element::<String>()? {
-                    items.push(entry);
-                }
-                Ok(ServiceCommand(items))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(ServiceCommand(Vec::new()))
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(ServiceCommand(Vec::new()))
-            }
-        }
-
-        deserializer.deserialize_any(VisitorImpl)
+        let list = StringList::deserialize(deserializer)?;
+        Ok(ServiceCommand(list.into_vec()))
     }
 }
-
 impl<'de> serde::Deserialize<'de> for StringList {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::de::Deserializer<'de>,
     {
-        struct VisitorImpl;
-
-        impl<'de> serde::de::Visitor<'de> for VisitorImpl {
-            type Value = StringList;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("string or sequence of strings")
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(StringList(vec![v.to_string()]))
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut items = Vec::new();
-                while let Some(entry) = seq.next_element::<String>()? {
-                    items.push(entry);
+        let value = Value::deserialize(deserializer)?;
+        let items = match value {
+            Value::Sequence(entries) => {
+                let mut commands = Vec::new();
+                for entry in entries {
+                    let cmd = yaml_command_string(entry).map_err(serde::de::Error::custom)?;
+                    commands.push(cmd);
                 }
-                Ok(StringList(items))
+                commands
             }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(StringList(Vec::new()))
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(StringList(Vec::new()))
-            }
-        }
-
-        deserializer.deserialize_any(VisitorImpl)
+            Value::Null => Vec::new(),
+            other => vec![yaml_command_string(other).map_err(serde::de::Error::custom)?],
+        };
+        Ok(StringList(items))
     }
 }
 
@@ -1302,13 +1272,27 @@ struct NeedConfig {
 impl Need {
     fn into_dependency(self, owner: &str) -> Option<JobDependency> {
         match self {
-            Need::Name(job) => Some(JobDependency {
-                job,
-                needs_artifacts: true,
-                optional: false,
-                source: DependencySource::Local,
-                parallel: None,
-            }),
+            Need::Name(job) => {
+                if let Some((base, values)) = parse_inline_variant_reference(&job) {
+                    Some(JobDependency {
+                        job: base,
+                        needs_artifacts: true,
+                        optional: false,
+                        source: DependencySource::Local,
+                        parallel: None,
+                        inline_variant: Some(values),
+                    })
+                } else {
+                    Some(JobDependency {
+                        job,
+                        needs_artifacts: true,
+                        optional: false,
+                        source: DependencySource::Local,
+                        parallel: None,
+                        inline_variant: None,
+                    })
+                }
+            }
             Need::Config(cfg) => {
                 let NeedConfig {
                     job,
@@ -1338,6 +1322,7 @@ impl Need {
                             reference,
                         }),
                         parallel: None,
+                        inline_variant: None,
                     })
                 } else {
                     let parallel_filters =
@@ -1353,17 +1338,31 @@ impl Need {
                                 None
                             }
                         });
+                    let (job_name, inline_variant) = parse_inline_variant_reference(&job)
+                        .map_or((job, None), |(base, values)| (base, Some(values)));
                     Some(JobDependency {
-                        job,
+                        job: job_name,
                         needs_artifacts: artifacts,
                         optional,
                         source: DependencySource::Local,
                         parallel: parallel_filters,
+                        inline_variant,
                     })
                 }
             }
         }
     }
+}
+
+fn parse_inline_variant_reference(value: &str) -> Option<(String, Vec<String>)> {
+    let trimmed = value.trim();
+    let (base, list) = trimmed.split_once(':')?;
+    let payload = list.trim();
+    if !payload.starts_with('[') {
+        return None;
+    }
+    let values: Vec<String> = serde_yaml::from_str(payload).ok()?;
+    Some((base.trim().to_string(), values))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1410,21 +1409,6 @@ impl NeedParallelRaw {
 
 fn default_artifacts_true() -> bool {
     true
-}
-
-impl Default for Script {
-    fn default() -> Self {
-        Script::Multiple(Vec::new())
-    }
-}
-
-impl Script {
-    fn into_commands(self) -> Vec<String> {
-        match self {
-            Script::Single(line) => vec![line],
-            Script::Multiple(lines) => lines,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -63,6 +63,7 @@ pub struct JobDependency {
     pub optional: bool,
     pub source: DependencySource,
     pub parallel: Option<Vec<HashMap<String, String>>>,
+    pub inline_variant: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +96,18 @@ pub struct RetryPolicy {
 #[derive(Debug, Clone)]
 pub enum ParallelConfig {
     Count(u32),
-    Matrix(Vec<HashMap<String, Vec<String>>>),
+    Matrix(Vec<ParallelMatrixEntry>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelMatrixEntry {
+    pub variables: Vec<ParallelVariable>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelVariable {
+    pub name: String,
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

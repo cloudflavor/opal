@@ -1,6 +1,6 @@
 use crate::gitlab::{
-    DependencySource, EnvironmentConfig, Job, JobDependency, ParallelConfig, PipelineGraph,
-    RetryPolicy,
+    DependencySource, EnvironmentConfig, Job, JobDependency, ParallelConfig, ParallelMatrixEntry,
+    PipelineGraph, RetryPolicy,
 };
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
@@ -10,16 +10,41 @@ use tracing::warn;
 
 use super::rules::{RuleContext, RuleEvaluation, evaluate_rules};
 
+#[derive(Clone, Debug)]
+pub struct JobVariantInfo {
+    pub name: String,
+    pub labels: HashMap<String, String>,
+    pub ordered_values: Vec<String>,
+}
+
 #[derive(Clone)]
-struct VariantMetadata {
-    name: String,
-    labels: HashMap<String, String>,
+struct LabelCombination {
+    ordered: Vec<(String, String)>,
+    lookup: HashMap<String, String>,
+}
+
+impl LabelCombination {
+    fn empty() -> Self {
+        Self {
+            ordered: Vec::new(),
+            lookup: HashMap::new(),
+        }
+    }
+
+    fn push(&self, key: String, value: String) -> Self {
+        let mut ordered = self.ordered.clone();
+        ordered.push((key.clone(), value.clone()));
+        let mut lookup = self.lookup.clone();
+        lookup.insert(key, value);
+        Self { ordered, lookup }
+    }
 }
 
 struct ExpandedVariant {
     job: Job,
     labels: HashMap<String, String>,
     base_name: String,
+    ordered_values: Vec<String>,
 }
 
 pub struct JobPlan {
@@ -27,6 +52,19 @@ pub struct JobPlan {
     pub nodes: HashMap<String, PlannedJob>,
     pub dependents: HashMap<String, Vec<String>>,
     pub order_index: HashMap<String, usize>,
+    pub variants: HashMap<String, Vec<JobVariantInfo>>,
+}
+
+impl JobPlan {
+    pub fn variants_for_dependency(&self, dep: &JobDependency) -> Vec<String> {
+        let Some(entries) = self.variants.get(&dep.job) else {
+            return Vec::new();
+        };
+        select_variants(entries, dep)
+            .into_iter()
+            .map(|variant| variant.name.clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +155,7 @@ where
     let mut nodes = HashMap::new();
     let mut ordered = Vec::new();
     let mut expanded_jobs: HashMap<String, Vec<ExpandedVariant>> = HashMap::new();
-    let mut variant_lookup: HashMap<String, Vec<VariantMetadata>> = HashMap::new();
+    let mut variant_lookup: HashMap<String, Vec<JobVariantInfo>> = HashMap::new();
 
     for node_idx in graph.graph.node_indices() {
         let base_job = graph
@@ -130,9 +168,10 @@ where
             base_job.name.clone(),
             variants
                 .iter()
-                .map(|variant| VariantMetadata {
+                .map(|variant| JobVariantInfo {
                     name: variant.job.name.clone(),
                     labels: variant.labels.clone(),
+                    ordered_values: variant.ordered_values.clone(),
                 })
                 .collect(),
         );
@@ -246,13 +285,14 @@ where
         nodes,
         dependents,
         order_index,
+        variants: variant_lookup,
     })
 }
 
 fn resolve_parallel_dependencies(
     owner: &str,
     deps: &[JobDependency],
-    variant_lookup: &HashMap<String, Vec<VariantMetadata>>,
+    variant_lookup: &HashMap<String, Vec<JobVariantInfo>>,
 ) -> Result<Vec<String>> {
     let mut resolved = Vec::new();
     for dep in deps {
@@ -270,28 +310,7 @@ fn resolve_parallel_dependencies(
                 ));
             }
         };
-        let selected: Vec<String> = if let Some(filters) = &dep.parallel {
-            variants
-                .iter()
-                .filter(|variant| {
-                    filters.iter().any(|filter| {
-                        filter.iter().all(|(key, value)| {
-                            variant
-                                .labels
-                                .get(key)
-                                .map(|current| current == value)
-                                .unwrap_or(false)
-                        })
-                    })
-                })
-                .map(|variant| variant.name.clone())
-                .collect()
-        } else {
-            variants
-                .iter()
-                .map(|variant| variant.name.clone())
-                .collect()
-        };
+        let selected = select_variants(variants, dep);
         if selected.is_empty() {
             if dep.optional {
                 continue;
@@ -303,7 +322,7 @@ fn resolve_parallel_dependencies(
                 ));
             }
         }
-        resolved.extend(selected);
+        resolved.extend(selected.into_iter().map(|variant| variant.name.clone()));
     }
     resolved.sort();
     resolved.dedup();
@@ -312,7 +331,7 @@ fn resolve_parallel_dependencies(
 
 fn resolve_default_dependencies(
     defaults: &[String],
-    variant_lookup: &HashMap<String, Vec<VariantMetadata>>,
+    variant_lookup: &HashMap<String, Vec<JobVariantInfo>>,
 ) -> Vec<String> {
     let mut deps = Vec::new();
     for name in defaults {
@@ -325,6 +344,35 @@ fn resolve_default_dependencies(
     deps
 }
 
+fn select_variants<'a>(
+    variants: &'a [JobVariantInfo],
+    dep: &JobDependency,
+) -> Vec<&'a JobVariantInfo> {
+    if let Some(filters) = &dep.parallel {
+        variants
+            .iter()
+            .filter(|variant| {
+                filters.iter().any(|filter| {
+                    filter.iter().all(|(key, value)| {
+                        variant
+                            .labels
+                            .get(key)
+                            .map(|current| current == value)
+                            .unwrap_or(false)
+                    })
+                })
+            })
+            .collect()
+    } else if let Some(expected) = &dep.inline_variant {
+        variants
+            .iter()
+            .filter(|variant| &variant.ordered_values == expected)
+            .collect()
+    } else {
+        variants.iter().collect()
+    }
+}
+
 fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
     let base_name = job.name.clone();
     let mut variants = Vec::new();
@@ -334,7 +382,7 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
             for idx in 0..total {
                 let mut clone = job.clone();
                 clone.parallel = None;
-                clone.name = format!("{} [{}]", base_name, idx + 1);
+                clone.name = format!("{}: [{}]", base_name, idx + 1);
                 clone
                     .variables
                     .insert("CI_NODE_INDEX".into(), (idx + 1).to_string());
@@ -345,6 +393,7 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
                     job: clone,
                     labels: HashMap::new(),
                     base_name: base_name.clone(),
+                    ordered_values: vec![(idx + 1).to_string()],
                 });
             }
         }
@@ -361,9 +410,9 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
             for (idx, combo) in combos.into_iter().enumerate() {
                 let mut clone = job.clone();
                 clone.parallel = None;
-                let label = format_variant_label(&combo);
-                clone.name = format!("{} [{}]", base_name, label);
-                for (key, value) in &combo {
+                let label_text = format_gitlab_variant_values(&combo.ordered);
+                clone.name = format!("{}: [{}]", base_name, label_text);
+                for (key, value) in &combo.ordered {
                     clone.variables.insert(key.clone(), value.clone());
                 }
                 clone
@@ -372,10 +421,16 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
                 clone
                     .variables
                     .insert("CI_NODE_TOTAL".into(), total.to_string());
+                let ordered_values = combo
+                    .ordered
+                    .iter()
+                    .map(|(_, value)| value.clone())
+                    .collect();
                 variants.push(ExpandedVariant {
                     job: clone,
-                    labels: combo,
+                    labels: combo.lookup.clone(),
                     base_name: base_name.clone(),
+                    ordered_values,
                 });
             }
         }
@@ -386,6 +441,7 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
                 job: clone,
                 labels: HashMap::new(),
                 base_name,
+                ordered_values: Vec::new(),
             });
             return Ok(variants);
         }
@@ -393,37 +449,90 @@ fn expand_job_variants(job: Job) -> Result<Vec<ExpandedVariant>> {
     Ok(variants)
 }
 
-fn matrix_combinations(
-    entries: &[HashMap<String, Vec<String>>],
-) -> Result<Vec<HashMap<String, String>>> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::rules::RuleContext;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn resolves_matrix_needs_to_variant_names() {
+        let graph =
+            PipelineGraph::from_path("pipelines/tests/needs-and-artifacts.gitlab-ci.yml").unwrap();
+        let ctx = RuleContext::new(Path::new("."));
+        let plan =
+            build_job_plan(&graph, Some(&ctx), |_job| (PathBuf::new(), String::new())).unwrap();
+        assert!(plan.nodes.contains_key("build-matrix: [linux, release]"));
+        let package = plan.nodes.get("package-linux").expect("package job exists");
+        assert!(
+            package
+                .job
+                .dependencies
+                .iter()
+                .any(|dep| dep == "build-matrix: [linux, release]")
+        );
+        assert!(
+            package
+                .dependencies
+                .iter()
+                .any(|dep| dep == "build-matrix: [linux, release]")
+        );
+        let matrix_need = package
+            .job
+            .needs
+            .iter()
+            .find(|need| need.job == "build-matrix")
+            .expect("matrix dependency present");
+        let variants = plan.variants_for_dependency(matrix_need);
+        assert_eq!(variants, vec!["build-matrix: [linux, release]".to_string()]);
+    }
+
+    #[test]
+    fn package_needs_tracks_inline_variant() {
+        let graph =
+            PipelineGraph::from_path("pipelines/tests/needs-and-artifacts.gitlab-ci.yml").unwrap();
+        let ctx = RuleContext::new(Path::new("."));
+        let plan =
+            build_job_plan(&graph, Some(&ctx), |_job| (PathBuf::new(), String::new())).unwrap();
+        let package = plan.nodes.get("package-linux").expect("package job exists");
+        let matrix_need = package
+            .job
+            .needs
+            .iter()
+            .find(|need| need.job == "build-matrix")
+            .expect("matrix dependency present");
+        assert_eq!(
+            matrix_need.inline_variant,
+            Some(vec!["linux".to_string(), "release".to_string()])
+        );
+    }
+}
+
+fn matrix_combinations(entries: &[ParallelMatrixEntry]) -> Result<Vec<LabelCombination>> {
     if entries.is_empty() {
-        return Ok(vec![HashMap::new()]);
+        return Ok(vec![LabelCombination::empty()]);
     }
     let mut combos = Vec::new();
     for entry in entries {
-        let mut entry_combos = vec![HashMap::new()];
-        for (key, values) in entry {
-            let mut new_combos = Vec::new();
+        let mut entry_combos = vec![LabelCombination::empty()];
+        for var in &entry.variables {
+            let mut new_sets = Vec::new();
             for combo in &entry_combos {
-                for value in values {
-                    let mut new_combo = combo.clone();
-                    new_combo.insert(key.clone(), value.clone());
-                    new_combos.push(new_combo);
+                for value in &var.values {
+                    new_sets.push(combo.push(var.name.clone(), value.clone()));
                 }
             }
-            entry_combos = new_combos;
+            entry_combos = new_sets;
         }
         combos.extend(entry_combos);
     }
     Ok(combos)
 }
 
-fn format_variant_label(labels: &HashMap<String, String>) -> String {
-    let mut pairs: Vec<_> = labels.iter().collect();
-    pairs.sort_by(|a, b| a.0.cmp(b.0));
-    pairs
-        .into_iter()
-        .map(|(key, value)| format!("{key}:{value}"))
+fn format_gitlab_variant_values(labels: &[(String, String)]) -> String {
+    labels
+        .iter()
+        .map(|(_, value)| value.clone())
         .collect::<Vec<_>>()
-        .join(",")
+        .join(", ")
 }

@@ -7,10 +7,11 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task;
 use tokio::time;
 
-use super::planner::{JobEvent, JobRunInfo, PlannedJob};
+use super::planner::{JobEvent, JobPlan, JobRunInfo, PlannedJob};
 
 pub fn spawn_job(
     exec: Arc<ExecutorCore>,
+    plan: Arc<JobPlan>,
     planned: PlannedJob,
     run_info: JobRunInfo,
     semaphore: Arc<Semaphore>,
@@ -48,12 +49,13 @@ pub fn spawn_job(
         };
 
         let exec_clone = exec.clone();
+        let plan_clone = plan.clone();
         let planned_job = planned;
         let run_info = run_info;
         let kill_info = run_info.container_name.clone();
         let ui_clone = ui.clone();
         let blocking = task::spawn_blocking(move || {
-            exec_clone.run_planned_job(planned_job, run_info, ui_clone)
+            exec_clone.run_planned_job(plan_clone, planned_job, run_info, ui_clone)
         });
         let event = if let Some(limit) = timeout {
             match time::timeout(limit, blocking).await {
