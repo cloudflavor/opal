@@ -40,6 +40,47 @@ fi
 
 failures=()
 
+assert_log_contains() {
+  local log_file="$1"
+  local needle="$2"
+  if ! grep -Fq -- "${needle}" "${log_file}"; then
+    echo "!! expected log to contain: ${needle}" >&2
+    return 1
+  fi
+}
+
+assert_log_not_contains() {
+  local log_file="$1"
+  local needle="$2"
+  if grep -Fq -- "${needle}" "${log_file}"; then
+    echo "!! expected log to not contain: ${needle}" >&2
+    return 1
+  fi
+}
+
+verify_scenario_log() {
+  local name="$1"
+  local log_file="$2"
+
+  case "${name}" in
+    filters-branch)
+      assert_log_contains "${log_file}" "only-branches"
+      assert_log_not_contains "${log_file}" "tag-only"
+      ;;
+    filters-tag)
+      assert_log_contains "${log_file}" "tag-only"
+      assert_log_not_contains "${log_file}" "only-branches"
+      ;;
+    environment-stop)
+      assert_log_contains "${log_file}" "deploy-review"
+      assert_log_contains "${log_file}" "manual job (env: review/main)"
+      assert_log_contains "${log_file}" "env: review/main, url: https://example.com/review/main"
+      assert_log_not_contains "${log_file}" 'stopping review env'
+      assert_log_not_contains "${log_file}" '${CI_COMMIT_REF_SLUG:-local}'
+      ;;
+  esac
+}
+
 run_scenario() {
   local name="$1"
   local pipeline_rel="$2"
@@ -72,6 +113,10 @@ run_scenario() {
   popd >/dev/null
 
   if (( status == 0 )); then
+    if ! verify_scenario_log "${name}" "${log_file}"; then
+      echo "    log saved to ${log_file} (verification failed)"
+      return 1
+    fi
     echo "    log saved to ${log_file}"
   else
     echo "    log saved to ${log_file} (failed)"
