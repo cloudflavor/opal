@@ -6,6 +6,7 @@ mod process;
 mod registry;
 mod runtime_state;
 mod stage_tracker;
+mod workspace;
 
 use super::{orchestrator, paths};
 use crate::compiler::compile_pipeline;

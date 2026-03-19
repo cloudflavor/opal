@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub(crate) struct PreparedJobRun {
+    pub host_workdir: PathBuf,
     pub env_vars: Vec<(String, String)>,
     pub service_runtime: Option<crate::executor::services::ServiceRuntime>,
     pub mounts: Vec<VolumeMount>,
@@ -21,6 +22,7 @@ pub(super) fn prepare_job_run(
     job: &JobSpec,
 ) -> Result<PreparedJobRun> {
     exec.artifacts.prepare_targets(job)?;
+    let workspace = super::workspace::prepare_job_workspace(exec, job)?;
     let mut env_vars = exec.job_env(job);
     let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
     let service_configs = selected_services(&exec.pipeline.defaults, job);
@@ -54,6 +56,7 @@ pub(super) fn prepare_job_run(
         exec.container_session_dir.clone(),
         &exec.secrets,
     );
+    mounts.extend(workspace.mounts.clone());
 
     let job_image = exec.resolve_job_image_with_env(job, Some(&cache_env))?;
     let script_commands = expanded_commands(&exec.pipeline.defaults, job);
@@ -66,6 +69,7 @@ pub(super) fn prepare_job_run(
     )?;
 
     Ok(PreparedJobRun {
+        host_workdir: workspace.host_workdir,
         env_vars,
         service_runtime,
         mounts,

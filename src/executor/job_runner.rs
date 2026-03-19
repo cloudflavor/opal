@@ -29,6 +29,7 @@ pub(crate) fn run_planned_job(
         let mut prepared = exec.prepare_job_run(plan.as_ref(), &job)?;
         let container_name = run_info.container_name.clone();
         let exec_result = exec.execute(ExecuteContext {
+            host_workdir: &prepared.host_workdir,
             script_path: &prepared.script_path,
             log_path: &log_path,
             mounts: &prepared.mounts,

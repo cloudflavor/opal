@@ -4,6 +4,7 @@ use crate::ui::UiBridge;
 use std::path::Path;
 
 pub struct ExecuteContext<'a> {
+    pub host_workdir: &'a Path,
     pub script_path: &'a Path,
     pub log_path: &'a Path,
     pub mounts: &'a [VolumeMount],

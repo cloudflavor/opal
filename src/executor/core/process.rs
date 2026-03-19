@@ -21,6 +21,7 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 
 pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()> {
     let ExecuteContext {
+        host_workdir,
         script_path,
         log_path,
         mounts,
@@ -46,15 +47,22 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         display::print_line(format!("{} {}", script_label, container_script.display()));
     }
 
-    let mut proc = spawn_container_process(
-        exec,
-        &container_script,
+    let container_cfg = exec.config.settings.container_settings();
+    let command_ctx = EngineCommandContext {
+        workdir: host_workdir,
+        container_root: &exec.container_workdir,
+        container_script: &container_script,
         container_name,
         image,
         mounts,
         env_vars,
         network,
-    )?;
+        cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
+        memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
+        dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
+    };
+
+    let mut proc = spawn_container_process(exec, &command_ctx)?;
     capture_output(
         proc.stdout
             .take()
@@ -79,36 +87,13 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
     Ok(())
 }
 
-fn spawn_container_process(
-    exec: &ExecutorCore,
-    container_script: &Path,
-    container_name: &str,
-    image: &str,
-    mounts: &[crate::pipeline::VolumeMount],
-    env_vars: &[(String, String)],
-    network: Option<&str>,
-) -> Result<Child> {
-    let container_cfg = exec.config.settings.container_settings();
-    let ctx = EngineCommandContext {
-        workdir: &exec.config.workdir,
-        container_root: &exec.container_workdir,
-        container_script,
-        container_name,
-        image,
-        mounts,
-        env_vars,
-        network,
-        cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
-        memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
-        dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
-    };
-
+fn spawn_container_process(exec: &ExecutorCore, ctx: &EngineCommandContext<'_>) -> Result<Child> {
     let mut command = match exec.config.engine {
-        EngineKind::ContainerCli => ContainerExecutor::build_command(&ctx),
-        EngineKind::Docker => DockerExecutor::build_command(&ctx),
-        EngineKind::Podman => PodmanExecutor::build_command(&ctx),
-        EngineKind::Nerdctl => NerdctlExecutor::build_command(&ctx),
-        EngineKind::Orbstack => OrbstackExecutor::build_command(&ctx),
+        EngineKind::ContainerCli => ContainerExecutor::build_command(ctx),
+        EngineKind::Docker => DockerExecutor::build_command(ctx),
+        EngineKind::Podman => PodmanExecutor::build_command(ctx),
+        EngineKind::Nerdctl => NerdctlExecutor::build_command(ctx),
+        EngineKind::Orbstack => OrbstackExecutor::build_command(ctx),
     };
 
     command
