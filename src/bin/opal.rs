@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use opal::compiler::compile_pipeline;
 use opal::config::OpalConfig;
 use opal::display::{self, DisplayFormatter};
+use opal::execution_plan::build_execution_plan;
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
@@ -142,7 +144,8 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     let logs_dir = runtime::runs_root().join("plan/logs");
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("failed to create plan log dir {}", logs_dir.display()))?;
-    let plan = pipeline::build_job_plan(&pipeline_spec, Some(&ctx), |job| {
+    let compiled = compile_pipeline(&pipeline_spec, Some(&ctx))?;
+    let plan = build_execution_plan(compiled, |job| {
         logging::job_log_info(&logs_dir, "plan-preview", job)
     })?;
     let display = DisplayFormatter::new(terminal::should_use_color());

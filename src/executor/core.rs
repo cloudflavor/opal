@@ -8,9 +8,10 @@ mod runtime_state;
 mod stage_tracker;
 
 use super::{orchestrator, paths};
+use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
-use crate::execution_plan::{ExecutableJob, ExecutionPlan};
+use crate::execution_plan::{ExecutableJob, ExecutionPlan, build_execution_plan};
 use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
@@ -253,7 +254,8 @@ impl ExecutorCore {
                 variants: HashMap::new(),
             });
         }
-        pipeline::build_job_plan(&self.pipeline, Some(&ctx), |job| self.job_log_info(job))
+        let compiled = compile_pipeline(&self.pipeline, Some(&ctx))?;
+        build_execution_plan(compiled, |job| self.job_log_info(job))
     }
 
     fn collect_job_resources(&self, plan: &ExecutionPlan) -> HashMap<String, JobResourceInfo> {
