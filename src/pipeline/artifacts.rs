@@ -81,10 +81,6 @@ impl ArtifactManager {
         let Some(dep_job) = job else {
             return Vec::new();
         };
-        if !dep_job.artifacts.when.includes(outcome) {
-            return Vec::new();
-        }
-
         let mut specs = Vec::new();
         for relative in &dep_job.artifacts.paths {
             let host = self.job_artifact_host_path(job_name, relative);
@@ -92,6 +88,9 @@ impl ArtifactManager {
                 if !optional {
                     warn!(job = job_name, path = %relative.display(), "artifact missing");
                 }
+                continue;
+            }
+            if !dep_job.artifacts.when.includes(outcome) && !artifact_path_has_content(&host) {
                 continue;
             }
             specs.push((host, relative.clone()));
@@ -107,6 +106,15 @@ impl ArtifactManager {
 
     pub fn job_artifacts_root(&self, job_name: &str) -> PathBuf {
         self.root.join(job_name_slug(job_name)).join("artifacts")
+    }
+
+    pub fn job_dependency_root(&self, job_name: &str) -> PathBuf {
+        self.root.join(job_name_slug(job_name)).join("dependencies")
+    }
+
+    pub fn job_dependency_host_path(&self, job_name: &str, artifact: &Path) -> PathBuf {
+        self.job_dependency_root(job_name)
+            .join(artifact_relative_path(artifact))
     }
 }
 
@@ -141,6 +149,17 @@ fn artifact_kind(path: &Path) -> ArtifactPathKind {
         ArtifactPathKind::Directory
     } else {
         ArtifactPathKind::File
+    }
+}
+
+fn artifact_path_has_content(path: &Path) -> bool {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => true,
+        Ok(metadata) if metadata.is_dir() => fs::read_dir(path)
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .is_some(),
+        _ => false,
     }
 }
 
@@ -305,4 +324,102 @@ fn sanitize_reference(reference: &str) -> String {
         slug.push_str("ref");
     }
     slug
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArtifactManager, ArtifactPathKind, artifact_kind, artifact_path_has_content};
+    use crate::model::{
+        ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec, JobSpec, RetryPolicySpec,
+    };
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn artifact_path_kind_treats_trailing_separator_as_directory() {
+        assert!(matches!(
+            artifact_kind(std::path::Path::new("tests-temp/build/")),
+            ArtifactPathKind::Directory
+        ));
+    }
+
+    #[test]
+    fn artifact_path_has_content_requires_directory_entries() {
+        let root = temp_path("artifact-content");
+        fs::create_dir_all(&root).expect("create dir");
+        assert!(!artifact_path_has_content(&root));
+        fs::write(root.join("marker.txt"), "ok").expect("write marker");
+        assert!(artifact_path_has_content(&root));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_mount_specs_allow_populated_artifacts_without_recorded_outcome() {
+        let root = temp_path("artifact-presence");
+        let manager = ArtifactManager::new(root.clone());
+        let relative = PathBuf::from("tests-temp/build/");
+        let job = job("build", vec![relative.clone()], ArtifactWhenSpec::OnSuccess);
+        let host = manager.job_artifact_host_path("build", &relative);
+        fs::create_dir_all(&host).expect("create artifact dir");
+        fs::write(host.join("linux-release.txt"), "release").expect("write artifact");
+
+        let specs = manager.dependency_mount_specs("build", Some(&job), None, false);
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].0, host);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_when_matches_expected_outcomes() {
+        assert!(ArtifactWhenSpec::Always.includes(None));
+        assert!(ArtifactWhenSpec::Always.includes(Some(ArtifactSourceOutcome::Success)));
+        assert!(ArtifactWhenSpec::OnSuccess.includes(Some(ArtifactSourceOutcome::Success)));
+        assert!(!ArtifactWhenSpec::OnSuccess.includes(Some(ArtifactSourceOutcome::Failed)));
+        assert!(ArtifactWhenSpec::OnFailure.includes(Some(ArtifactSourceOutcome::Failed)));
+        assert!(!ArtifactWhenSpec::OnFailure.includes(Some(ArtifactSourceOutcome::Skipped)));
+        assert!(!ArtifactWhenSpec::OnFailure.includes(None));
+    }
+
+    fn job(name: &str, paths: Vec<PathBuf>, when: ArtifactWhenSpec) -> JobSpec {
+        JobSpec {
+            name: name.into(),
+            stage: "build".into(),
+            commands: vec!["echo ok".into()],
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec { paths, when },
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        }
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
+    }
 }

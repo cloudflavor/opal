@@ -62,6 +62,7 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
         external,
     } = ctx;
     let mut collector = MountCollector::new(container_root);
+    let mut dependency_mounts = Vec::new();
 
     for (host, relative) in artifacts.job_mount_specs(job) {
         let container = collector.container_path(&relative);
@@ -103,8 +104,7 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                         completed_jobs.get(&variant).copied(),
                         dependency.optional,
                     ) {
-                        let container = collector.container_path(&relative);
-                        collector.push(host, container, true);
+                        dependency_mounts.push((host, relative));
                     }
                 }
             }
@@ -168,8 +168,7 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                     warn!(job = dep_planned.instance.job.name, path = %relative.display(), "artifact missing");
                     continue;
                 }
-                let container = collector.container_path(relative);
-                collector.push(host, container, true);
+                dependency_mounts.push((host, relative.clone()));
             }
             continue;
         }
@@ -191,10 +190,11 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                 warn!(job = dep_name, path = %relative.display(), "artifact missing");
                 continue;
             }
-            let container = collector.container_path(relative);
-            collector.push(host, container, true);
+            dependency_mounts.push((host, relative.clone()));
         }
     }
+
+    add_dependency_mounts(job, artifacts, &mut collector, dependency_mounts)?;
 
     let cache_specs = cache.mount_specs(&job.cache, cache_env)?;
     for CacheMountSpec {
@@ -208,6 +208,113 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
     }
 
     Ok(collector.into_mounts())
+}
+
+fn add_dependency_mounts(
+    job: &JobSpec,
+    artifacts: &ArtifactManager,
+    collector: &mut MountCollector<'_>,
+    mounts: Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for (host, relative) in mounts {
+        grouped.entry(relative).or_default().push(host);
+    }
+
+    for (relative, hosts) in grouped {
+        let container = collector.container_path(&relative);
+        if hosts.len() == 1 {
+            collector.push(
+                hosts.into_iter().next().expect("single host"),
+                container,
+                true,
+            );
+            continue;
+        }
+
+        let staged = stage_dependency_mount(artifacts, &job.name, &relative, &hosts)?;
+        collector.push(staged, container, true);
+    }
+
+    Ok(())
+}
+
+fn stage_dependency_mount(
+    artifacts: &ArtifactManager,
+    job_name: &str,
+    relative: &Path,
+    hosts: &[PathBuf],
+) -> Result<PathBuf> {
+    let staged = artifacts.job_dependency_host_path(job_name, relative);
+    if staged.exists() {
+        remove_path(&staged)
+            .with_context(|| format!("failed to clear staged dependency {}", staged.display()))?;
+    }
+
+    let any_dir = hosts.iter().any(|host| host.is_dir());
+    if any_dir {
+        fs::create_dir_all(&staged)
+            .with_context(|| format!("failed to create {}", staged.display()))?;
+        for host in hosts {
+            if host.is_dir() {
+                copy_dir_contents(host, &staged)?;
+            } else {
+                copy_path(host, &staged.join(file_name_or_default(host)))?;
+            }
+        }
+    } else {
+        if let Some(parent) = staged.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        for host in hosts {
+            copy_path(host, &staged)?;
+        }
+    }
+
+    Ok(staged)
+}
+
+fn copy_dir_contents(src: &Path, dest: &Path) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+        let entry = entry?;
+        let child_src = entry.path();
+        let child_dest = dest.join(entry.file_name());
+        copy_path(&child_src, &child_dest)?;
+    }
+    Ok(())
+}
+
+fn copy_path(src: &Path, dest: &Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        copy_dir_contents(src, dest)?;
+        return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(src, dest)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
+    } else {
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))
+    }
+}
+
+fn file_name_or_default(path: &Path) -> OsString {
+    path.file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("artifact"))
 }
 
 impl VolumeMount {
@@ -261,5 +368,91 @@ impl<'a> MountCollector<'a> {
 
     fn into_mounts(self) -> Vec<VolumeMount> {
         self.mounts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MountCollector, add_dependency_mounts};
+    use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
+    use crate::pipeline::ArtifactManager;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn add_dependency_mounts_merges_directory_artifacts_for_same_target() {
+        let root = temp_path("dependency-merge");
+        let artifacts = ArtifactManager::new(root.clone());
+        let job = job("package-linux");
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).expect("create first");
+        fs::create_dir_all(&second).expect("create second");
+        fs::write(first.join("linux-debug.txt"), "debug").expect("write debug");
+        fs::write(second.join("linux-release.txt"), "release").expect("write release");
+
+        let mut collector = MountCollector::new(Path::new("/builds/opal"));
+        add_dependency_mounts(
+            &job,
+            &artifacts,
+            &mut collector,
+            vec![
+                (first, PathBuf::from("tests-temp/build")),
+                (second, PathBuf::from("tests-temp/build")),
+            ],
+        )
+        .expect("merge dependency mounts");
+
+        let mounts = collector.into_mounts();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].container,
+            PathBuf::from("/builds/opal/tests-temp/build")
+        );
+        assert!(mounts[0].host.join("linux-debug.txt").exists());
+        assert!(mounts[0].host.join("linux-release.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn job(name: &str) -> JobSpec {
+        JobSpec {
+            name: name.into(),
+            stage: "test".into(),
+            commands: vec!["echo ok".into()],
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        }
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
     }
 }
