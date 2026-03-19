@@ -1,8 +1,9 @@
+mod lifecycle;
 mod preparer;
 mod process;
+mod registry;
 
 use super::{orchestrator, paths};
-use crate::config::ResolvedRegistryAuth;
 use crate::display::{
     self, DisplayFormatter, collect_pipeline_plan, indent_block, print_pipeline_summary,
 };
@@ -20,16 +21,14 @@ use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::should_use_color;
 use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
-use crate::{EngineKind, ExecutorConfig, runtime};
+use crate::{ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::OffsetDateTime;
@@ -178,7 +177,7 @@ impl ExecutorCore {
             cancelled_jobs,
         };
 
-        core.ensure_registry_logins()?;
+        registry::ensure_registry_logins(&core)?;
 
         Ok(core)
     }
@@ -611,113 +610,16 @@ impl ExecutorCore {
         }
     }
 
-    fn ensure_registry_logins(&self) -> Result<()> {
-        let auths = self.config.settings.registry_auth_for(self.config.engine)?;
-        for auth in &auths {
-            match self.config.engine {
-                EngineKind::ContainerCli => self.container_registry_login(auth)?,
-                EngineKind::Docker | EngineKind::Orbstack => {
-                    self.standard_registry_login("docker", auth)?
-                }
-                EngineKind::Podman => self.standard_registry_login("podman", auth)?,
-                EngineKind::Nerdctl => self.standard_registry_login("nerdctl", auth)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn container_registry_login(&self, auth: &ResolvedRegistryAuth) -> Result<()> {
-        let mut command = Command::new("container");
-        command.arg("registry").arg("login");
-        if let Some(scheme) = auth.scheme.as_deref() {
-            command.arg("--scheme").arg(scheme);
-        }
-        command
-            .arg("--username")
-            .arg(&auth.username)
-            .arg("--password-stdin")
-            .arg(&auth.server)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        let mut child = command.spawn().with_context(|| {
-            format!("failed to run container registry login for {}", auth.server)
-        })?;
-        child
-            .stdin
-            .as_mut()
-            .context("missing stdin for container registry login")?
-            .write_all(auth.password.as_bytes())?;
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(anyhow!(
-                "container registry login for {} failed with status {:?}",
-                auth.server,
-                status.code()
-            ));
-        }
-        Ok(())
-    }
-
-    fn standard_registry_login(&self, binary: &str, auth: &ResolvedRegistryAuth) -> Result<()> {
-        let mut command = Command::new(binary);
-        command
-            .arg("login")
-            .arg("--username")
-            .arg(&auth.username)
-            .arg("--password-stdin")
-            .arg(&auth.server)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("failed to run {} login for {}", binary, auth.server))?;
-        child
-            .stdin
-            .as_mut()
-            .context("missing stdin for registry login")?
-            .write_all(auth.password.as_bytes())?;
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(anyhow!(
-                "{} login for {} failed with status {:?}",
-                binary,
-                auth.server,
-                status.code()
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
-        let mut command = self.force_remove_container_command(container_name);
-        if let Err(err) = command.status() {
-            warn!(
-                job = job_name,
-                container = container_name,
-                error = %err,
-                "failed to terminate container after timeout"
-            );
-        }
+        lifecycle::kill_container(self, job_name, container_name);
     }
 
     pub(crate) fn cleanup_finished_container(&self, container_name: &str) {
-        let mut command = self.force_remove_container_command(container_name);
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-        let _ = command.status();
+        lifecycle::cleanup_finished_container(self, container_name);
     }
 
     fn resolve_job_image(&self, job: &JobSpec) -> Result<String> {
         self.resolve_job_image_with_env(job, None)
-    }
-
-    fn force_remove_container_command(&self, container_name: &str) -> Command {
-        let binary = container_binary(self.config.engine);
-        let mut command = Command::new(binary);
-        let [subcommand, force_flag] = force_remove_args(self.config.engine);
-        command.arg(subcommand).arg(force_flag).arg(container_name);
-        command
     }
 
     fn resolve_job_image_with_env(
@@ -829,24 +731,6 @@ impl ExecutorCore {
     }
 }
 
-fn container_binary(engine: EngineKind) -> &'static str {
-    match engine {
-        EngineKind::ContainerCli => "container",
-        EngineKind::Docker | EngineKind::Orbstack => "docker",
-        EngineKind::Podman => "podman",
-        EngineKind::Nerdctl => "nerdctl",
-    }
-}
-
-fn force_remove_args(engine: EngineKind) -> [&'static str; 2] {
-    match engine {
-        EngineKind::ContainerCli => ["rm", "--force"],
-        EngineKind::Docker | EngineKind::Orbstack | EngineKind::Podman | EngineKind::Nerdctl => {
-            ["rm", "-f"]
-        }
-    }
-}
-
 fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
     match policy {
         CachePolicySpec::Pull => "pull",
@@ -857,18 +741,5 @@ fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::force_remove_args;
-    use crate::EngineKind;
-
-    #[test]
-    fn force_remove_args_match_engine_cli() {
-        assert_eq!(
-            force_remove_args(EngineKind::ContainerCli),
-            ["rm", "--force"]
-        );
-        assert_eq!(force_remove_args(EngineKind::Docker), ["rm", "-f"]);
-        assert_eq!(force_remove_args(EngineKind::Orbstack), ["rm", "-f"]);
-        assert_eq!(force_remove_args(EngineKind::Podman), ["rm", "-f"]);
-        assert_eq!(force_remove_args(EngineKind::Nerdctl), ["rm", "-f"]);
-    }
+    // ExecutorCore-specific unit coverage lives in child modules while phase 3 extraction continues.
 }
