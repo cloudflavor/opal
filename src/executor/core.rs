@@ -1,4 +1,5 @@
 mod history_store;
+mod launch;
 mod lifecycle;
 mod preparer;
 mod process;
@@ -7,15 +8,13 @@ mod runtime_state;
 mod stage_tracker;
 
 use super::{orchestrator, paths};
-use crate::display::{
-    self, DisplayFormatter, collect_pipeline_plan, indent_block, print_pipeline_summary,
-};
-use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
+use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
+use crate::env::{build_job_env, collect_env_vars, expand_env_list};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
-use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
+use crate::naming::generate_run_id;
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
     RuleContext,
@@ -25,17 +24,14 @@ use crate::secrets::SecretsStore;
 use crate::terminal::should_use_color;
 use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
 use crate::{ExecutorConfig, runtime};
-use anyhow::{Context, Result, anyhow};
-use sha2::{Digest, Sha256};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::env;
-use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
-const MAX_CONTAINER_NAME: usize = 63;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
@@ -356,56 +352,7 @@ impl ExecutorCore {
         planned: &ExecutableJob,
         ui: Option<&UiBridge>,
     ) -> Result<JobRunInfo> {
-        let attempt = self.runtime_state.next_attempt(&planned.instance.job.name);
-        let container_name =
-            self.job_container_name(&planned.instance.stage_name, &planned.instance.job, attempt);
-        if let Some(ui) = ui {
-            ui.job_started(&planned.instance.job.name);
-        }
-
-        if !self.config.enable_tui {
-            let display = self.display();
-            if self.stage_tracker.start(&planned.instance.stage_name) {
-                if self.stage_tracker.position(&planned.instance.stage_name) > 0 {
-                    display::print_blank_line();
-                }
-                display::print_line(display.stage_header(&planned.instance.stage_name));
-            }
-
-            let job = &planned.instance.job;
-            let job_label = display.bold_green("  job:");
-            let job_name = display.bold_white(job.name.as_str());
-            display::print_line(format!("{} {}", job_label, job_name));
-
-            if let Some(needs) = display.format_needs(job) {
-                let needs_label = display.bold_cyan("    needs:");
-                display::print_line(format!("{} {}", needs_label, needs));
-            }
-            if let Some(paths) = display.format_paths(&job.artifacts.paths) {
-                let artifacts_label = display.bold_cyan("    artifacts:");
-                display::print_line(format!("{} {}", artifacts_label, paths));
-            }
-
-            let job_image = self.resolve_job_image(job)?;
-            let image_label = display.bold_cyan("    image:");
-            display::print_line(format!("{} {}", image_label, job_image));
-
-            let container_label = display.bold_cyan("    container:");
-            display::print_line(format!("{} {}", container_label, container_name));
-
-            if self.verbose_scripts && !job.commands.is_empty() {
-                let script_label = display.bold_yellow("    script:");
-                display::print_line(format!(
-                    "{}\n{}",
-                    script_label,
-                    indent_block(&job.commands.join("\n"), "      │ ")
-                ));
-            }
-        }
-
-        self.runtime_state
-            .track_running_container(&planned.instance.job.name, &container_name);
-        Ok(JobRunInfo { container_name })
+        launch::log_job_start(self, planned, ui)
     }
 
     pub(crate) fn prepare_job_run(
@@ -475,65 +422,12 @@ impl ExecutorCore {
         lifecycle::cleanup_finished_container(self, container_name);
     }
 
-    fn resolve_job_image(&self, job: &JobSpec) -> Result<String> {
-        self.resolve_job_image_with_env(job, None)
-    }
-
     fn resolve_job_image_with_env(
         &self,
         job: &JobSpec,
         env_lookup: Option<&HashMap<String, String>>,
     ) -> Result<String> {
-        let template = if let Some(image) = job.image.as_ref() {
-            image.clone()
-        } else if let Some(image) = self.pipeline.defaults.image.as_ref() {
-            image.clone()
-        } else if let Some(image) = self.config.image.clone() {
-            image
-        } else {
-            return Err(anyhow!(
-                "job '{}' has no image (use --base-image or set image in pipeline/job)",
-                job.name
-            ));
-        };
-
-        if !template.contains('$') {
-            return Ok(template);
-        }
-
-        if let Some(map) = env_lookup {
-            Ok(expand_value(&template, map))
-        } else {
-            let owned_lookup: HashMap<String, String> = self.job_env(job).into_iter().collect();
-            Ok(expand_value(&template, &owned_lookup))
-        }
-    }
-
-    fn job_container_name(&self, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
-        let base = format!(
-            "opal-{}-{}-{}-{:02}",
-            self.run_id,
-            stage_name_slug(stage_name),
-            job_name_slug(&job.name),
-            attempt
-        );
-        if base.len() <= MAX_CONTAINER_NAME {
-            return base;
-        }
-        self.short_container_name(stage_name, job, attempt)
-    }
-
-    fn short_container_name(&self, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.run_id.as_bytes());
-        hasher.update(stage_name.as_bytes());
-        hasher.update(job.name.as_bytes());
-        let digest = hasher.finalize();
-        let mut short = String::with_capacity(16);
-        for byte in digest.iter().take(6) {
-            let _ = FmtWrite::write_fmt(&mut short, format_args!("{:02x}", byte));
-        }
-        format!("opal-{short}-{:02}", attempt)
+        launch::resolve_job_image_with_env(self, job, env_lookup)
     }
 
     fn job_env(&self, job: &JobSpec) -> Vec<(String, String)> {
