@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use structopt::StructOpt;
 
+pub mod compiler;
 pub mod config;
 pub mod display;
 pub mod engine;
