@@ -8,14 +8,14 @@ use crate::display::{
 };
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
+use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec, ServiceSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
-    self, ArtifactManager, CacheManager, ExternalArtifactsManager, HaltKind, JobEvent, JobPlan,
-    JobRunInfo, JobStatus, JobSummary, PlannedJob, RuleContext, RuleWhen, StageState, VolumeMount,
-    mounts,
+    self, ArtifactManager, CacheManager, ExternalArtifactsManager, HaltKind, JobEvent, JobRunInfo,
+    JobStatus, JobSummary, RuleContext, RuleWhen, StageState, VolumeMount, mounts,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -213,8 +213,8 @@ impl ExecutorCore {
                 .iter()
                 .filter_map(|name| plan.nodes.get(name))
                 .map(|planned| UiJobInfo {
-                    name: planned.job.name.clone(),
-                    stage: planned.stage_name.clone(),
+                    name: planned.instance.job.name.clone(),
+                    stage: planned.instance.stage_name.clone(),
                     log_path: planned.log_path.clone(),
                     log_hash: planned.log_hash.clone(),
                 })
@@ -269,10 +269,10 @@ impl ExecutorCore {
         result
     }
 
-    fn plan_jobs(&self) -> Result<JobPlan> {
+    fn plan_jobs(&self) -> Result<ExecutionPlan> {
         let ctx = RuleContext::new(&self.config.workdir);
         if !pipeline::rules::filters_allow(&self.pipeline.filters, &ctx) {
-            return Ok(JobPlan {
+            return Ok(ExecutionPlan {
                 ordered: Vec::new(),
                 nodes: HashMap::new(),
                 dependents: HashMap::new(),
@@ -283,7 +283,7 @@ impl ExecutorCore {
         if let Some(workflow) = &self.pipeline.workflow
             && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
         {
-            return Ok(JobPlan {
+            return Ok(ExecutionPlan {
                 ordered: Vec::new(),
                 nodes: HashMap::new(),
                 dependents: HashMap::new(),
@@ -294,32 +294,33 @@ impl ExecutorCore {
         pipeline::build_job_plan(&self.pipeline, Some(&ctx), |job| self.job_log_info(job))
     }
 
-    fn collect_job_resources(&self, plan: &JobPlan) -> HashMap<String, JobResourceInfo> {
+    fn collect_job_resources(&self, plan: &ExecutionPlan) -> HashMap<String, JobResourceInfo> {
         plan.nodes
             .values()
             .map(|planned| {
-                let artifact_dir = if planned.job.artifacts.paths.is_empty() {
+                let artifact_dir = if planned.instance.job.artifacts.paths.is_empty() {
                     None
                 } else {
                     Some(
                         self.artifacts
-                            .job_artifacts_root(&planned.job.name)
+                            .job_artifacts_root(&planned.instance.job.name)
                             .display()
                             .to_string(),
                     )
                 };
                 let artifact_paths = planned
+                    .instance
                     .job
                     .artifacts
                     .paths
                     .iter()
                     .map(|path| path.display().to_string())
                     .collect();
-                let env_vars = self.job_env(&planned.job);
+                let env_vars = self.job_env(&planned.instance.job);
                 let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
                 let caches = self
                     .cache
-                    .describe_entries(&planned.job.cache, &cache_env)
+                    .describe_entries(&planned.instance.job.cache, &cache_env)
                     .into_iter()
                     .map(|entry| HistoryCache {
                         key: entry.key,
@@ -333,7 +334,7 @@ impl ExecutorCore {
                     })
                     .collect();
                 (
-                    planned.job.name.clone(),
+                    planned.instance.job.name.clone(),
                     JobResourceInfo {
                         artifact_dir,
                         artifact_paths,
@@ -364,7 +365,7 @@ impl ExecutorCore {
 
     async fn execute_plan(
         &self,
-        plan: Arc<JobPlan>,
+        plan: Arc<ExecutionPlan>,
         ui: Option<Arc<UiBridge>>,
         mut commands: Option<&mut mpsc::UnboundedReceiver<UiCommand>>,
     ) -> (Vec<JobSummary>, Result<()>) {
@@ -376,7 +377,7 @@ impl ExecutorCore {
         let mut remaining: HashMap<String, usize> = plan
             .nodes
             .iter()
-            .map(|(name, job)| (name.clone(), job.dependencies.len()))
+            .map(|(name, job)| (name.clone(), job.instance.dependencies.len()))
             .collect();
         let mut ready: VecDeque<String> = VecDeque::new();
         let mut waiting_on_failure: VecDeque<String> = VecDeque::new();
@@ -407,7 +408,7 @@ impl ExecutorCore {
             let Some(planned) = plan.nodes.get(job_name) else {
                 return;
             };
-            match planned.rule.when {
+            match planned.instance.rule.when {
                 RuleWhen::OnFailure => {
                     if pipeline_failed_flag {
                         ready_queue.push_back(job_name.to_string());
@@ -419,7 +420,7 @@ impl ExecutorCore {
                     if pipeline_failed_flag {
                         return;
                     }
-                    if let Some(delay) = planned.rule.start_in {
+                    if let Some(delay) = planned.instance.rule.start_in {
                         if delayed_set.insert(job_name.to_string()) {
                             let tx_clone = delay_tx.clone();
                             let name = job_name.to_string();
@@ -433,7 +434,7 @@ impl ExecutorCore {
                     }
                 }
                 RuleWhen::Manual | RuleWhen::OnSuccess => {
-                    if pipeline_failed_flag && planned.rule.when.requires_success() {
+                    if pipeline_failed_flag && planned.instance.rule.when.requires_success() {
                         return;
                     }
                     ready_queue.push_back(job_name.to_string());
@@ -466,11 +467,13 @@ impl ExecutorCore {
                     Some(job) => job,
                     None => continue,
                 };
-                if pipeline_failed && planned.rule.when.requires_success() {
+                if pipeline_failed && planned.instance.rule.when.requires_success() {
                     continue;
                 }
 
-                if matches!(planned.rule.when, RuleWhen::Manual) && !planned.rule.manual_auto_run {
+                if matches!(planned.instance.rule.when, RuleWhen::Manual)
+                    && !planned.instance.rule.manual_auto_run
+                {
                     if manual_input_available {
                         if manual_waiting.insert(name.clone())
                             && let Some(ui_ref) = ui.as_deref()
@@ -479,27 +482,28 @@ impl ExecutorCore {
                         }
                     } else {
                         let reason = planned
+                            .instance
                             .rule
                             .manual_reason
                             .clone()
                             .unwrap_or_else(|| "manual job not run".to_string());
                         if let Some(ui_ref) = ui.as_deref() {
                             ui_ref.job_finished(
-                                &planned.job.name,
+                                &planned.instance.job.name,
                                 UiJobStatus::Skipped,
                                 0.0,
                                 Some(reason.clone()),
                             );
                         }
                         summaries.push(JobSummary {
-                            name: planned.job.name.clone(),
-                            stage_name: planned.stage_name.clone(),
+                            name: planned.instance.job.name.clone(),
+                            stage_name: planned.instance.stage_name.clone(),
                             duration: 0.0,
                             status: JobStatus::Skipped(reason.clone()),
                             log_path: None,
                             log_hash: planned.log_hash.clone(),
-                            allow_failure: planned.rule.allow_failure,
-                            environment: planned.job.environment.clone(),
+                            allow_failure: planned.instance.rule.allow_failure,
+                            environment: planned.instance.job.environment.clone(),
                         });
                         completed += 1;
                         if let Some(children) = plan.dependents.get(&name) {
@@ -524,7 +528,7 @@ impl ExecutorCore {
                     continue;
                 }
 
-                if let Some(group) = &planned.resource_group {
+                if let Some(group) = &planned.instance.resource_group {
                     if resource_locks.get(group).copied().unwrap_or(false) {
                         resource_waiting
                             .entry(group.clone())
@@ -542,14 +546,14 @@ impl ExecutorCore {
                     Ok(info) => info,
                     Err(err) => {
                         let summary = JobSummary {
-                            name: planned.job.name.clone(),
-                            stage_name: planned.stage_name.clone(),
+                            name: planned.instance.job.name.clone(),
+                            stage_name: planned.instance.stage_name.clone(),
                             duration: 0.0,
                             status: JobStatus::Failed(err.to_string()),
                             log_path: Some(planned.log_path.clone()),
                             log_hash: planned.log_hash.clone(),
                             allow_failure: false,
-                            environment: planned.job.environment.clone(),
+                            environment: planned.instance.job.environment.clone(),
                         };
                         summaries.push(summary);
                         return (summaries, Err(err));
@@ -645,27 +649,28 @@ impl ExecutorCore {
                 for name in pending {
                     if let Some(planned) = plan.nodes.get(&name) {
                         let reason = planned
+                            .instance
                             .rule
                             .manual_reason
                             .clone()
                             .unwrap_or_else(|| "manual job not run".to_string());
                         if let Some(ui_ref) = ui.as_deref() {
                             ui_ref.job_finished(
-                                &planned.job.name,
+                                &planned.instance.job.name,
                                 UiJobStatus::Skipped,
                                 0.0,
                                 Some(reason.clone()),
                             );
                         }
                         summaries.push(JobSummary {
-                            name: planned.job.name.clone(),
-                            stage_name: planned.stage_name.clone(),
+                            name: planned.instance.job.name.clone(),
+                            stage_name: planned.instance.stage_name.clone(),
                             duration: 0.0,
                             status: JobStatus::Skipped(reason),
                             log_path: None,
                             log_hash: planned.log_hash.clone(),
-                            allow_failure: planned.rule.allow_failure,
-                            environment: planned.job.environment.clone(),
+                            allow_failure: planned.instance.rule.allow_failure,
+                            environment: planned.instance.job.environment.clone(),
                         });
                         completed += 1;
                         if let Some(children) = plan.dependents.get(&name) {
@@ -710,7 +715,7 @@ impl ExecutorCore {
                     delayed_pending.remove(&name);
                     if pipeline_failed
                         && let Some(planned) = plan.nodes.get(&name)
-                        && planned.rule.when.requires_success()
+                        && planned.instance.rule.when.requires_success()
                     {
                         continue;
                     }
@@ -779,8 +784,8 @@ impl ExecutorCore {
                                 status: JobStatus::Success,
                                 log_path: event.log_path.clone(),
                                 log_hash: event.log_hash.clone(),
-                                allow_failure: planned.rule.allow_failure,
-                                environment: planned.job.environment.clone(),
+                                allow_failure: planned.instance.rule.allow_failure,
+                                environment: planned.instance.job.environment.clone(),
                             });
                             completed += 1;
                         }
@@ -800,7 +805,7 @@ impl ExecutorCore {
                                     log_path: event.log_path.clone(),
                                     log_hash: event.log_hash.clone(),
                                     allow_failure: true,
-                                    environment: planned.job.environment.clone(),
+                                    environment: planned.instance.job.environment.clone(),
                                 });
                                 completed += 1;
                                 continue;
@@ -808,7 +813,7 @@ impl ExecutorCore {
                             let err_msg = err.to_string();
                             let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
                             let retries_used = attempts_so_far.saturating_sub(1);
-                            if retries_used < planned.retry.max {
+                            if retries_used < planned.instance.retry.max {
                                 release_resource_lock(
                                     planned,
                                     &mut ready,
@@ -824,7 +829,7 @@ impl ExecutorCore {
                                 &mut resource_locks,
                                 &mut resource_waiting,
                             );
-                            if !planned.rule.allow_failure && !pipeline_failed {
+                            if !planned.instance.rule.allow_failure && !pipeline_failed {
                                 pipeline_failed = true;
                                 halt_kind = HaltKind::JobFailure;
                                 if halt_error.is_none() {
@@ -842,8 +847,8 @@ impl ExecutorCore {
                                 status: JobStatus::Failed(err_msg),
                                 log_path: event.log_path.clone(),
                                 log_hash: event.log_hash.clone(),
-                                allow_failure: planned.rule.allow_failure,
-                                environment: planned.job.environment.clone(),
+                                allow_failure: planned.instance.rule.allow_failure,
+                                environment: planned.instance.job.environment.clone(),
                             });
                             completed += 1;
                         }
@@ -873,7 +878,7 @@ impl ExecutorCore {
             };
             let reason = if let Some(reason) = skip_reason.clone() {
                 Some(reason)
-            } else if planned.rule.when == RuleWhen::OnFailure {
+            } else if planned.instance.rule.when == RuleWhen::OnFailure {
                 Some("skipped (rules: on_failure and pipeline succeeded)".to_string())
             } else {
                 None
@@ -885,13 +890,13 @@ impl ExecutorCore {
                 }
                 summaries.push(JobSummary {
                     name: job_name.clone(),
-                    stage_name: planned.stage_name.clone(),
+                    stage_name: planned.instance.stage_name.clone(),
                     duration: 0.0,
                     status: JobStatus::Skipped(reason.clone()),
                     log_path: Some(planned.log_path.clone()),
                     log_hash: planned.log_hash.clone(),
-                    allow_failure: planned.rule.allow_failure,
-                    environment: planned.job.environment.clone(),
+                    allow_failure: planned.instance.rule.allow_failure,
+                    environment: planned.instance.job.environment.clone(),
                 });
                 recorded.insert(job_name.clone());
             }
@@ -903,7 +908,7 @@ impl ExecutorCore {
 
     async fn handle_restart_commands(
         &self,
-        plan: Arc<JobPlan>,
+        plan: Arc<ExecutionPlan>,
         ui: Option<Arc<UiBridge>>,
         commands: &mut mpsc::UnboundedReceiver<UiCommand>,
         summaries: &mut Vec<JobSummary>,
@@ -923,14 +928,14 @@ impl ExecutorCore {
                         Ok(info) => info,
                         Err(err) => {
                             let summary = JobSummary {
-                                name: planned.job.name.clone(),
-                                stage_name: planned.stage_name.clone(),
+                                name: planned.instance.job.name.clone(),
+                                stage_name: planned.instance.stage_name.clone(),
                                 duration: 0.0,
                                 status: JobStatus::Failed(err.to_string()),
                                 log_path: Some(planned.log_path.clone()),
                                 log_hash: planned.log_hash.clone(),
                                 allow_failure: false,
-                                environment: planned.job.environment.clone(),
+                                environment: planned.instance.job.environment.clone(),
                             };
                             summaries.push(summary);
                             return Err(err);
@@ -957,7 +962,7 @@ impl ExecutorCore {
 
     fn update_summaries_from_event(
         &self,
-        plan: &JobPlan,
+        plan: &ExecutionPlan,
         event: JobEvent,
         summaries: &mut Vec<JobSummary>,
     ) {
@@ -974,12 +979,12 @@ impl ExecutorCore {
         let allow_failure = plan
             .nodes
             .get(&name)
-            .map(|planned| planned.rule.allow_failure)
+            .map(|planned| planned.instance.rule.allow_failure)
             .unwrap_or(false);
         let environment = plan
             .nodes
             .get(&name)
-            .and_then(|planned| planned.job.environment.clone());
+            .and_then(|planned| planned.instance.job.environment.clone());
 
         let status = match result {
             Ok(_) => JobStatus::Success,
@@ -1082,23 +1087,24 @@ impl ExecutorCore {
         }
     }
 
-    fn log_job_start(&self, planned: &PlannedJob, ui: Option<&UiBridge>) -> Result<JobRunInfo> {
-        let attempt = self.next_attempt(&planned.job.name);
-        let container_name = self.job_container_name(&planned.stage_name, &planned.job, attempt);
+    fn log_job_start(&self, planned: &ExecutableJob, ui: Option<&UiBridge>) -> Result<JobRunInfo> {
+        let attempt = self.next_attempt(&planned.instance.job.name);
+        let container_name =
+            self.job_container_name(&planned.instance.stage_name, &planned.instance.job, attempt);
         if let Some(ui) = ui {
-            ui.job_started(&planned.job.name);
+            ui.job_started(&planned.instance.job.name);
         }
 
         if !self.config.enable_tui {
             let display = self.display();
-            if self.stage_started(&planned.stage_name) {
-                if self.stage_position(&planned.stage_name) > 0 {
+            if self.stage_started(&planned.instance.stage_name) {
+                if self.stage_position(&planned.instance.stage_name) > 0 {
                     display::print_blank_line();
                 }
-                display::print_line(display.stage_header(&planned.stage_name));
+                display::print_line(display.stage_header(&planned.instance.stage_name));
             }
 
-            let job = &planned.job;
+            let job = &planned.instance.job;
             let job_label = display.bold_green("  job:");
             let job_name = display.bold_white(job.name.as_str());
             display::print_line(format!("{} {}", job_label, job_name));
@@ -1129,24 +1135,24 @@ impl ExecutorCore {
             }
         }
 
-        self.track_running_container(&planned.job.name, &container_name);
+        self.track_running_container(&planned.instance.job.name, &container_name);
         Ok(JobRunInfo { container_name })
     }
 
     pub(crate) fn run_planned_job(
         &self,
-        plan: Arc<JobPlan>,
-        planned: PlannedJob,
+        plan: Arc<ExecutionPlan>,
+        planned: ExecutableJob,
         run_info: JobRunInfo,
         ui: Option<Arc<UiBridge>>,
     ) -> JobEvent {
-        let PlannedJob {
-            job,
-            stage_name,
+        let ExecutableJob {
+            instance,
             log_path,
             log_hash,
-            ..
         } = planned;
+        let job = instance.job;
+        let stage_name = instance.stage_name;
         let job_name = job.name.clone();
         let job_start = Instant::now();
         let ui_ref = ui.as_deref();
@@ -1735,12 +1741,12 @@ impl ExecutorCore {
 }
 
 fn release_resource_lock(
-    planned: &PlannedJob,
+    planned: &ExecutableJob,
     ready: &mut VecDeque<String>,
     resource_locks: &mut HashMap<String, bool>,
     resource_waiting: &mut HashMap<String, VecDeque<String>>,
 ) {
-    if let Some(group) = &planned.resource_group {
+    if let Some(group) = &planned.instance.resource_group {
         resource_locks.insert(group.clone(), false);
         if let Some(queue) = resource_waiting.get_mut(group)
             && let Some(next) = queue.pop_front()

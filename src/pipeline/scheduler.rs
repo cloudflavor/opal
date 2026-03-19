@@ -1,3 +1,4 @@
+use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::executor::core::ExecutorCore;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::anyhow;
@@ -7,22 +8,22 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task;
 use tokio::time;
 
-use super::planner::{JobEvent, JobPlan, JobRunInfo, PlannedJob};
+use super::planner::{JobEvent, JobRunInfo};
 
 pub fn spawn_job(
     exec: Arc<ExecutorCore>,
-    plan: Arc<JobPlan>,
-    planned: PlannedJob,
+    plan: Arc<ExecutionPlan>,
+    planned: ExecutableJob,
     run_info: JobRunInfo,
     semaphore: Arc<Semaphore>,
     tx: mpsc::UnboundedSender<JobEvent>,
     ui: Option<Arc<UiBridge>>,
 ) {
-    let job_name = planned.job.name.clone();
-    let stage_name = planned.stage_name.clone();
+    let job_name = planned.instance.job.name.clone();
+    let stage_name = planned.instance.stage_name.clone();
     let log_path = planned.log_path.clone();
     let log_hash = planned.log_hash.clone();
-    let timeout = planned.timeout;
+    let timeout = planned.instance.timeout;
     task::spawn(async move {
         let permit = match semaphore.acquire_owned().await {
             Ok(permit) => permit,

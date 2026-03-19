@@ -1,8 +1,9 @@
+use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::model::{
     CachePolicySpec, CacheSpec, DependencySourceSpec, EnvironmentActionSpec, JobDependencySpec,
     JobSpec,
 };
-use crate::pipeline::{JobPlan, JobStatus, JobSummary, PlannedJob, RuleWhen, VolumeMount};
+use crate::pipeline::{JobStatus, JobSummary, RuleWhen, VolumeMount};
 use ascii_tree::{Tree, write_tree};
 use humantime::format_duration;
 use owo_colors::OwoColorize;
@@ -157,7 +158,7 @@ pub fn print_prefixed_line(prefix: &str, line: &str) {
 
 pub fn print_pipeline_summary<F>(
     display: &DisplayFormatter,
-    plan: &JobPlan,
+    plan: &ExecutionPlan,
     summaries: &[JobSummary],
     session_dir: &Path,
     mut emit_line: F,
@@ -247,7 +248,7 @@ pub fn print_pipeline_summary<F>(
     emit_line(format!("  session data: {}", session_dir.display()));
 }
 
-pub fn print_pipeline_plan<F>(display: &DisplayFormatter, plan: &JobPlan, mut emit_line: F)
+pub fn print_pipeline_plan<F>(display: &DisplayFormatter, plan: &ExecutionPlan, mut emit_line: F)
 where
     F: FnMut(String),
 {
@@ -271,18 +272,18 @@ where
         let Some(planned) = plan.nodes.get(job_name) else {
             continue;
         };
-        if current_stage.as_deref() != Some(planned.stage_name.as_str()) {
-            current_stage = Some(planned.stage_name.clone());
+        if current_stage.as_deref() != Some(planned.instance.stage_name.as_str()) {
+            current_stage = Some(planned.instance.stage_name.clone());
             emit(String::new());
             let stage_label = display.bold_cyan("stage:");
-            let stage_name = display.bold_magenta(planned.stage_name.as_str());
+            let stage_name = display.bold_magenta(planned.instance.stage_name.as_str());
             emit(format!("{stage_label} {stage_name}"));
         }
         emit_plan_job(display, plan, planned, &mut emit);
     }
 }
 
-pub fn collect_pipeline_plan(display: &DisplayFormatter, plan: &JobPlan) -> Vec<String> {
+pub fn collect_pipeline_plan(display: &DisplayFormatter, plan: &ExecutionPlan) -> Vec<String> {
     let mut lines = Vec::new();
     print_pipeline_plan(display, plan, |line| lines.push(line));
     while matches!(lines.first(), Some(existing) if existing.trim().is_empty()) {
@@ -293,14 +294,14 @@ pub fn collect_pipeline_plan(display: &DisplayFormatter, plan: &JobPlan) -> Vec<
 
 fn emit_plan_job<F>(
     display: &DisplayFormatter,
-    plan: &JobPlan,
-    planned: &PlannedJob,
+    plan: &ExecutionPlan,
+    planned: &ExecutableJob,
     emit_line: &mut F,
 ) where
     F: FnMut(String),
 {
     let job_label = display.bold_green("  job:");
-    let job_name = display.bold_white(planned.job.name.as_str());
+    let job_name = display.bold_white(planned.instance.job.name.as_str());
     emit_line(format!("{job_label} {job_name}"));
 
     if let Some(meta) = plan_job_meta(planned) {
@@ -313,21 +314,26 @@ fn emit_plan_job<F>(
         &plan_dependency_lines(planned),
         emit_line,
     );
-    emit_section(display, "needs", &plan_needs_lines(&planned.job), emit_line);
+    emit_section(
+        display,
+        "needs",
+        &plan_needs_lines(&planned.instance.job),
+        emit_line,
+    );
     emit_section(
         display,
         "artifact downloads",
-        &plan_dependencies_list(&planned.job),
+        &plan_dependencies_list(&planned.instance.job),
         emit_line,
     );
 
-    if let Some(paths) = display.format_paths(&planned.job.artifacts.paths) {
+    if let Some(paths) = display.format_paths(&planned.instance.job.artifacts.paths) {
         emit_line(format!("{} {}", display.bold_cyan("    artifacts:"), paths));
     }
     emit_section(
         display,
         "caches",
-        &plan_cache_lines(&planned.job),
+        &plan_cache_lines(&planned.instance.job),
         emit_line,
     );
 
@@ -348,7 +354,7 @@ fn emit_plan_job<F>(
         ));
     }
 
-    if let Some(timeout) = planned.timeout {
+    if let Some(timeout) = planned.instance.timeout {
         emit_line(format!(
             "{} {}",
             display.bold_cyan("    timeout:"),
@@ -356,7 +362,7 @@ fn emit_plan_job<F>(
         ));
     }
 
-    if let Some(group) = &planned.resource_group {
+    if let Some(group) = &planned.instance.resource_group {
         emit_line(format!(
             "{} {}",
             display.bold_cyan("    resource group:"),
@@ -365,31 +371,34 @@ fn emit_plan_job<F>(
     }
 }
 
-fn plan_job_meta(planned: &PlannedJob) -> Option<String> {
+fn plan_job_meta(planned: &ExecutableJob) -> Option<String> {
     let mut parts = Vec::new();
-    parts.push(format!("when {}", describe_rule_when(planned.rule.when)));
-    if planned.rule.allow_failure {
+    parts.push(format!(
+        "when {}",
+        describe_rule_when(planned.instance.rule.when)
+    ));
+    if planned.instance.rule.allow_failure {
         parts.push("allow failure".to_string());
     }
-    if let Some(delay) = planned.rule.start_in {
+    if let Some(delay) = planned.instance.rule.start_in {
         parts.push(format!("start after {}", format_duration(delay)));
     }
-    if planned.rule.when == RuleWhen::Manual {
-        if planned.rule.manual_auto_run {
+    if planned.instance.rule.when == RuleWhen::Manual {
+        if planned.instance.rule.manual_auto_run {
             parts.push("auto-run manual".to_string());
         } else {
             parts.push("requires trigger".to_string());
         }
-        if let Some(reason) = &planned.rule.manual_reason
+        if let Some(reason) = &planned.instance.rule.manual_reason
             && !reason.is_empty()
         {
             parts.push(format!("reason: {}", reason));
         }
     }
-    if planned.job.retry.max > 0 {
-        parts.push(format!("retries {}", planned.job.retry.max));
+    if planned.instance.job.retry.max > 0 {
+        parts.push(format!("retries {}", planned.instance.job.retry.max));
     }
-    if planned.job.interruptible {
+    if planned.instance.job.interruptible {
         parts.push("interruptible".to_string());
     }
     if parts.is_empty() {
@@ -410,8 +419,8 @@ fn describe_rule_when(when: RuleWhen) -> &'static str {
     }
 }
 
-fn format_environment(planned: &PlannedJob) -> Option<String> {
-    let env = planned.job.environment.as_ref()?;
+fn format_environment(planned: &ExecutableJob) -> Option<String> {
+    let env = planned.instance.job.environment.as_ref()?;
     let mut parts = Vec::new();
     parts.push(env.name.clone());
     if let Some(url) = &env.url {
@@ -433,17 +442,19 @@ fn format_environment(planned: &PlannedJob) -> Option<String> {
     Some(parts.join(" – "))
 }
 
-fn plan_dependency_lines(planned: &PlannedJob) -> Vec<String> {
-    if planned.dependencies.is_empty() {
+fn plan_dependency_lines(planned: &ExecutableJob) -> Vec<String> {
+    if planned.instance.dependencies.is_empty() {
         return vec!["stage ordering".to_string()];
     }
     let needs_map = planned
+        .instance
         .job
         .needs
         .iter()
         .map(|need| (need.job.clone(), need.needs_artifacts))
         .collect::<HashMap<String, bool>>();
     planned
+        .instance
         .dependencies
         .iter()
         .map(|name| {
@@ -552,14 +563,17 @@ where
     }
 }
 
-fn plan_relationship_tree_lines(plan: &JobPlan, planned: &PlannedJob) -> Option<Vec<String>> {
+fn plan_relationship_tree_lines(
+    plan: &ExecutionPlan,
+    planned: &ExecutableJob,
+) -> Option<Vec<String>> {
     let tree = build_relationship_tree(plan, planned)?;
     let mut buffer = String::new();
     write_tree(&mut buffer, &tree).ok()?;
     Some(buffer.lines().map(|line| line.to_string()).collect())
 }
 
-fn build_relationship_tree(plan: &JobPlan, planned: &PlannedJob) -> Option<Tree> {
+fn build_relationship_tree(plan: &ExecutionPlan, planned: &ExecutableJob) -> Option<Tree> {
     let mut sections = Vec::new();
     let dependency_nodes = dependency_tree_nodes(plan, planned);
     if !dependency_nodes.is_empty() {
@@ -575,12 +589,12 @@ fn build_relationship_tree(plan: &JobPlan, planned: &PlannedJob) -> Option<Tree>
         sections.push(Tree::Node("needs".to_string(), need_nodes));
     }
 
-    let artifact_nodes = artifact_tree_nodes(&planned.job);
+    let artifact_nodes = artifact_tree_nodes(&planned.instance.job);
     if !artifact_nodes.is_empty() {
         sections.push(Tree::Node("artifacts".to_string(), artifact_nodes));
     }
 
-    let cache_nodes = cache_tree_nodes(&planned.job);
+    let cache_nodes = cache_tree_nodes(&planned.instance.job);
     if !cache_nodes.is_empty() {
         sections.push(Tree::Node("caches".to_string(), cache_nodes));
     }
@@ -589,23 +603,33 @@ fn build_relationship_tree(plan: &JobPlan, planned: &PlannedJob) -> Option<Tree>
         None
     } else {
         Some(Tree::Node(
-            format!("{} relationships", planned.job.name),
+            format!("{} relationships", planned.instance.job.name),
             sections,
         ))
     }
 }
 
-fn dependency_tree_nodes(plan: &JobPlan, planned: &PlannedJob) -> Vec<Tree> {
+fn dependency_tree_nodes(plan: &ExecutionPlan, planned: &ExecutableJob) -> Vec<Tree> {
     planned
+        .instance
         .dependencies
         .iter()
         .map(|dep| build_dependency_tree_node(plan, planned, dep))
         .collect()
 }
 
-fn build_dependency_tree_node(plan: &JobPlan, planned: &PlannedJob, dep_name: &str) -> Tree {
+fn build_dependency_tree_node(
+    plan: &ExecutionPlan,
+    planned: &ExecutableJob,
+    dep_name: &str,
+) -> Tree {
     let mut children = Vec::new();
-    let need = planned.job.needs.iter().find(|need| need.job == dep_name);
+    let need = planned
+        .instance
+        .job
+        .needs
+        .iter()
+        .find(|need| need.job == dep_name);
     if let Some(need) = need {
         children.push(tree_leaf(format!(
             "from need ({})",
@@ -631,11 +655,12 @@ fn build_dependency_tree_node(plan: &JobPlan, planned: &PlannedJob, dep_name: &s
     Tree::Node(dep_name.to_string(), children)
 }
 
-fn dependency_mounts(plan: &JobPlan, dep_name: &str) -> Vec<String> {
+fn dependency_mounts(plan: &ExecutionPlan, dep_name: &str) -> Vec<String> {
     plan.nodes
         .get(dep_name)
         .map(|dep| {
-            dep.job
+            dep.instance
+                .job
                 .artifacts
                 .paths
                 .iter()
@@ -645,8 +670,9 @@ fn dependency_mounts(plan: &JobPlan, dep_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn need_tree_nodes(plan: &JobPlan, planned: &PlannedJob) -> Vec<Tree> {
+fn need_tree_nodes(plan: &ExecutionPlan, planned: &ExecutableJob) -> Vec<Tree> {
     planned
+        .instance
         .job
         .needs
         .iter()
@@ -654,7 +680,11 @@ fn need_tree_nodes(plan: &JobPlan, planned: &PlannedJob) -> Vec<Tree> {
         .collect()
 }
 
-fn build_need_tree_node(plan: &JobPlan, planned: &PlannedJob, need: &JobDependencySpec) -> Tree {
+fn build_need_tree_node(
+    plan: &ExecutionPlan,
+    planned: &ExecutableJob,
+    need: &JobDependencySpec,
+) -> Tree {
     let mut children = Vec::new();
     children.push(tree_leaf(format!("source: {}", describe_need_source(need))));
     children.push(tree_leaf(format!(
@@ -683,7 +713,11 @@ fn build_need_tree_node(plan: &JobPlan, planned: &PlannedJob, need: &JobDependen
         children.push(Tree::Node("matrix filters".to_string(), filter_nodes));
     }
 
-    let downloads = planned.dependencies.iter().any(|dep| dep == &need.job);
+    let downloads = planned
+        .instance
+        .dependencies
+        .iter()
+        .any(|dep| dep == &need.job);
     children.push(tree_leaf(format!(
         "downloaded via dependencies: {}",
         yes_no(downloads)

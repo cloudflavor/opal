@@ -1,7 +1,7 @@
+use crate::execution_plan::ExecutionPlan;
 use crate::model::{DependencySourceSpec, JobSpec, PipelineSpec};
 use crate::pipeline::{
     ArtifactManager, CacheManager, CacheMountSpec, artifacts::ExternalArtifactsManager,
-    planner::JobPlan,
 };
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub struct VolumeMount {
 
 pub struct VolumeMountContext<'a> {
     pub job: &'a JobSpec,
-    pub plan: &'a JobPlan,
+    pub plan: &'a ExecutionPlan,
     pub pipeline: &'a PipelineSpec,
     pub artifacts: &'a ArtifactManager,
     pub cache: &'a CacheManager,
@@ -149,10 +149,11 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
 
     for dep_name in &job.dependencies {
         if let Some(dep_planned) = plan.nodes.get(dep_name) {
-            for relative in &dep_planned.job.artifacts.paths {
-                let host = artifacts.job_artifact_host_path(&dep_planned.job.name, relative);
+            for relative in &dep_planned.instance.job.artifacts.paths {
+                let host =
+                    artifacts.job_artifact_host_path(&dep_planned.instance.job.name, relative);
                 if !host.exists() {
-                    warn!(job = dep_planned.job.name, path = %relative.display(), "artifact missing");
+                    warn!(job = dep_planned.instance.job.name, path = %relative.display(), "artifact missing");
                     continue;
                 }
                 let container = collector.container_path(relative);
