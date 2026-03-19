@@ -1,4 +1,6 @@
 pub mod core;
+pub mod job_runner;
+pub mod orchestrator;
 pub mod paths;
 pub mod script;
 pub mod services;

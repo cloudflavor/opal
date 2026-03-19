@@ -1,5 +1,5 @@
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
-use crate::executor::core::ExecutorCore;
+use crate::executor::{core::ExecutorCore, job_runner};
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::anyhow;
 use humantime;
@@ -56,7 +56,13 @@ pub fn spawn_job(
         let kill_info = run_info.container_name.clone();
         let ui_clone = ui.clone();
         let blocking = task::spawn_blocking(move || {
-            exec_clone.run_planned_job(plan_clone, planned_job, run_info, ui_clone)
+            job_runner::run_planned_job(
+                exec_clone.as_ref(),
+                plan_clone,
+                planned_job,
+                run_info,
+                ui_clone,
+            )
         });
         let event = if let Some(limit) = timeout {
             match time::timeout(limit, blocking).await {

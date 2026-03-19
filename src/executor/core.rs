@@ -1,6 +1,6 @@
 use super::{
-    ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor, paths,
-    script, services::ServiceRuntime,
+    ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
+    job_runner::PreparedJobRun, orchestrator, paths, script, services::ServiceRuntime,
 };
 use crate::config::ResolvedRegistryAuth;
 use crate::display::{
@@ -14,17 +14,17 @@ use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec, ServiceSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
-    self, ArtifactManager, CacheManager, ExternalArtifactsManager, HaltKind, JobEvent, JobRunInfo,
-    JobStatus, JobSummary, RuleContext, RuleWhen, StageState, VolumeMount, mounts,
+    self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobStatus,
+    JobSummary, RuleContext, StageState, VolumeMount, mounts,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::{should_use_color, stream_lines};
-use crate::ui::{UiBridge, UiCommand, UiHandle, UiJobInfo, UiJobResources, UiJobStatus};
+use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
 use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
@@ -34,10 +34,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
-use tokio::{
-    sync::{Semaphore, mpsc},
-    task, time as tokio_time,
-};
 use tracing::warn;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
@@ -235,17 +231,23 @@ impl ExecutorCore {
             .and_then(|handle| handle.command_receiver());
         let ui_bridge = ui_handle.as_ref().map(|handle| Arc::new(handle.bridge()));
 
-        let (mut summaries, result) = self
-            .execute_plan(plan.clone(), ui_bridge.clone(), command_rx.as_mut())
-            .await;
+        let (mut summaries, result) =
+            orchestrator::execute_plan(self, plan.clone(), ui_bridge.clone(), command_rx.as_mut())
+                .await;
 
         if let Some(handle) = &ui_handle {
             handle.pipeline_finished();
         }
 
         if let Some(commands) = command_rx.as_mut() {
-            self.handle_restart_commands(plan.clone(), ui_bridge.clone(), commands, &mut summaries)
-                .await?;
+            orchestrator::handle_restart_commands(
+                self,
+                plan.clone(),
+                ui_bridge.clone(),
+                commands,
+                &mut summaries,
+            )
+            .await?;
         }
 
         let history_entry = self.record_pipeline_history(&summaries, &resource_map);
@@ -363,653 +365,6 @@ impl ExecutorCore {
             .collect()
     }
 
-    async fn execute_plan(
-        &self,
-        plan: Arc<ExecutionPlan>,
-        ui: Option<Arc<UiBridge>>,
-        mut commands: Option<&mut mpsc::UnboundedReceiver<UiCommand>>,
-    ) -> (Vec<JobSummary>, Result<()>) {
-        let total = plan.ordered.len();
-        if total == 0 {
-            return (Vec::new(), Ok(()));
-        }
-
-        let mut remaining: HashMap<String, usize> = plan
-            .nodes
-            .iter()
-            .map(|(name, job)| (name.clone(), job.instance.dependencies.len()))
-            .collect();
-        let mut ready: VecDeque<String> = VecDeque::new();
-        let mut waiting_on_failure: VecDeque<String> = VecDeque::new();
-        let mut delayed_pending: HashSet<String> = HashSet::new();
-        let mut manual_waiting: HashSet<String> = HashSet::new();
-        let mut running = HashSet::new();
-        let mut abort_requested = false;
-        let mut completed = 0usize;
-        let mut pipeline_failed = false;
-        let mut halt_kind = HaltKind::None;
-        let mut halt_error: Option<anyhow::Error> = None;
-        let mut summaries: Vec<JobSummary> = Vec::new();
-        let mut attempts: HashMap<String, u32> = HashMap::new();
-        let mut resource_locks: HashMap<String, bool> = HashMap::new();
-        let mut resource_waiting: HashMap<String, VecDeque<String>> = HashMap::new();
-        let mut manual_input_available = commands.is_some();
-
-        let semaphore = Arc::new(Semaphore::new(self.config.max_parallel_jobs.max(1)));
-        let exec = Arc::new(self.clone());
-        let (tx, mut rx) = mpsc::unbounded_channel::<JobEvent>();
-        let (delay_tx, mut delay_rx) = mpsc::unbounded_channel::<String>();
-
-        let enqueue_ready = |job_name: &str,
-                             pipeline_failed_flag: bool,
-                             ready_queue: &mut VecDeque<String>,
-                             wait_failure_queue: &mut VecDeque<String>,
-                             delayed_set: &mut HashSet<String>| {
-            let Some(planned) = plan.nodes.get(job_name) else {
-                return;
-            };
-            match planned.instance.rule.when {
-                RuleWhen::OnFailure => {
-                    if pipeline_failed_flag {
-                        ready_queue.push_back(job_name.to_string());
-                    } else {
-                        wait_failure_queue.push_back(job_name.to_string());
-                    }
-                }
-                RuleWhen::Delayed => {
-                    if pipeline_failed_flag {
-                        return;
-                    }
-                    if let Some(delay) = planned.instance.rule.start_in {
-                        if delayed_set.insert(job_name.to_string()) {
-                            let tx_clone = delay_tx.clone();
-                            let name = job_name.to_string();
-                            task::spawn(async move {
-                                tokio_time::sleep(delay).await;
-                                let _ = tx_clone.send(name);
-                            });
-                        }
-                    } else {
-                        ready_queue.push_back(job_name.to_string());
-                    }
-                }
-                RuleWhen::Manual | RuleWhen::OnSuccess => {
-                    if pipeline_failed_flag && planned.instance.rule.when.requires_success() {
-                        return;
-                    }
-                    ready_queue.push_back(job_name.to_string());
-                }
-                RuleWhen::Always => {
-                    ready_queue.push_back(job_name.to_string());
-                }
-                RuleWhen::Never => {}
-            }
-        };
-
-        for name in &plan.ordered {
-            if remaining.get(name).copied().unwrap_or(0) == 0 && !abort_requested {
-                enqueue_ready(
-                    name,
-                    pipeline_failed,
-                    &mut ready,
-                    &mut waiting_on_failure,
-                    &mut delayed_pending,
-                );
-            }
-        }
-
-        while completed < total {
-            while let Some(name) = ready.pop_front() {
-                if abort_requested {
-                    break;
-                }
-                let planned = match plan.nodes.get(&name).cloned() {
-                    Some(job) => job,
-                    None => continue,
-                };
-                if pipeline_failed && planned.instance.rule.when.requires_success() {
-                    continue;
-                }
-
-                if matches!(planned.instance.rule.when, RuleWhen::Manual)
-                    && !planned.instance.rule.manual_auto_run
-                {
-                    if manual_input_available {
-                        if manual_waiting.insert(name.clone())
-                            && let Some(ui_ref) = ui.as_deref()
-                        {
-                            ui_ref.job_manual_pending(&name);
-                        }
-                    } else {
-                        let reason = planned
-                            .instance
-                            .rule
-                            .manual_reason
-                            .clone()
-                            .unwrap_or_else(|| "manual job not run".to_string());
-                        if let Some(ui_ref) = ui.as_deref() {
-                            ui_ref.job_finished(
-                                &planned.instance.job.name,
-                                UiJobStatus::Skipped,
-                                0.0,
-                                Some(reason.clone()),
-                            );
-                        }
-                        summaries.push(JobSummary {
-                            name: planned.instance.job.name.clone(),
-                            stage_name: planned.instance.stage_name.clone(),
-                            duration: 0.0,
-                            status: JobStatus::Skipped(reason.clone()),
-                            log_path: None,
-                            log_hash: planned.log_hash.clone(),
-                            allow_failure: planned.instance.rule.allow_failure,
-                            environment: planned.instance.job.environment.clone(),
-                        });
-                        completed += 1;
-                        if let Some(children) = plan.dependents.get(&name) {
-                            for child in children {
-                                if let Some(count) = remaining.get_mut(child)
-                                    && *count > 0
-                                {
-                                    *count -= 1;
-                                    if *count == 0 && !abort_requested {
-                                        enqueue_ready(
-                                            child,
-                                            pipeline_failed,
-                                            &mut ready,
-                                            &mut waiting_on_failure,
-                                            &mut delayed_pending,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                if let Some(group) = &planned.instance.resource_group {
-                    if resource_locks.get(group).copied().unwrap_or(false) {
-                        resource_waiting
-                            .entry(group.clone())
-                            .or_default()
-                            .push_back(name.clone());
-                        continue;
-                    }
-                    resource_locks.insert(group.clone(), true);
-                }
-
-                let entry = attempts.entry(name.clone()).or_insert(0);
-                *entry += 1;
-
-                let run_info = match self.log_job_start(&planned, ui.as_deref()) {
-                    Ok(info) => info,
-                    Err(err) => {
-                        let summary = JobSummary {
-                            name: planned.instance.job.name.clone(),
-                            stage_name: planned.instance.stage_name.clone(),
-                            duration: 0.0,
-                            status: JobStatus::Failed(err.to_string()),
-                            log_path: Some(planned.log_path.clone()),
-                            log_hash: planned.log_hash.clone(),
-                            allow_failure: false,
-                            environment: planned.instance.job.environment.clone(),
-                        };
-                        summaries.push(summary);
-                        return (summaries, Err(err));
-                    }
-                };
-                running.insert(name.clone());
-                pipeline::spawn_job(
-                    exec.clone(),
-                    plan.clone(),
-                    planned,
-                    run_info,
-                    semaphore.clone(),
-                    tx.clone(),
-                    ui.clone(),
-                );
-            }
-
-            if completed >= total {
-                break;
-            }
-
-            if running.is_empty()
-                && ready.is_empty()
-                && delayed_pending.is_empty()
-                && pipeline_failed
-                && waiting_on_failure.is_empty()
-                && manual_waiting.is_empty()
-            {
-                break;
-            }
-
-            if running.is_empty()
-                && ready.is_empty()
-                && delayed_pending.is_empty()
-                && !pipeline_failed
-                && waiting_on_failure.is_empty()
-                && manual_waiting.is_empty()
-            {
-                let remaining_jobs: Vec<_> = remaining
-                    .iter()
-                    .filter_map(|(name, &count)| if count > 0 { Some(name.clone()) } else { None })
-                    .collect();
-                if !remaining_jobs.is_empty() {
-                    halt_kind = HaltKind::Deadlock;
-                    halt_error = Some(anyhow!(
-                        "no runnable jobs, potential dependency cycle involving: {:?}",
-                        remaining_jobs
-                    ));
-                }
-                break;
-            }
-
-            if running.is_empty()
-                && ready.is_empty()
-                && delayed_pending.is_empty()
-                && !pipeline_failed
-                && !waiting_on_failure.is_empty()
-                && manual_waiting.is_empty()
-            {
-                break;
-            }
-
-            enum SchedulerEvent {
-                Job(JobEvent),
-                Delay(String),
-                Command(UiCommand),
-            }
-
-            let next_event = tokio::select! {
-                Some(event) = rx.recv() => Some(SchedulerEvent::Job(event)),
-                Some(name) = delay_rx.recv() => Some(SchedulerEvent::Delay(name)),
-                cmd = async {
-                    if let Some(rx) = commands.as_mut() {
-                        (*rx).recv().await
-                    } else {
-                        None
-                    }
-                } => {
-                    match cmd {
-                        Some(command) => Some(SchedulerEvent::Command(command)),
-                        None => {
-                            manual_input_available = false;
-                            commands = None;
-                            None
-                        }
-                    }
-                }
-                else => None,
-            };
-
-            if !manual_input_available && !manual_waiting.is_empty() {
-                let pending: Vec<String> = manual_waiting.drain().collect();
-                for name in pending {
-                    if let Some(planned) = plan.nodes.get(&name) {
-                        let reason = planned
-                            .instance
-                            .rule
-                            .manual_reason
-                            .clone()
-                            .unwrap_or_else(|| "manual job not run".to_string());
-                        if let Some(ui_ref) = ui.as_deref() {
-                            ui_ref.job_finished(
-                                &planned.instance.job.name,
-                                UiJobStatus::Skipped,
-                                0.0,
-                                Some(reason.clone()),
-                            );
-                        }
-                        summaries.push(JobSummary {
-                            name: planned.instance.job.name.clone(),
-                            stage_name: planned.instance.stage_name.clone(),
-                            duration: 0.0,
-                            status: JobStatus::Skipped(reason),
-                            log_path: None,
-                            log_hash: planned.log_hash.clone(),
-                            allow_failure: planned.instance.rule.allow_failure,
-                            environment: planned.instance.job.environment.clone(),
-                        });
-                        completed += 1;
-                        if let Some(children) = plan.dependents.get(&name) {
-                            for child in children {
-                                if let Some(count) = remaining.get_mut(child)
-                                    && *count > 0
-                                {
-                                    *count -= 1;
-                                    if *count == 0 && !abort_requested {
-                                        enqueue_ready(
-                                            child,
-                                            pipeline_failed,
-                                            &mut ready,
-                                            &mut waiting_on_failure,
-                                            &mut delayed_pending,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let Some(event) = next_event else {
-                if running.is_empty() && ready.is_empty() && delayed_pending.is_empty() {
-                    halt_kind = HaltKind::ChannelClosed;
-                    halt_error = Some(anyhow!(
-                        "job worker channel closed unexpectedly while {} jobs remained",
-                        total - completed
-                    ));
-                    break;
-                }
-                continue;
-            };
-
-            match event {
-                SchedulerEvent::Delay(name) => {
-                    if abort_requested {
-                        continue;
-                    }
-                    delayed_pending.remove(&name);
-                    if pipeline_failed
-                        && let Some(planned) = plan.nodes.get(&name)
-                        && planned.instance.rule.when.requires_success()
-                    {
-                        continue;
-                    }
-                    ready.push_back(name);
-                }
-                SchedulerEvent::Command(cmd) => match cmd {
-                    UiCommand::StartManual { name } => {
-                        if manual_waiting.remove(&name) {
-                            ready.push_back(name);
-                        }
-                    }
-                    UiCommand::CancelJob { name } => {
-                        self.cancel_running_job(&name);
-                    }
-                    UiCommand::AbortPipeline => {
-                        abort_requested = true;
-                        pipeline_failed = true;
-                        halt_kind = HaltKind::Aborted;
-                        if halt_error.is_none() {
-                            halt_error = Some(anyhow!("pipeline aborted by user"));
-                        }
-                        self.cancel_all_running_jobs();
-                        ready.clear();
-                        waiting_on_failure.clear();
-                        delayed_pending.clear();
-                        manual_waiting.clear();
-                    }
-                    UiCommand::RestartJob { .. } => {}
-                },
-                SchedulerEvent::Job(event) => {
-                    running.remove(&event.name);
-                    let planned = plan
-                        .nodes
-                        .get(&event.name)
-                        .expect("completed job must exist in plan");
-                    match event.result {
-                        Ok(_) => {
-                            release_resource_lock(
-                                planned,
-                                &mut ready,
-                                &mut resource_locks,
-                                &mut resource_waiting,
-                            );
-                            if let Some(children) = plan.dependents.get(&event.name) {
-                                for child in children {
-                                    if let Some(count) = remaining.get_mut(child)
-                                        && *count > 0
-                                    {
-                                        *count -= 1;
-                                        if *count == 0 && !abort_requested {
-                                            enqueue_ready(
-                                                child,
-                                                pipeline_failed,
-                                                &mut ready,
-                                                &mut waiting_on_failure,
-                                                &mut delayed_pending,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            summaries.push(JobSummary {
-                                name: event.name.clone(),
-                                stage_name: event.stage_name.clone(),
-                                duration: event.duration,
-                                status: JobStatus::Success,
-                                log_path: event.log_path.clone(),
-                                log_hash: event.log_hash.clone(),
-                                allow_failure: planned.instance.rule.allow_failure,
-                                environment: planned.instance.job.environment.clone(),
-                            });
-                            completed += 1;
-                        }
-                        Err(err) => {
-                            if event.cancelled {
-                                release_resource_lock(
-                                    planned,
-                                    &mut ready,
-                                    &mut resource_locks,
-                                    &mut resource_waiting,
-                                );
-                                summaries.push(JobSummary {
-                                    name: event.name.clone(),
-                                    stage_name: event.stage_name.clone(),
-                                    duration: event.duration,
-                                    status: JobStatus::Skipped("aborted by user".to_string()),
-                                    log_path: event.log_path.clone(),
-                                    log_hash: event.log_hash.clone(),
-                                    allow_failure: true,
-                                    environment: planned.instance.job.environment.clone(),
-                                });
-                                completed += 1;
-                                continue;
-                            }
-                            let err_msg = err.to_string();
-                            let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
-                            let retries_used = attempts_so_far.saturating_sub(1);
-                            if retries_used < planned.instance.retry.max {
-                                release_resource_lock(
-                                    planned,
-                                    &mut ready,
-                                    &mut resource_locks,
-                                    &mut resource_waiting,
-                                );
-                                ready.push_back(event.name.clone());
-                                continue;
-                            }
-                            release_resource_lock(
-                                planned,
-                                &mut ready,
-                                &mut resource_locks,
-                                &mut resource_waiting,
-                            );
-                            if !planned.instance.rule.allow_failure && !pipeline_failed {
-                                pipeline_failed = true;
-                                halt_kind = HaltKind::JobFailure;
-                                if halt_error.is_none() {
-                                    halt_error =
-                                        Some(anyhow!("job '{}' failed: {}", event.name, err_msg));
-                                }
-                                while let Some(name) = waiting_on_failure.pop_front() {
-                                    ready.push_back(name);
-                                }
-                            }
-                            summaries.push(JobSummary {
-                                name: event.name.clone(),
-                                stage_name: event.stage_name.clone(),
-                                duration: event.duration,
-                                status: JobStatus::Failed(err_msg),
-                                log_path: event.log_path.clone(),
-                                log_hash: event.log_hash.clone(),
-                                allow_failure: planned.instance.rule.allow_failure,
-                                environment: planned.instance.job.environment.clone(),
-                            });
-                            completed += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        let skip_reason = match halt_kind {
-            HaltKind::JobFailure => Some("not run (pipeline stopped after failure)".to_string()),
-            HaltKind::Deadlock => Some("not run (dependency cycle detected)".to_string()),
-            HaltKind::ChannelClosed => {
-                Some("not run (executor channel closed unexpectedly)".to_string())
-            }
-            HaltKind::Aborted => Some("not run (pipeline aborted by user)".to_string()),
-            HaltKind::None => None,
-        };
-
-        let mut recorded: HashSet<String> =
-            summaries.iter().map(|entry| entry.name.clone()).collect();
-        for job_name in &plan.ordered {
-            if recorded.contains(job_name) {
-                continue;
-            }
-            let Some(planned) = plan.nodes.get(job_name) else {
-                continue;
-            };
-            let reason = if let Some(reason) = skip_reason.clone() {
-                Some(reason)
-            } else if planned.instance.rule.when == RuleWhen::OnFailure {
-                Some("skipped (rules: on_failure and pipeline succeeded)".to_string())
-            } else {
-                None
-            };
-
-            if let Some(reason) = reason {
-                if let Some(ui_ref) = ui.as_deref() {
-                    ui_ref.job_finished(job_name, UiJobStatus::Skipped, 0.0, Some(reason.clone()));
-                }
-                summaries.push(JobSummary {
-                    name: job_name.clone(),
-                    stage_name: planned.instance.stage_name.clone(),
-                    duration: 0.0,
-                    status: JobStatus::Skipped(reason.clone()),
-                    log_path: Some(planned.log_path.clone()),
-                    log_hash: planned.log_hash.clone(),
-                    allow_failure: planned.instance.rule.allow_failure,
-                    environment: planned.instance.job.environment.clone(),
-                });
-                recorded.insert(job_name.clone());
-            }
-        }
-
-        let result = halt_error.map_or(Ok(()), Err);
-        (summaries, result)
-    }
-
-    async fn handle_restart_commands(
-        &self,
-        plan: Arc<ExecutionPlan>,
-        ui: Option<Arc<UiBridge>>,
-        commands: &mut mpsc::UnboundedReceiver<UiCommand>,
-        summaries: &mut Vec<JobSummary>,
-    ) -> Result<()> {
-        while let Some(command) = commands.recv().await {
-            match command {
-                UiCommand::RestartJob { name } => {
-                    let Some(planned) = plan.nodes.get(&name).cloned() else {
-                        continue;
-                    };
-
-                    if let Some(ui_ref) = ui.as_deref() {
-                        ui_ref.job_restarted(&name);
-                    }
-
-                    let run_info = match self.log_job_start(&planned, ui.as_deref()) {
-                        Ok(info) => info,
-                        Err(err) => {
-                            let summary = JobSummary {
-                                name: planned.instance.job.name.clone(),
-                                stage_name: planned.instance.stage_name.clone(),
-                                duration: 0.0,
-                                status: JobStatus::Failed(err.to_string()),
-                                log_path: Some(planned.log_path.clone()),
-                                log_hash: planned.log_hash.clone(),
-                                allow_failure: false,
-                                environment: planned.instance.job.environment.clone(),
-                            };
-                            summaries.push(summary);
-                            return Err(err);
-                        }
-                    };
-                    let exec = self.clone();
-                    let ui_clone = ui.clone();
-                    let run_info_clone = run_info.clone();
-                    let job_plan = plan.clone();
-                    let event = task::spawn_blocking(move || {
-                        exec.run_planned_job(job_plan, planned, run_info_clone, ui_clone)
-                    })
-                    .await
-                    .context("job restart task failed")?;
-                    self.update_summaries_from_event(plan.as_ref(), event, summaries);
-                }
-                UiCommand::StartManual { .. } => {}
-                UiCommand::CancelJob { .. } => {}
-                UiCommand::AbortPipeline => break,
-            }
-        }
-        Ok(())
-    }
-
-    fn update_summaries_from_event(
-        &self,
-        plan: &ExecutionPlan,
-        event: JobEvent,
-        summaries: &mut Vec<JobSummary>,
-    ) {
-        let JobEvent {
-            name,
-            stage_name,
-            duration,
-            log_path,
-            log_hash,
-            result,
-            cancelled,
-        } = event;
-
-        let allow_failure = plan
-            .nodes
-            .get(&name)
-            .map(|planned| planned.instance.rule.allow_failure)
-            .unwrap_or(false);
-        let environment = plan
-            .nodes
-            .get(&name)
-            .and_then(|planned| planned.instance.job.environment.clone());
-
-        let status = match result {
-            Ok(_) => JobStatus::Success,
-            Err(err) => {
-                if cancelled {
-                    JobStatus::Skipped("aborted by user".to_string())
-                } else {
-                    JobStatus::Failed(err.to_string())
-                }
-            }
-        };
-
-        summaries.retain(|entry| entry.name != name);
-        summaries.push(JobSummary {
-            name,
-            stage_name,
-            duration,
-            status,
-            log_path,
-            log_hash,
-            allow_failure,
-            environment,
-        });
-    }
-
     fn record_pipeline_history(
         &self,
         summaries: &[JobSummary],
@@ -1087,7 +442,11 @@ impl ExecutorCore {
         }
     }
 
-    fn log_job_start(&self, planned: &ExecutableJob, ui: Option<&UiBridge>) -> Result<JobRunInfo> {
+    pub(crate) fn log_job_start(
+        &self,
+        planned: &ExecutableJob,
+        ui: Option<&UiBridge>,
+    ) -> Result<JobRunInfo> {
         let attempt = self.next_attempt(&planned.instance.job.name);
         let container_name =
             self.job_container_name(&planned.instance.stage_name, &planned.instance.job, attempt);
@@ -1139,151 +498,65 @@ impl ExecutorCore {
         Ok(JobRunInfo { container_name })
     }
 
-    pub(crate) fn run_planned_job(
+    pub(crate) fn prepare_job_run(
         &self,
-        plan: Arc<ExecutionPlan>,
-        planned: ExecutableJob,
-        run_info: JobRunInfo,
-        ui: Option<Arc<UiBridge>>,
-    ) -> JobEvent {
-        let ExecutableJob {
-            instance,
-            log_path,
-            log_hash,
-        } = planned;
-        let job = instance.job;
-        let stage_name = instance.stage_name;
-        let job_name = job.name.clone();
-        let job_start = Instant::now();
-        let ui_ref = ui.as_deref();
-
-        let result = (|| -> Result<()> {
-            self.artifacts.prepare_targets(&job)?;
-            let mut env_vars = self.job_env(&job);
-            let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
-            let service_configs = self.job_services(&job);
-            let service_runtime = ServiceRuntime::start(
-                self.config.engine,
-                &self.run_id,
-                &job.name,
-                &service_configs,
-                &env_vars,
-                &self.shared_env,
-            )?;
-            let service_network = service_runtime
-                .as_ref()
-                .map(|runtime| runtime.network_name().to_string());
-            if let Some(runtime) = service_runtime.as_ref() {
-                env_vars.extend(runtime.link_env().iter().cloned());
-            }
-            let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
-                job: &job,
-                plan: plan.as_ref(),
-                pipeline: &self.pipeline,
-                artifacts: &self.artifacts,
-                cache: &self.cache,
-                cache_env: &cache_env,
-                container_root: &self.container_workdir,
-                external: self.external_artifacts.as_ref(),
-            })?;
+        plan: &ExecutionPlan,
+        job: &JobSpec,
+    ) -> Result<PreparedJobRun> {
+        self.artifacts.prepare_targets(job)?;
+        let mut env_vars = self.job_env(job);
+        let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
+        let service_configs = self.job_services(job);
+        let service_runtime = ServiceRuntime::start(
+            self.config.engine,
+            &self.run_id,
+            &job.name,
+            &service_configs,
+            &env_vars,
+            &self.shared_env,
+        )?;
+        if let Some(runtime) = service_runtime.as_ref() {
+            env_vars.extend(runtime.link_env().iter().cloned());
+        }
+        let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
+            job,
+            plan,
+            pipeline: &self.pipeline,
+            artifacts: &self.artifacts,
+            cache: &self.cache,
+            cache_env: &cache_env,
+            container_root: &self.container_workdir,
+            external: self.external_artifacts.as_ref(),
+        })?;
+        mounts.push(VolumeMount {
+            host: self.session_dir.clone(),
+            container: self.container_session_dir.clone(),
+            read_only: false,
+        });
+        if let Some((host, container_path)) = self.secrets.volume_mount() {
             mounts.push(VolumeMount {
-                host: self.session_dir.clone(),
-                container: self.container_session_dir.clone(),
-                read_only: false,
+                host,
+                container: container_path,
+                read_only: true,
             });
-            if let Some((host, container_path)) = self.secrets.volume_mount() {
-                mounts.push(VolumeMount {
-                    host,
-                    container: container_path,
-                    read_only: true,
-                });
-            }
-            let job_image = self.resolve_job_image_with_env(&job, Some(&cache_env))?;
-            let container_name = run_info.container_name.clone();
-            let script_commands = self.expanded_commands(&job);
-            let script_path = script::write_job_script(
-                &self.scripts_dir,
-                &self.container_workdir,
-                &job,
-                &script_commands,
-                self.verbose_scripts,
-            )?;
-            let exec_result = self.execute(ExecuteContext {
-                script_path: &script_path,
-                log_path: &log_path,
-                mounts: &mounts,
-                image: &job_image,
-                container_name: &container_name,
-                job: &job,
-                ui: ui_ref,
-                env_vars: &env_vars,
-                network: service_network.as_deref(),
-            });
-            if let Some(mut runtime) = service_runtime {
-                runtime.cleanup();
-            }
-            exec_result?;
-            if !self.config.enable_tui {
-                let display = self.display();
-                display::print_line(format!("    script stored at {}", script_path.display()));
-                display::print_line(format!("    log file stored at {}", log_path.display()));
-                let finish_label = display.bold_green("    ✓ finished in");
-                display::print_line(format!(
-                    "{} {:.2}s",
-                    finish_label,
-                    job_start.elapsed().as_secs_f32()
-                ));
-
-                if let Some(elapsed) = self.stage_job_completed(&stage_name) {
-                    let stage_footer = display.bold_blue("╰─ stage complete in");
-                    display::print_line(format!("{stage_footer} {:.2}s", elapsed));
-                }
-            }
-
-            Ok(())
-        })();
-
-        let duration = job_start.elapsed().as_secs_f32();
-        let cancelled = self.take_cancelled_job(&job_name);
-        let final_result = if cancelled {
-            Err(anyhow!("job cancelled by user"))
-        } else {
-            result
-        };
-        if let Some(ui) = ui_ref {
-            match &final_result {
-                Ok(_) => ui.job_finished(&job_name, UiJobStatus::Success, duration, None),
-                Err(err) => {
-                    if cancelled {
-                        ui.job_finished(
-                            &job_name,
-                            UiJobStatus::Skipped,
-                            duration,
-                            Some("aborted by user".to_string()),
-                        );
-                    } else {
-                        ui.job_finished(
-                            &job_name,
-                            UiJobStatus::Failed,
-                            duration,
-                            Some(err.to_string()),
-                        );
-                    }
-                }
-            }
         }
+        let job_image = self.resolve_job_image_with_env(job, Some(&cache_env))?;
+        let script_commands = self.expanded_commands(job);
+        let script_path = script::write_job_script(
+            &self.scripts_dir,
+            &self.container_workdir,
+            job,
+            &script_commands,
+            self.verbose_scripts,
+        )?;
 
-        self.clear_running_container(&job_name);
-
-        JobEvent {
-            name: job_name,
-            stage_name,
-            duration,
-            log_path: Some(log_path.clone()),
-            log_hash,
-            result: final_result,
-            cancelled,
-        }
+        Ok(PreparedJobRun {
+            env_vars,
+            service_runtime,
+            mounts,
+            job_image,
+            script_path,
+        })
     }
 
     fn stage_started(&self, stage_name: &str) -> bool {
@@ -1327,7 +600,7 @@ impl ExecutorCore {
         }
     }
 
-    fn clear_running_container(&self, job_name: &str) {
+    pub(crate) fn clear_running_container(&self, job_name: &str) {
         if let Ok(mut map) = self.running_containers.lock() {
             map.remove(job_name);
         }
@@ -1339,7 +612,7 @@ impl ExecutorCore {
         }
     }
 
-    fn take_cancelled_job(&self, job_name: &str) -> bool {
+    pub(crate) fn take_cancelled_job(&self, job_name: &str) -> bool {
         if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
             cancelled.remove(job_name)
         } else {
@@ -1347,7 +620,7 @@ impl ExecutorCore {
         }
     }
 
-    fn cancel_running_job(&self, job_name: &str) -> bool {
+    pub(crate) fn cancel_running_job(&self, job_name: &str) -> bool {
         let container = {
             let map = match self.running_containers.lock() {
                 Ok(map) => map,
@@ -1364,7 +637,7 @@ impl ExecutorCore {
         }
     }
 
-    fn cancel_all_running_jobs(&self) {
+    pub(crate) fn cancel_all_running_jobs(&self) {
         let containers: Vec<(String, String)> = match self.running_containers.lock() {
             Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             Err(_) => return,
@@ -1375,7 +648,7 @@ impl ExecutorCore {
         }
     }
 
-    fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
+    pub(crate) fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
         let ExecuteContext {
             script_path,
             log_path,
@@ -1421,6 +694,27 @@ impl ExecutorCore {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn print_job_completion(
+        &self,
+        stage_name: &str,
+        script_path: &Path,
+        log_path: &Path,
+        elapsed: f32,
+    ) {
+        if !self.config.enable_tui {
+            let display = self.display();
+            display::print_line(format!("    script stored at {}", script_path.display()));
+            display::print_line(format!("    log file stored at {}", log_path.display()));
+            let finish_label = display.bold_green("    ✓ finished in");
+            display::print_line(format!("{} {:.2}s", finish_label, elapsed));
+
+            if let Some(stage_elapsed) = self.stage_job_completed(stage_name) {
+                let stage_footer = display.bold_blue("╰─ stage complete in");
+                display::print_line(format!("{stage_footer} {:.2}s", stage_elapsed));
+            }
+        }
     }
 
     fn spawn_container_process(
