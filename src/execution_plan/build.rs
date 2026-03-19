@@ -26,16 +26,9 @@ where
         nodes.insert(
             name.clone(),
             ExecutableJob {
-                job: compiled.job,
-                stage_name: compiled.stage_name,
-                dependencies: compiled.dependencies,
+                instance: compiled,
                 log_path,
                 log_hash,
-                rule: compiled.rule,
-                timeout: compiled.timeout,
-                retry: compiled.retry,
-                interruptible: compiled.interruptible,
-                resource_group: compiled.resource_group,
             },
         );
     }
@@ -95,15 +88,21 @@ mod tests {
 
         let executable = plan.nodes.get("build").expect("job exists");
         assert_eq!(plan.ordered, vec!["build".to_string()]);
-        assert_eq!(executable.stage_name, "compile");
-        assert_eq!(executable.dependencies, vec!["setup".to_string()]);
+        assert_eq!(executable.instance.stage_name, "compile");
+        assert_eq!(executable.instance.dependencies, vec!["setup".to_string()]);
         assert_eq!(executable.log_path, PathBuf::from("/tmp/build.log"));
         assert_eq!(executable.log_hash, "hash-build");
-        assert!(executable.rule.allow_failure);
-        assert_eq!(executable.timeout, Some(std::time::Duration::from_secs(30)));
-        assert_eq!(executable.retry.max, 2);
-        assert!(executable.interruptible);
-        assert_eq!(executable.resource_group.as_deref(), Some("builder"));
+        assert!(executable.instance.rule.allow_failure);
+        assert_eq!(
+            executable.instance.timeout,
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(executable.instance.retry.max, 2);
+        assert!(executable.instance.interruptible);
+        assert_eq!(
+            executable.instance.resource_group.as_deref(),
+            Some("builder")
+        );
         assert_eq!(plan.dependents["setup"], vec!["build".to_string()]);
     }
 

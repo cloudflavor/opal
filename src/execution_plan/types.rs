@@ -1,22 +1,13 @@
-use crate::compiler::JobVariantInfo;
-use crate::model::{JobDependencySpec, JobSpec, RetryPolicySpec};
-use crate::pipeline::rules::RuleEvaluation;
+use crate::compiler::{JobInstance, JobVariantInfo};
+use crate::model::JobDependencySpec;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct ExecutableJob {
-    pub job: JobSpec,
-    pub stage_name: String,
-    pub dependencies: Vec<String>,
+    pub instance: JobInstance,
     pub log_path: PathBuf,
     pub log_hash: String,
-    pub rule: RuleEvaluation,
-    pub timeout: Option<Duration>,
-    pub retry: RetryPolicySpec,
-    pub interruptible: bool,
-    pub resource_group: Option<String>,
 }
 
 #[derive(Debug)]

@@ -106,6 +106,7 @@ mod tests {
         let package = plan.nodes.get("package-linux").expect("package job exists");
         assert!(
             package
+                .instance
                 .job
                 .dependencies
                 .iter()
@@ -113,11 +114,13 @@ mod tests {
         );
         assert!(
             package
+                .instance
                 .dependencies
                 .iter()
                 .any(|dep| dep == "build-matrix: [linux, release]")
         );
         let matrix_need = package
+            .instance
             .job
             .needs
             .iter()
@@ -140,6 +143,7 @@ mod tests {
         .unwrap();
         let package = plan.nodes.get("package-linux").expect("package job exists");
         let matrix_need = package
+            .instance
             .job
             .needs
             .iter()
