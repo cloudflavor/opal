@@ -68,6 +68,9 @@ verify_scenario_log() {
   local log_file="$2"
 
   case "${name}" in
+    needs-branch)
+      assert_log_contains "${log_file}" "artifact exclude ok"
+      ;;
     filters-branch)
       assert_log_contains "${log_file}" "only-branches"
       assert_log_not_contains "${log_file}" "tag-only"

@@ -93,6 +93,22 @@ build-matrix:
     paths:
       - tests-temp/build/
 
+artifact-filtered:
+  stage: build
+  needs:
+    - prepare-artifacts
+  script:
+    - mkdir -p tests-temp/filtered/sub
+    - echo "keep" > tests-temp/filtered/include.txt
+    - echo "drop" > tests-temp/filtered/ignore.txt
+    - echo "drop" > tests-temp/filtered/sub/trace.log
+  artifacts:
+    paths:
+      - tests-temp/filtered/
+    exclude:
+      - tests-temp/filtered/ignore.txt
+      - tests-temp/filtered/**/*.log
+
 lint:
   stage: test
   needs: []
@@ -129,9 +145,15 @@ smoke-tests:
       artifacts: true
     - job: 'build-matrix: [mac, release]'
       optional: true
+    - job: artifact-filtered
+      artifacts: true
   script:
     - echo "package contents:"
     - cat tests-temp/package/summary.txt
+    - test -f tests-temp/filtered/include.txt
+    - test ! -e tests-temp/filtered/ignore.txt
+    - test ! -e tests-temp/filtered/sub/trace.log
+    - echo "artifact exclude ok"
 
 deploy-summary:
   stage: deploy

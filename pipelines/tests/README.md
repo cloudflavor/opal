@@ -4,7 +4,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 
 ## Available scenarios
 
-- `needs-and-artifacts.gitlab-ci.yml` – Covers `workflow:rules`, `default.before_script/after_script`, `!reference`, artifact passing via `needs`, `needs:optional`, `dependencies`, manual/tagged releases, delayed jobs, environments, and `parallel:matrix` builds.
+- `needs-and-artifacts.gitlab-ci.yml` – Covers `workflow:rules`, `default.before_script/after_script`, `!reference`, artifact passing via `needs`, `needs:optional`, `dependencies`, artifact exclusions, manual/tagged releases, delayed jobs, environments, and `parallel:matrix` builds.
 - `rules-playground.gitlab-ci.yml` – Focuses on the `rules:` mini-language: `if`, `changes`, `exists`, `when: manual|delayed`, inline `allow_failure`, schedule-only behavior, and interaction with `workflow:rules`.
 - `includes-and-extends.gitlab-ci.yml` – Exercises local `include:`, hidden/template jobs, `extends`, `inherit: { default: [...] }`, and shared variables (see `job_inherit_flags` in `src/gitlab/parser.rs`).
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
