@@ -4,6 +4,14 @@ use crate::model::{
 };
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
+use std::path::Path;
+
+impl PipelineSpec {
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let graph = PipelineGraph::from_path(path)?;
+        Self::try_from(&graph)
+    }
+}
 
 impl TryFrom<&PipelineGraph> for PipelineSpec {
     type Error = anyhow::Error;
@@ -42,12 +50,16 @@ impl TryFrom<&PipelineGraph> for PipelineSpec {
 mod tests {
     use crate::gitlab::PipelineGraph;
     use crate::model::{ParallelConfigSpec, PipelineSpec};
+    use std::path::Path;
 
     #[test]
     fn lowers_pipeline_graph_to_pipeline_spec() {
         let graph = PipelineGraph::from_path("pipelines/tests/needs-and-artifacts.gitlab-ci.yml")
             .expect("pipeline parses");
-        let spec = PipelineSpec::try_from(&graph).expect("pipeline lowers");
+        let spec = PipelineSpec::from_path(Path::new(
+            "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
+        ))
+        .expect("pipeline lowers");
 
         assert_eq!(spec.stages.len(), graph.stages.len());
         assert!(spec.jobs.contains_key("build-matrix"));
