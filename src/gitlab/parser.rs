@@ -13,9 +13,10 @@ use serde_yaml::{Mapping, Value};
 use tracing::warn;
 
 use super::graph::{
-    CacheConfig, CachePolicy, DependencySource, EnvironmentAction, EnvironmentConfig,
-    ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry, ParallelVariable,
-    PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
+    ArtifactConfig, ArtifactWhen, CacheConfig, CachePolicy, DependencySource, EnvironmentAction,
+    EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry,
+    ParallelVariable, PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup,
+    WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -819,7 +820,7 @@ fn build_graph(
         let dependencies = job_spec.dependencies;
         let before_script = job_spec.before_script.map(Script::into_commands);
         let after_script = job_spec.after_script.map(Script::into_commands);
-        let artifacts = job_spec.artifacts.paths;
+        let artifacts = job_spec.artifacts.into_config(&job_name)?;
         let cache_entries = if job_cache.is_empty() {
             defaults.cache.clone()
         } else {
@@ -1139,6 +1140,30 @@ impl Script {
 struct RawArtifacts {
     #[serde(default)]
     paths: Vec<PathBuf>,
+    #[serde(default)]
+    when: Option<String>,
+}
+
+impl RawArtifacts {
+    fn into_config(self, job_name: &str) -> Result<ArtifactConfig> {
+        Ok(ArtifactConfig {
+            paths: self.paths,
+            when: parse_artifact_when(self.when.as_deref(), job_name)?,
+        })
+    }
+}
+
+fn parse_artifact_when(value: Option<&str>, job_name: &str) -> Result<ArtifactWhen> {
+    match value.unwrap_or("on_success") {
+        "on_success" => Ok(ArtifactWhen::OnSuccess),
+        "on_failure" => Ok(ArtifactWhen::OnFailure),
+        "always" => Ok(ArtifactWhen::Always),
+        other => bail!(
+            "job '{}' has unsupported artifacts.when value '{}'",
+            job_name,
+            other
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1725,9 +1750,32 @@ build-job:
         let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
         let build_idx = find_job(&pipeline, "build-job");
         let job = &pipeline.graph[build_idx];
-        assert_eq!(job.artifacts.len(), 2);
-        assert_eq!(job.artifacts[0], PathBuf::from("vendor"));
-        assert_eq!(job.artifacts[1], PathBuf::from("output/report.txt"));
+        assert_eq!(job.artifacts.paths.len(), 2);
+        assert_eq!(job.artifacts.paths[0], PathBuf::from("vendor"));
+        assert_eq!(job.artifacts.paths[1], PathBuf::from("output/report.txt"));
+        assert_eq!(job.artifacts.when, ArtifactWhen::OnSuccess);
+    }
+
+    #[test]
+    fn parses_artifacts_when() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  artifacts:
+    when: always
+    paths:
+      - output/report.txt
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert_eq!(job.artifacts.when, ArtifactWhen::Always);
     }
 
     #[test]
@@ -1963,7 +2011,7 @@ child-job:
         let job = &pipeline.graph[job_idx];
         assert_eq!(job.stage, "build");
         assert_eq!(job.commands, vec!["echo from template"]);
-        assert_eq!(job.artifacts, vec![PathBuf::from("template.txt")]);
+        assert_eq!(job.artifacts.paths, vec![PathBuf::from("template.txt")]);
     }
 
     #[test]
@@ -1997,7 +2045,7 @@ combined:
         let job_idx = find_job(&pipeline, "combined");
         let job = &pipeline.graph[job_idx];
         assert_eq!(job.commands, vec!["echo tests"]);
-        assert_eq!(job.artifacts, vec![PathBuf::from("tests.txt")]);
+        assert_eq!(job.artifacts.paths, vec![PathBuf::from("tests.txt")]);
         assert_eq!(job.stage, "test");
     }
 

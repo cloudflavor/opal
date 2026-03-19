@@ -14,7 +14,7 @@ use crate::env::{build_job_env, collect_env_vars, expand_env_list};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan, build_execution_plan};
 use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
-use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
+use crate::model::{ArtifactSourceOutcome, CachePolicySpec, JobSpec, PipelineSpec};
 use crate::naming::generate_run_id;
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
@@ -367,6 +367,14 @@ impl ExecutorCore {
 
     pub(crate) fn clear_running_container(&self, job_name: &str) {
         self.runtime_state.clear_running_container(job_name);
+    }
+
+    pub(crate) fn record_completed_job(&self, job_name: &str, outcome: ArtifactSourceOutcome) {
+        self.runtime_state.record_completed_job(job_name, outcome);
+    }
+
+    pub(crate) fn completed_jobs(&self) -> HashMap<String, ArtifactSourceOutcome> {
+        self.runtime_state.completed_jobs()
     }
 
     pub(crate) fn take_cancelled_job(&self, job_name: &str) -> bool {

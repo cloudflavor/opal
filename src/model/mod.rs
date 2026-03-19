@@ -8,7 +8,7 @@ pub mod lowering;
 pub mod pipeline;
 pub mod services;
 
-pub use artifacts::ArtifactSpec;
+pub use artifacts::{ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec};
 pub use cache::{CachePolicySpec, CacheSpec};
 pub use dependencies::{DependencySourceSpec, ExternalDependencySpec, JobDependencySpec};
 pub use environment::{EnvironmentActionSpec, EnvironmentSpec};

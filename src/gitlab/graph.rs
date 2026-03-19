@@ -34,7 +34,7 @@ pub struct Job {
     pub rules: Vec<JobRule>,
     pub only: Vec<String>,
     pub except: Vec<String>,
-    pub artifacts: Vec<PathBuf>,
+    pub artifacts: ArtifactConfig,
     pub cache: Vec<CacheConfig>,
     pub image: Option<String>,
     pub variables: HashMap<String, String>,
@@ -46,6 +46,20 @@ pub struct Job {
     pub parallel: Option<ParallelConfig>,
     pub tags: Vec<String>,
     pub environment: Option<EnvironmentConfig>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactConfig {
+    pub paths: Vec<PathBuf>,
+    pub when: ArtifactWhen,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArtifactWhen {
+    #[default]
+    OnSuccess,
+    OnFailure,
+    Always,
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {

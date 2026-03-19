@@ -36,6 +36,7 @@ pub(super) fn prepare_job_run(
         env_vars.extend(runtime.link_env().iter().cloned());
     }
 
+    let completed_jobs = exec.completed_jobs();
     let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
         job,
         plan,
@@ -43,6 +44,7 @@ pub(super) fn prepare_job_run(
         artifacts: &exec.artifacts,
         cache: &exec.cache,
         cache_env: &cache_env,
+        completed_jobs: &completed_jobs,
         container_root: &exec.container_workdir,
         external: exec.external_artifacts.as_ref(),
     })?;

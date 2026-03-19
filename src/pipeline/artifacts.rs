@@ -1,4 +1,4 @@
-use crate::model::JobSpec;
+use crate::model::{ArtifactSourceOutcome, JobSpec};
 use crate::naming::{job_name_slug, project_slug};
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
@@ -75,11 +75,15 @@ impl ArtifactManager {
         &self,
         job_name: &str,
         job: Option<&JobSpec>,
+        outcome: Option<ArtifactSourceOutcome>,
         optional: bool,
     ) -> Vec<(PathBuf, PathBuf)> {
         let Some(dep_job) = job else {
             return Vec::new();
         };
+        if !dep_job.artifacts.when.includes(outcome) {
+            return Vec::new();
+        }
 
         let mut specs = Vec::new();
         for relative in &dep_job.artifacts.paths {

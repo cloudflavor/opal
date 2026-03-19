@@ -1,5 +1,6 @@
 use super::{core::ExecutorCore, job_runner};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
+use crate::model::ArtifactSourceOutcome;
 use crate::pipeline::{self, HaltKind, JobEvent, JobStatus, JobSummary, RuleWhen};
 use crate::ui::{UiBridge, UiCommand, UiJobStatus};
 use anyhow::{Context, Result, anyhow};
@@ -631,6 +632,12 @@ fn update_summaries_from_event(
             }
         }
     };
+    let outcome = match &status {
+        JobStatus::Success => ArtifactSourceOutcome::Success,
+        JobStatus::Failed(_) => ArtifactSourceOutcome::Failed,
+        JobStatus::Skipped(_) => ArtifactSourceOutcome::Skipped,
+    };
+    exec.record_completed_job(&name, outcome);
 
     summaries.retain(|entry| entry.name != name);
     summaries.push(JobSummary {

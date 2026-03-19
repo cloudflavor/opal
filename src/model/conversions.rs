@@ -1,13 +1,14 @@
 use crate::gitlab::{
-    CacheConfig, CachePolicy, DependencySource, EnvironmentAction, EnvironmentConfig,
-    ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry, ParallelVariable,
-    PipelineDefaults, PipelineFilters, RetryPolicy, ServiceConfig, WorkflowConfig,
+    ArtifactConfig, ArtifactWhen, CacheConfig, CachePolicy, DependencySource, EnvironmentAction,
+    EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry,
+    ParallelVariable, PipelineDefaults, PipelineFilters, RetryPolicy, ServiceConfig,
+    WorkflowConfig,
 };
 use crate::model::{
-    ArtifactSpec, CachePolicySpec, CacheSpec, DependencySourceSpec, EnvironmentActionSpec,
-    EnvironmentSpec, ExternalDependencySpec, JobDependencySpec, JobSpec, ParallelConfigSpec,
-    ParallelMatrixEntrySpec, ParallelVariableSpec, PipelineDefaultsSpec, PipelineFilterSpec,
-    RetryPolicySpec, ServiceSpec, WorkflowSpec,
+    ArtifactSpec, ArtifactWhenSpec, CachePolicySpec, CacheSpec, DependencySourceSpec,
+    EnvironmentActionSpec, EnvironmentSpec, ExternalDependencySpec, JobDependencySpec, JobSpec,
+    ParallelConfigSpec, ParallelMatrixEntrySpec, ParallelVariableSpec, PipelineDefaultsSpec,
+    PipelineFilterSpec, RetryPolicySpec, ServiceSpec, WorkflowSpec,
 };
 
 impl From<&JobSpec> for Job {
@@ -27,7 +28,10 @@ impl From<&JobSpec> for Job {
             rules: value.rules.clone(),
             only: value.only.clone(),
             except: value.except.clone(),
-            artifacts: value.artifacts.paths.clone(),
+            artifacts: ArtifactConfig {
+                paths: value.artifacts.paths.clone(),
+                when: ArtifactWhen::from(&value.artifacts.when),
+            },
             cache: value.cache.iter().map(CacheConfig::from).collect(),
             image: value.image.clone(),
             variables: value.variables.clone(),
@@ -61,7 +65,8 @@ impl From<&Job> for JobSpec {
             only: value.only.clone(),
             except: value.except.clone(),
             artifacts: ArtifactSpec {
-                paths: value.artifacts.clone(),
+                paths: value.artifacts.paths.clone(),
+                when: ArtifactWhenSpec::from(&value.artifacts.when),
             },
             cache: value.cache.iter().map(CacheSpec::from).collect(),
             image: value.image.clone(),
@@ -74,6 +79,26 @@ impl From<&Job> for JobSpec {
             parallel: value.parallel.as_ref().map(ParallelConfigSpec::from),
             tags: value.tags.clone(),
             environment: value.environment.as_ref().map(EnvironmentSpec::from),
+        }
+    }
+}
+
+impl From<&ArtifactWhen> for ArtifactWhenSpec {
+    fn from(value: &ArtifactWhen) -> Self {
+        match value {
+            ArtifactWhen::OnSuccess => Self::OnSuccess,
+            ArtifactWhen::OnFailure => Self::OnFailure,
+            ArtifactWhen::Always => Self::Always,
+        }
+    }
+}
+
+impl From<&ArtifactWhenSpec> for ArtifactWhen {
+    fn from(value: &ArtifactWhenSpec) -> Self {
+        match value {
+            ArtifactWhenSpec::OnSuccess => Self::OnSuccess,
+            ArtifactWhenSpec::OnFailure => Self::OnFailure,
+            ArtifactWhenSpec::Always => Self::Always,
         }
     }
 }

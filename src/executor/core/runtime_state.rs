@@ -1,3 +1,4 @@
+use crate::model::ArtifactSourceOutcome;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -6,6 +7,7 @@ pub(super) struct RuntimeState {
     job_attempts: Arc<Mutex<HashMap<String, usize>>>,
     running_containers: Arc<Mutex<HashMap<String, String>>>,
     cancelled_jobs: Arc<Mutex<HashSet<String>>>,
+    completed_jobs: Arc<Mutex<HashMap<String, ArtifactSourceOutcome>>>,
 }
 
 impl RuntimeState {
@@ -56,11 +58,25 @@ impl RuntimeState {
             false
         }
     }
+
+    pub(super) fn record_completed_job(&self, job_name: &str, outcome: ArtifactSourceOutcome) {
+        if let Ok(mut completed) = self.completed_jobs.lock() {
+            completed.insert(job_name.to_string(), outcome);
+        }
+    }
+
+    pub(super) fn completed_jobs(&self) -> HashMap<String, ArtifactSourceOutcome> {
+        match self.completed_jobs.lock() {
+            Ok(map) => map.clone(),
+            Err(_) => HashMap::new(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::RuntimeState;
+    use crate::model::ArtifactSourceOutcome;
 
     #[test]
     fn runtime_state_tracks_attempts_and_cancellation() {
@@ -78,6 +94,12 @@ mod tests {
         state.mark_job_cancelled("build");
         assert!(state.take_cancelled_job("build"));
         assert!(!state.take_cancelled_job("build"));
+
+        state.record_completed_job("build", ArtifactSourceOutcome::Success);
+        assert_eq!(
+            state.completed_jobs().get("build"),
+            Some(&ArtifactSourceOutcome::Success)
+        );
 
         state.clear_running_container("build");
         assert_eq!(state.running_container("build"), None);
