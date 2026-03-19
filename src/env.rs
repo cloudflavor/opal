@@ -1,5 +1,5 @@
 use crate::git;
-use crate::model::JobSpec;
+use crate::model::{EnvironmentSpec, JobSpec};
 use crate::naming::job_name_slug;
 use crate::secrets::SecretsStore;
 use anyhow::{Context, Result};
@@ -98,6 +98,25 @@ pub fn expand_env_list(env: &mut [(String, String)], host_env: &HashMap<String, 
     }
 }
 
+pub fn expand_environment(
+    environment: &EnvironmentSpec,
+    lookup: &HashMap<String, String>,
+) -> EnvironmentSpec {
+    EnvironmentSpec {
+        name: expand_value(&environment.name, lookup),
+        url: environment
+            .url
+            .as_ref()
+            .map(|value| expand_value(value, lookup)),
+        on_stop: environment
+            .on_stop
+            .as_ref()
+            .map(|value| expand_value(value, lookup)),
+        auto_stop_in: environment.auto_stop_in,
+        action: environment.action,
+    }
+}
+
 pub fn expand_value(value: &str, lookup: &HashMap<String, String>) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut idx = 0;
@@ -117,8 +136,14 @@ pub fn expand_value(value: &str, lookup: &HashMap<String, String>) -> String {
                         end += 1;
                     }
                     if end < chars.len() {
-                        let name: String = chars[idx + 2..end].iter().collect();
-                        if let Some(val) = lookup.get(&name) {
+                        let expr: String = chars[idx + 2..end].iter().collect();
+                        if let Some((name, default)) = expr.split_once(":-") {
+                            if let Some(val) = lookup.get(name).filter(|val| !val.is_empty()) {
+                                output.push_str(val);
+                            } else {
+                                output.push_str(&expand_value(default, lookup));
+                            }
+                        } else if let Some(val) = lookup.get(&expr) {
                             output.push_str(val);
                         }
                         idx = end + 1;
@@ -262,7 +287,9 @@ fn insert_inferred_env<F>(
 mod tests {
     use super::*;
     use crate::git::test_support::init_repo_with_commit_and_tag;
-    use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
+    use crate::model::{
+        ArtifactSpec, EnvironmentActionSpec, EnvironmentSpec, JobSpec, RetryPolicySpec,
+    };
     use crate::secrets::SecretsStore;
     use std::collections::HashMap;
 
@@ -279,6 +306,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),
@@ -312,6 +340,55 @@ mod tests {
     }
 
     #[test]
+    fn expands_shell_style_default_fallbacks() {
+        let lookup = HashMap::from([
+            ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ("CI_ENVIRONMENT_SLUG".into(), "review-main".into()),
+        ]);
+
+        assert_eq!(
+            expand_value("review/${CI_COMMIT_REF_SLUG:-local}", &lookup),
+            "review/main"
+        );
+        assert_eq!(
+            expand_value(
+                "https://${CI_ENVIRONMENT_SLUG:-fallback}.example.com",
+                &lookup
+            ),
+            "https://review-main.example.com"
+        );
+        assert_eq!(
+            expand_value("review/${MISSING_VAR:-local}", &lookup),
+            "review/local"
+        );
+    }
+
+    #[test]
+    fn expands_environment_metadata() {
+        let environment = EnvironmentSpec {
+            name: "review/${CI_COMMIT_REF_SLUG:-local}".into(),
+            url: Some("https://${CI_ENVIRONMENT_SLUG:-fallback}.example.com".into()),
+            on_stop: Some("stop-${CI_COMMIT_REF_SLUG:-local}".into()),
+            auto_stop_in: None,
+            action: EnvironmentActionSpec::Start,
+        };
+        let expanded = expand_environment(
+            &environment,
+            &HashMap::from([
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+                ("CI_ENVIRONMENT_SLUG".into(), "review-main".into()),
+            ]),
+        );
+
+        assert_eq!(expanded.name, "review/main");
+        assert_eq!(
+            expanded.url.as_deref(),
+            Some("https://review-main.example.com")
+        );
+        assert_eq!(expanded.on_stop.as_deref(), Some("stop-main"));
+    }
+
+    #[test]
     fn infers_tagged_ref_vars_for_job_environment() {
         let dir = init_repo_with_commit_and_tag("v1.2.3");
 
@@ -326,6 +403,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),
@@ -377,6 +455,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),

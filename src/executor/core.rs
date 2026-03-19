@@ -1004,12 +1004,13 @@ impl ExecutorCore {
         )
     }
 
-    fn job_services(&self, job: &JobSpec) -> Vec<ServiceSpec> {
-        if job.services.is_empty() {
-            self.pipeline.defaults.services.clone()
-        } else {
-            job.services.clone()
-        }
+    pub(crate) fn expanded_environment(
+        &self,
+        job: &JobSpec,
+    ) -> Option<crate::model::EnvironmentSpec> {
+        let environment = job.environment.as_ref()?;
+        let lookup: HashMap<String, String> = self.job_env(job).into_iter().collect();
+        Some(crate::env::expand_environment(environment, &lookup))
     }
 
     fn display(&self) -> DisplayFormatter {

@@ -150,7 +150,7 @@ pub(crate) async fn execute_plan(
                         log_path: None,
                         log_hash: planned.log_hash.clone(),
                         allow_failure: planned.instance.rule.allow_failure,
-                        environment: planned.instance.job.environment.clone(),
+                        environment: exec.expanded_environment(&planned.instance.job),
                     });
                     completed += 1;
                     release_dependents(
@@ -195,7 +195,7 @@ pub(crate) async fn execute_plan(
                         log_path: Some(planned.log_path.clone()),
                         log_hash: planned.log_hash.clone(),
                         allow_failure: false,
-                        environment: planned.instance.job.environment.clone(),
+                        environment: exec.expanded_environment(&planned.instance.job),
                     });
                     return (summaries, Err(err));
                 }
@@ -311,7 +311,7 @@ pub(crate) async fn execute_plan(
                         log_path: None,
                         log_hash: planned.log_hash.clone(),
                         allow_failure: planned.instance.rule.allow_failure,
-                        environment: planned.instance.job.environment.clone(),
+                        environment: exec.expanded_environment(&planned.instance.job),
                     });
                     completed += 1;
                     release_dependents(
@@ -416,7 +416,7 @@ pub(crate) async fn execute_plan(
                             log_path: event.log_path.clone(),
                             log_hash: event.log_hash.clone(),
                             allow_failure: planned.instance.rule.allow_failure,
-                            environment: planned.instance.job.environment.clone(),
+                            environment: exec.expanded_environment(&planned.instance.job),
                         });
                         completed += 1;
                     }
@@ -436,7 +436,7 @@ pub(crate) async fn execute_plan(
                                 log_path: event.log_path.clone(),
                                 log_hash: event.log_hash.clone(),
                                 allow_failure: true,
-                                environment: planned.instance.job.environment.clone(),
+                                environment: exec.expanded_environment(&planned.instance.job),
                             });
                             completed += 1;
                             continue;
@@ -479,7 +479,7 @@ pub(crate) async fn execute_plan(
                             log_path: event.log_path.clone(),
                             log_hash: event.log_hash.clone(),
                             allow_failure: planned.instance.rule.allow_failure,
-                            environment: planned.instance.job.environment.clone(),
+                            environment: exec.expanded_environment(&planned.instance.job),
                         });
                         completed += 1;
                     }
@@ -526,7 +526,7 @@ pub(crate) async fn execute_plan(
                 log_path: Some(planned.log_path.clone()),
                 log_hash: planned.log_hash.clone(),
                 allow_failure: planned.instance.rule.allow_failure,
-                environment: planned.instance.job.environment.clone(),
+                environment: exec.expanded_environment(&planned.instance.job),
             });
             recorded.insert(job_name.clone());
         }
@@ -565,21 +565,27 @@ pub(crate) async fn handle_restart_commands(
                             log_path: Some(planned.log_path.clone()),
                             log_hash: planned.log_hash.clone(),
                             allow_failure: false,
-                            environment: planned.instance.job.environment.clone(),
+                            environment: exec.expanded_environment(&planned.instance.job),
                         });
                         return Err(err);
                     }
                 };
-                let exec = exec.clone();
+                let restart_exec = exec.clone();
                 let ui_clone = ui.clone();
                 let run_info_clone = run_info.clone();
                 let job_plan = plan.clone();
                 let event = task::spawn_blocking(move || {
-                    job_runner::run_planned_job(&exec, job_plan, planned, run_info_clone, ui_clone)
+                    job_runner::run_planned_job(
+                        &restart_exec,
+                        job_plan,
+                        planned,
+                        run_info_clone,
+                        ui_clone,
+                    )
                 })
                 .await
                 .context("job restart task failed")?;
-                update_summaries_from_event(plan.as_ref(), event, summaries);
+                update_summaries_from_event(exec, plan.as_ref(), event, summaries);
             }
             UiCommand::StartManual { .. } => {}
             UiCommand::CancelJob { .. } => {}
@@ -590,6 +596,7 @@ pub(crate) async fn handle_restart_commands(
 }
 
 fn update_summaries_from_event(
+    exec: &ExecutorCore,
     plan: &ExecutionPlan,
     event: JobEvent,
     summaries: &mut Vec<JobSummary>,
@@ -612,7 +619,7 @@ fn update_summaries_from_event(
     let environment = plan
         .nodes
         .get(&name)
-        .and_then(|planned| planned.instance.job.environment.clone());
+        .and_then(|planned| exec.expanded_environment(&planned.instance.job));
 
     let status = match result {
         Ok(_) => JobStatus::Success,
@@ -752,6 +759,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),
