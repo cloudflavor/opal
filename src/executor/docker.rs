@@ -43,6 +43,7 @@ impl<'a> DockerCommandBuilder<'a> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .arg("run")
+            .arg("--rm")
             .arg("--name")
             .arg(ctx.container_name)
             .arg("--workdir")

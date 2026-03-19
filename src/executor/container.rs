@@ -49,6 +49,7 @@ impl<'a> ContainerCommandBuilder<'a> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .arg("run")
+            .arg("--rm")
             .arg("--name")
             .arg(ctx.container_name)
             .arg("--workdir")
@@ -128,4 +129,36 @@ fn host_container_arch() -> Option<String> {
     // Apple's container CLI currently expects x86_64 guests even on Apple silicon hosts.
     // Default to x86_64 unless OPAL_CONTAINER_ARCH overrides it.
     Some("x86_64".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContainerExecutor;
+    use crate::engine::EngineCommandContext;
+    use std::path::Path;
+
+    #[test]
+    fn build_command_uses_rm_for_job_containers() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let command = ContainerExecutor::build_command(&ctx);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.iter().any(|arg| arg == "--rm"));
+    }
 }

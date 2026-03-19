@@ -9,9 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use tracing::warn;
 
 const MAX_NAME_LEN: usize = 63;
+const CONTAINER_NETWORK_RETRY_ATTEMPTS: usize = 3;
+const CONTAINER_NETWORK_RETRY_DELAY_MS: u64 = 500;
 
 pub struct ServiceRuntime {
     engine: EngineKind,
@@ -39,9 +43,7 @@ impl ServiceRuntime {
             clean_run_id,
             job_name_slug(job_name)
         ));
-        let mut network_cmd = Command::new(engine_binary(engine));
-        network_cmd.arg("network").arg("create").arg(&network);
-        run_command(network_cmd)
+        run_network_create(engine, &network)
             .with_context(|| format!("failed to create network {}", network))?;
 
         let mut runtime = ServiceRuntime {
@@ -105,11 +107,7 @@ impl ServiceRuntime {
                 .arg(&name)
                 .status();
         }
-        let _ = Command::new(engine_binary(self.engine))
-            .arg("network")
-            .arg("rm")
-            .arg(&self.network)
-            .status();
+        let _ = run_network_remove(self.engine, &self.network);
     }
 
     pub fn link_env(&self) -> &[(String, String)] {
@@ -373,16 +371,81 @@ struct HistoryEntry {
 }
 
 fn run_command(mut cmd: Command) -> Result<()> {
-    let status = cmd.status()?;
-    if status.success() {
+    let output = cmd.output()?;
+    if output.status.success() {
         Ok(())
     } else {
-        Err(anyhow!(
-            "command {:?} exited with status {:?}",
-            cmd,
-            status.code()
+        Err(command_failed(
+            &cmd,
+            &output.stdout,
+            &output.stderr,
+            output.status.code(),
         ))
     }
+}
+
+fn command_failed(cmd: &Command, stdout: &[u8], stderr: &[u8], code: Option<i32>) -> anyhow::Error {
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(": {stdout}"),
+        (true, false) => format!(": {stderr}"),
+        (false, false) => format!(": stdout={stdout}; stderr={stderr}"),
+    };
+    anyhow!("command {:?} exited with status {:?}{detail}", cmd, code)
+}
+
+fn run_network_create(engine: EngineKind, network: &str) -> Result<()> {
+    run_network_command(engine, "create", network)
+}
+
+fn run_network_remove(engine: EngineKind, network: &str) -> Result<()> {
+    run_network_command(engine, "rm", network)
+}
+
+fn run_network_command(engine: EngineKind, action: &str, network: &str) -> Result<()> {
+    let attempts = if matches!(engine, EngineKind::ContainerCli) {
+        CONTAINER_NETWORK_RETRY_ATTEMPTS
+    } else {
+        1
+    };
+
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        let mut command = Command::new(engine_binary(engine));
+        command.arg("network").arg(action).arg(network);
+        match run_command(command) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if matches!(engine, EngineKind::ContainerCli)
+                    && should_retry_container_network_error(&err.to_string())
+                    && attempt + 1 < attempts
+                {
+                    warn!(
+                        network,
+                        action,
+                        attempt = attempt + 1,
+                        "container network command timed out; retrying"
+                    );
+                    thread::sleep(Duration::from_millis(
+                        CONTAINER_NETWORK_RETRY_DELAY_MS * (attempt + 1) as u64,
+                    ));
+                    last_error = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("network command failed without an error")))
+}
+
+fn should_retry_container_network_error(message: &str) -> bool {
+    message.contains("XPC timeout for request to com.apple.container.apiserver/networkCreate")
+        || message
+            .contains("XPC timeout for request to com.apple.container.apiserver/networkDelete")
 }
 
 fn merged_env(
@@ -404,4 +467,22 @@ fn default_service_alias(image: &str) -> String {
         .map(|segment| segment.replace(|c: char| !c.is_ascii_alphanumeric(), ""))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "service".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_retry_container_network_error;
+
+    #[test]
+    fn retries_container_network_xpc_timeouts() {
+        assert!(should_retry_container_network_error(
+            "XPC timeout for request to com.apple.container.apiserver/networkCreate"
+        ));
+        assert!(should_retry_container_network_error(
+            "XPC timeout for request to com.apple.container.apiserver/networkDelete"
+        ));
+        assert!(!should_retry_container_network_error(
+            "cannot delete subnet with referring containers"
+        ));
+    }
 }

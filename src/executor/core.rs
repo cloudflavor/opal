@@ -828,18 +828,7 @@ impl ExecutorCore {
     }
 
     pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
-        let binary = match self.config.engine {
-            EngineKind::ContainerCli => "container",
-            EngineKind::Docker | EngineKind::Orbstack => "docker",
-            EngineKind::Podman => "podman",
-            EngineKind::Nerdctl => "nerdctl",
-        };
-        let mut command = Command::new(binary);
-        if binary == "container" {
-            command.arg("rm").arg("--force").arg(container_name);
-        } else {
-            command.arg("rm").arg("-f").arg(container_name);
-        }
+        let mut command = self.force_remove_container_command(container_name);
         if let Err(err) = command.status() {
             warn!(
                 job = job_name,
@@ -848,6 +837,12 @@ impl ExecutorCore {
                 "failed to terminate container after timeout"
             );
         }
+    }
+
+    pub(crate) fn cleanup_finished_container(&self, container_name: &str) {
+        let mut command = self.force_remove_container_command(container_name);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let _ = command.status();
     }
 
     fn capture_child_output(
@@ -900,6 +895,14 @@ impl ExecutorCore {
     }
     fn resolve_job_image(&self, job: &JobSpec) -> Result<String> {
         self.resolve_job_image_with_env(job, None)
+    }
+
+    fn force_remove_container_command(&self, container_name: &str) -> Command {
+        let binary = container_binary(self.config.engine);
+        let mut command = Command::new(binary);
+        let [subcommand, force_flag] = force_remove_args(self.config.engine);
+        command.arg(subcommand).arg(force_flag).arg(container_name);
+        command
     }
 
     fn resolve_job_image_with_env(
@@ -1028,18 +1031,20 @@ impl ExecutorCore {
     }
 }
 
-fn release_resource_lock(
-    planned: &ExecutableJob,
-    ready: &mut VecDeque<String>,
-    resource_locks: &mut HashMap<String, bool>,
-    resource_waiting: &mut HashMap<String, VecDeque<String>>,
-) {
-    if let Some(group) = &planned.instance.resource_group {
-        resource_locks.insert(group.clone(), false);
-        if let Some(queue) = resource_waiting.get_mut(group)
-            && let Some(next) = queue.pop_front()
-        {
-            ready.push_back(next);
+fn container_binary(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::ContainerCli => "container",
+        EngineKind::Docker | EngineKind::Orbstack => "docker",
+        EngineKind::Podman => "podman",
+        EngineKind::Nerdctl => "nerdctl",
+    }
+}
+
+fn force_remove_args(engine: EngineKind) -> [&'static str; 2] {
+    match engine {
+        EngineKind::ContainerCli => ["rm", "--force"],
+        EngineKind::Docker | EngineKind::Orbstack | EngineKind::Podman | EngineKind::Nerdctl => {
+            ["rm", "-f"]
         }
     }
 }
@@ -1049,5 +1054,23 @@ fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
         CachePolicySpec::Pull => "pull",
         CachePolicySpec::Push => "push",
         CachePolicySpec::PullPush => "pull-push",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::force_remove_args;
+    use crate::EngineKind;
+
+    #[test]
+    fn force_remove_args_match_engine_cli() {
+        assert_eq!(
+            force_remove_args(EngineKind::ContainerCli),
+            ["rm", "--force"]
+        );
+        assert_eq!(force_remove_args(EngineKind::Docker), ["rm", "-f"]);
+        assert_eq!(force_remove_args(EngineKind::Orbstack), ["rm", "-f"]);
+        assert_eq!(force_remove_args(EngineKind::Podman), ["rm", "-f"]);
+        assert_eq!(force_remove_args(EngineKind::Nerdctl), ["rm", "-f"]);
     }
 }
