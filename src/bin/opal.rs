@@ -4,7 +4,6 @@ use opal::display::{self, DisplayFormatter};
 use opal::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
-use opal::gitlab::PipelineGraph;
 use opal::logging;
 use opal::model::PipelineSpec;
 use opal::pipeline::{self, RuleContext};
@@ -126,15 +125,14 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     let pipeline = args
         .pipeline
         .unwrap_or_else(|| workdir.join(".gitlab-ci.yml"));
-    let graph = PipelineGraph::from_path(&pipeline)
+    let pipeline_spec = PipelineSpec::from_path(&pipeline)
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
-    let pipeline_spec = PipelineSpec::try_from(&graph)?;
     let ctx = RuleContext::new(&workdir);
-    if !pipeline::rules::filters_allow(&graph.filters, &ctx) {
+    if !pipeline::rules::filters_allow(&pipeline_spec.filters, &ctx) {
         println!("pipeline skipped: top-level only/except filters exclude this ref");
         return Ok(());
     }
-    if let Some(workflow) = &graph.workflow
+    if let Some(workflow) = &pipeline_spec.workflow
         && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
     {
         println!("pipeline skipped: workflow rules excluded this run");

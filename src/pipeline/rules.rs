@@ -1,7 +1,7 @@
 use crate::git;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
 use crate::gitlab::{Job, PipelineFilters};
-use crate::model::JobSpec;
+use crate::model::{JobSpec, PipelineFilterSpec};
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSetBuilder};
@@ -69,6 +69,11 @@ pub trait RuleJob {
     fn rules(&self) -> &[JobRule];
 }
 
+pub trait RuleFilters {
+    fn only_filters(&self) -> &[String];
+    fn except_filters(&self) -> &[String];
+}
+
 impl RuleJob for Job {
     fn rules(&self) -> &[JobRule] {
         &self.rules
@@ -78,6 +83,26 @@ impl RuleJob for Job {
 impl RuleJob for JobSpec {
     fn rules(&self) -> &[JobRule] {
         &self.rules
+    }
+}
+
+impl RuleFilters for PipelineFilters {
+    fn only_filters(&self) -> &[String] {
+        &self.only
+    }
+
+    fn except_filters(&self) -> &[String] {
+        &self.except
+    }
+}
+
+impl RuleFilters for PipelineFilterSpec {
+    fn only_filters(&self) -> &[String] {
+        &self.only
+    }
+
+    fn except_filters(&self) -> &[String] {
+        &self.except
     }
 }
 
@@ -708,10 +733,10 @@ fn match_regex(value: &str, pattern: &str) -> Result<bool> {
     Ok(regex.is_match(value))
 }
 
-pub fn filters_allow(filters: &PipelineFilters, ctx: &RuleContext) -> bool {
-    if filters.only.is_empty() {
+pub fn filters_allow(filters: &impl RuleFilters, ctx: &RuleContext) -> bool {
+    if filters.only_filters().is_empty() {
         if filters
-            .except
+            .except_filters()
             .iter()
             .any(|filter| filter_matches(filter, ctx))
         {
@@ -720,14 +745,14 @@ pub fn filters_allow(filters: &PipelineFilters, ctx: &RuleContext) -> bool {
         return true;
     }
     let passes_only = filters
-        .only
+        .only_filters()
         .iter()
         .any(|filter| filter_matches(filter, ctx));
     if !passes_only {
         return false;
     }
     !filters
-        .except
+        .except_filters()
         .iter()
         .any(|filter| filter_matches(filter, ctx))
 }

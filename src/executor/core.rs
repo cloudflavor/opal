@@ -8,7 +8,6 @@ use crate::display::{
 };
 use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
-use crate::gitlab::PipelineGraph;
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec, ServiceSpec};
@@ -49,7 +48,6 @@ const MAX_CONTAINER_NAME: usize = 63;
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
     pub config: ExecutorConfig,
-    g: PipelineGraph,
     pipeline: PipelineSpec,
     use_color: bool,
     scripts_dir: PathBuf,
@@ -83,8 +81,7 @@ struct JobResourceInfo {
 
 impl ExecutorCore {
     pub fn new(config: ExecutorConfig) -> Result<Self> {
-        let g = PipelineGraph::from_path(&config.pipeline)?;
-        let pipeline = PipelineSpec::try_from(&g)?;
+        let pipeline = PipelineSpec::from_path(&config.pipeline)?;
         let run_id = generate_run_id(&config);
         let runs_root = runtime::runs_root();
         fs::create_dir_all(&runs_root)
@@ -139,7 +136,7 @@ impl ExecutorCore {
             .collect();
         let mut stage_positions = HashMap::new();
         let mut stage_states = HashMap::new();
-        for (idx, stage) in g.stages.iter().enumerate() {
+        for (idx, stage) in pipeline.stages.iter().enumerate() {
             stage_positions.insert(stage.name.clone(), idx);
             stage_states.insert(stage.name.clone(), StageState::new(stage.jobs.len()));
         }
@@ -170,7 +167,6 @@ impl ExecutorCore {
 
         let core = Self {
             config,
-            g,
             pipeline,
             use_color,
             scripts_dir,
@@ -275,7 +271,7 @@ impl ExecutorCore {
 
     fn plan_jobs(&self) -> Result<JobPlan> {
         let ctx = RuleContext::new(&self.config.workdir);
-        if !pipeline::rules::filters_allow(&self.g.filters, &ctx) {
+        if !pipeline::rules::filters_allow(&self.pipeline.filters, &ctx) {
             return Ok(JobPlan {
                 ordered: Vec::new(),
                 nodes: HashMap::new(),
@@ -284,7 +280,7 @@ impl ExecutorCore {
                 variants: HashMap::new(),
             });
         }
-        if let Some(workflow) = &self.g.workflow
+        if let Some(workflow) = &self.pipeline.workflow
             && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
         {
             return Ok(JobPlan {
