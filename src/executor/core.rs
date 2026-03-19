@@ -1,27 +1,24 @@
 mod preparer;
+mod process;
 
-use super::{
-    ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
-    orchestrator, paths,
-};
+use super::{orchestrator, paths};
 use crate::config::ResolvedRegistryAuth;
 use crate::display::{
     self, DisplayFormatter, collect_pipeline_plan, indent_block, print_pipeline_summary,
 };
-use crate::engine::EngineCommandContext;
 use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
-use crate::logging::{self, LogFormatter, sanitize_fragments};
+use crate::logging;
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobStatus,
-    JobSummary, RuleContext, StageState, VolumeMount,
+    JobSummary, RuleContext, StageState,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
-use crate::terminal::{should_use_color, stream_lines};
+use crate::terminal::should_use_color;
 use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
 use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
@@ -29,18 +26,16 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
+use time::OffsetDateTime;
 use tracing::warn;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
-const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
-    format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
 const MAX_CONTAINER_NAME: usize = 63;
 
 #[derive(Debug, Clone)]
@@ -592,51 +587,7 @@ impl ExecutorCore {
     }
 
     pub(crate) fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
-        let ExecuteContext {
-            script_path,
-            log_path,
-            mounts,
-            image,
-            container_name,
-            job,
-            ui,
-            env_vars,
-            network,
-        } = ctx;
-        if !self.config.enable_tui {
-            let display = self.display();
-            display::print_line(display.format_mounts(mounts));
-            display::print_line(display.logs_header());
-            let log_label = display.bold_yellow("    log file:");
-            display::print_line(format!("{} {}", log_label, log_path.display()));
-        }
-
-        let container_script = self.container_path_rel(script_path)?;
-        if self.verbose_scripts && !self.config.enable_tui {
-            let display = self.display();
-            let script_label = display.bold_yellow("    script file:");
-            display::print_line(format!("{} {}", script_label, container_script.display()));
-        }
-
-        let mut proc = self.spawn_container_process(
-            &container_script,
-            container_name,
-            image,
-            mounts,
-            env_vars,
-            network,
-        )?;
-        self.capture_child_output(&mut proc, job, log_path, ui)?;
-
-        let status = proc.wait()?;
-        if !status.success() {
-            return Err(anyhow!(
-                "container command exited with status {:?}",
-                status.code()
-            ));
-        }
-
-        Ok(())
+        process::execute(self, ctx)
     }
 
     pub(crate) fn print_job_completion(
@@ -658,43 +609,6 @@ impl ExecutorCore {
                 display::print_line(format!("{stage_footer} {:.2}s", stage_elapsed));
             }
         }
-    }
-
-    fn spawn_container_process(
-        &self,
-        container_script: &Path,
-        container_name: &str,
-        image: &str,
-        mounts: &[VolumeMount],
-        env_vars: &[(String, String)],
-        network: Option<&str>,
-    ) -> Result<Child> {
-        let container_cfg = self.config.settings.container_settings();
-        let ctx = EngineCommandContext {
-            workdir: &self.config.workdir,
-            container_root: &self.container_workdir,
-            container_script,
-            container_name,
-            image,
-            mounts,
-            env_vars,
-            network,
-            cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
-            memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
-            dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
-        };
-
-        let mut command = match self.config.engine {
-            EngineKind::ContainerCli => ContainerExecutor::build_command(&ctx),
-            EngineKind::Docker => DockerExecutor::build_command(&ctx),
-            EngineKind::Podman => PodmanExecutor::build_command(&ctx),
-            EngineKind::Nerdctl => NerdctlExecutor::build_command(&ctx),
-            EngineKind::Orbstack => OrbstackExecutor::build_command(&ctx),
-        };
-
-        command
-            .spawn()
-            .with_context(|| format!("failed to run {:?} command", self.config.engine))
     }
 
     fn ensure_registry_logins(&self) -> Result<()> {
@@ -794,54 +708,6 @@ impl ExecutorCore {
         let _ = command.status();
     }
 
-    fn capture_child_output(
-        &self,
-        proc: &mut Child,
-        job: &JobSpec,
-        log_path: &Path,
-        ui: Option<&UiBridge>,
-    ) -> Result<()> {
-        let stdout = proc
-            .stdout
-            .take()
-            .context("missing stdout from container process")?;
-        let stderr = proc
-            .stderr
-            .take()
-            .context("missing stderr from container process")?;
-
-        let formatter = LogFormatter::new(self.use_color).with_secrets(&self.secrets);
-        let line_prefix = formatter.line_prefix().to_string();
-        let mut log_file = File::create(log_path)
-            .with_context(|| format!("failed to create log at {}", log_path.display()))?;
-        let mut display_line_no = 1usize;
-
-        stream_lines(stdout, stderr, |line| {
-            let timestamp = OffsetDateTime::now_utc()
-                .format(TIMESTAMP_FORMAT)
-                .unwrap_or_else(|_| "??????????".to_string());
-            for fragment in sanitize_fragments(&line) {
-                let masked = formatter.mask(&fragment);
-                let plain_line =
-                    logging::format_plain_log_line(&timestamp, display_line_no, masked.as_ref());
-                if let Some(ui) = ui {
-                    ui.job_log_line(&job.name, &plain_line);
-                } else {
-                    let decorated =
-                        formatter.format_masked(&timestamp, display_line_no, masked.as_ref());
-                    display::print_prefixed_line(&line_prefix, &decorated);
-                }
-                logging::write_log_line(
-                    &mut log_file,
-                    &timestamp,
-                    display_line_no,
-                    masked.as_ref(),
-                )?;
-                display_line_no += 1;
-            }
-            Ok(())
-        })
-    }
     fn resolve_job_image(&self, job: &JobSpec) -> Result<String> {
         self.resolve_job_image_with_env(job, None)
     }
