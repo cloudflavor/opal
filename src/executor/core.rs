@@ -1,7 +1,10 @@
+mod history_store;
 mod lifecycle;
 mod preparer;
 mod process;
 mod registry;
+mod runtime_state;
+mod stage_tracker;
 
 use super::{orchestrator, paths};
 use crate::display::{
@@ -9,13 +12,13 @@ use crate::display::{
 };
 use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
-use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
+use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
 use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
-    self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobStatus,
-    JobSummary, RuleContext, StageState,
+    self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
+    RuleContext,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -24,15 +27,12 @@ use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
 use crate::{ExecutorConfig, runtime};
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-use time::OffsetDateTime;
-use tracing::warn;
+use std::sync::Arc;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
 const MAX_CONTAINER_NAME: usize = 63;
@@ -51,17 +51,13 @@ pub struct ExecutorCore {
     env_vars: Vec<(String, String)>,
     shared_env: HashMap<String, String>,
     container_workdir: PathBuf,
-    stage_positions: HashMap<String, usize>,
-    stage_states: Arc<Mutex<HashMap<String, StageState>>>,
-    job_attempts: Arc<Mutex<HashMap<String, usize>>>,
-    history_path: PathBuf,
-    history_entries: Arc<Mutex<Vec<HistoryEntry>>>,
+    stage_tracker: stage_tracker::StageTracker,
+    runtime_state: runtime_state::RuntimeState,
+    history_store: history_store::HistoryStore,
     secrets: SecretsStore,
     artifacts: ArtifactManager,
     cache: CacheManager,
     external_artifacts: Option<ExternalArtifactsManager>,
-    running_containers: Arc<Mutex<HashMap<String, String>>>,
-    cancelled_jobs: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,18 +91,7 @@ impl ExecutorCore {
         fs::create_dir_all(&logs_dir)
             .with_context(|| format!("failed to create {:?}", logs_dir))?;
 
-        let history_path = runtime::history_path();
-        let history_entries = match history::load(&history_path) {
-            Ok(entries) => entries,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    path = %history_path.display(),
-                    "failed to load pipeline history"
-                );
-                Vec::new()
-            }
-        };
+        let history_store = history_store::HistoryStore::load(runtime::history_path());
 
         let use_color = should_use_color();
         let env_verbose = env::var_os("OPAL_DEBUG")
@@ -120,12 +105,12 @@ impl ExecutorCore {
         let mut shared_env: HashMap<String, String> = env::vars().collect();
         expand_env_list(&mut env_vars[..], &shared_env);
         shared_env.extend(env_vars.iter().cloned());
-        let mut stage_positions = HashMap::new();
-        let mut stage_states = HashMap::new();
-        for (idx, stage) in pipeline.stages.iter().enumerate() {
-            stage_positions.insert(stage.name.clone(), idx);
-            stage_states.insert(stage.name.clone(), StageState::new(stage.jobs.len()));
-        }
+        let stage_specs: Vec<(String, usize)> = pipeline
+            .stages
+            .iter()
+            .map(|stage| (stage.name.clone(), stage.jobs.len()))
+            .collect();
+        let stage_tracker = stage_tracker::StageTracker::new(&stage_specs);
 
         let secrets = SecretsStore::load(&config.workdir)?;
         let artifacts = ArtifactManager::new(session_dir.clone());
@@ -140,9 +125,6 @@ impl ExecutorCore {
                 cfg.token.clone(),
             )
         });
-        let running_containers = Arc::new(Mutex::new(HashMap::new()));
-        let cancelled_jobs = Arc::new(Mutex::new(HashSet::new()));
-
         let project_dir = config
             .workdir
             .file_name()
@@ -164,17 +146,13 @@ impl ExecutorCore {
             env_vars,
             shared_env,
             container_workdir,
-            stage_positions,
-            stage_states: Arc::new(Mutex::new(stage_states)),
-            job_attempts: Arc::new(Mutex::new(HashMap::new())),
-            history_path,
-            history_entries: Arc::new(Mutex::new(history_entries)),
+            stage_tracker,
+            runtime_state: runtime_state::RuntimeState::default(),
+            history_store,
             secrets,
             artifacts,
             cache,
             external_artifacts,
-            running_containers,
-            cancelled_jobs,
         };
 
         registry::ensure_registry_logins(&core)?;
@@ -188,11 +166,7 @@ impl ExecutorCore {
         let display = self.display();
         let plan_text = collect_pipeline_plan(&display, &plan).join("\n");
         let ui_resources = Self::convert_ui_resources(&resource_map);
-        let history_snapshot = self
-            .history_entries
-            .lock()
-            .map(|entries| entries.clone())
-            .unwrap_or_default();
+        let history_snapshot = self.history_store.snapshot();
         let ui_handle = if self.config.enable_tui {
             let jobs: Vec<UiJobInfo> = plan
                 .ordered
@@ -360,76 +334,21 @@ impl ExecutorCore {
         summaries: &[JobSummary],
         resources: &HashMap<String, JobResourceInfo>,
     ) -> Option<HistoryEntry> {
-        let finished_at = OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| "unknown".to_string());
-        let pipeline_status = if summaries
+        let resource_map = resources
             .iter()
-            .any(|entry| matches!(entry.status, JobStatus::Failed(_)) && !entry.allow_failure)
-        {
-            HistoryStatus::Failed
-        } else if summaries
-            .iter()
-            .all(|entry| matches!(entry.status, JobStatus::Skipped(_)))
-        {
-            HistoryStatus::Skipped
-        } else {
-            HistoryStatus::Success
-        };
-
-        let jobs: Vec<HistoryJob> = summaries
-            .iter()
-            .map(|entry| HistoryJob {
-                name: entry.name.clone(),
-                stage: entry.stage_name.clone(),
-                status: Self::history_status_for_job(&entry.status),
-                log_hash: entry.log_hash.clone(),
-                log_path: entry
-                    .log_path
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                artifact_dir: resources
-                    .get(&entry.name)
-                    .and_then(|info| info.artifact_dir.clone()),
-                artifacts: resources
-                    .get(&entry.name)
-                    .map(|info| info.artifact_paths.clone())
-                    .unwrap_or_default(),
-                caches: resources
-                    .get(&entry.name)
-                    .map(|info| info.caches.clone())
-                    .unwrap_or_default(),
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    history_store::HistoryResources {
+                        artifact_dir: info.artifact_dir.clone(),
+                        artifacts: info.artifact_paths.clone(),
+                        caches: info.caches.clone(),
+                    },
+                )
             })
             .collect();
-
-        let entry = HistoryEntry {
-            run_id: self.run_id.clone(),
-            finished_at,
-            status: pipeline_status,
-            jobs,
-        };
-
-        match self.history_entries.lock() {
-            Ok(mut existing) => {
-                existing.push(entry.clone());
-                if let Err(err) = history::save(&self.history_path, &existing) {
-                    warn!(error = %err, "failed to persist pipeline history");
-                }
-                Some(entry)
-            }
-            Err(err) => {
-                warn!(error = %err, "failed to record pipeline history");
-                None
-            }
-        }
-    }
-
-    fn history_status_for_job(status: &JobStatus) -> HistoryStatus {
-        match status {
-            JobStatus::Success => HistoryStatus::Success,
-            JobStatus::Failed(_) => HistoryStatus::Failed,
-            JobStatus::Skipped(_) => HistoryStatus::Skipped,
-        }
+        self.history_store
+            .record(&self.run_id, summaries, &resource_map)
     }
 
     pub(crate) fn log_job_start(
@@ -437,7 +356,7 @@ impl ExecutorCore {
         planned: &ExecutableJob,
         ui: Option<&UiBridge>,
     ) -> Result<JobRunInfo> {
-        let attempt = self.next_attempt(&planned.instance.job.name);
+        let attempt = self.runtime_state.next_attempt(&planned.instance.job.name);
         let container_name =
             self.job_container_name(&planned.instance.stage_name, &planned.instance.job, attempt);
         if let Some(ui) = ui {
@@ -446,8 +365,8 @@ impl ExecutorCore {
 
         if !self.config.enable_tui {
             let display = self.display();
-            if self.stage_started(&planned.instance.stage_name) {
-                if self.stage_position(&planned.instance.stage_name) > 0 {
+            if self.stage_tracker.start(&planned.instance.stage_name) {
+                if self.stage_tracker.position(&planned.instance.stage_name) > 0 {
                     display::print_blank_line();
                 }
                 display::print_line(display.stage_header(&planned.instance.stage_name));
@@ -484,7 +403,8 @@ impl ExecutorCore {
             }
         }
 
-        self.track_running_container(&planned.instance.job.name, &container_name);
+        self.runtime_state
+            .track_running_container(&planned.instance.job.name, &container_name);
         Ok(JobRunInfo { container_name })
     }
 
@@ -496,77 +416,18 @@ impl ExecutorCore {
         preparer::prepare_job_run(self, plan, job)
     }
 
-    fn stage_started(&self, stage_name: &str) -> bool {
-        let mut states = self
-            .stage_states
-            .lock()
-            .expect("stage tracker mutex poisoned");
-        let state = states
-            .entry(stage_name.to_string())
-            .or_insert_with(|| StageState::new(0));
-        if state.header_printed {
-            false
-        } else {
-            state.header_printed = true;
-            state.started_at = Some(Instant::now());
-            true
-        }
-    }
-
-    fn stage_job_completed(&self, stage_name: &str) -> Option<f32> {
-        let mut states = self
-            .stage_states
-            .lock()
-            .expect("stage tracker mutex poisoned");
-        let state = states.get_mut(stage_name)?;
-        state.completed += 1;
-        if state.completed == state.total {
-            state.started_at.map(|start| start.elapsed().as_secs_f32())
-        } else {
-            None
-        }
-    }
-
-    fn stage_position(&self, stage_name: &str) -> usize {
-        self.stage_positions.get(stage_name).copied().unwrap_or(0)
-    }
-
-    fn track_running_container(&self, job_name: &str, container: &str) {
-        if let Ok(mut map) = self.running_containers.lock() {
-            map.insert(job_name.to_string(), container.to_string());
-        }
-    }
-
     pub(crate) fn clear_running_container(&self, job_name: &str) {
-        if let Ok(mut map) = self.running_containers.lock() {
-            map.remove(job_name);
-        }
-    }
-
-    fn mark_job_cancelled(&self, job_name: &str) {
-        if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
-            cancelled.insert(job_name.to_string());
-        }
+        self.runtime_state.clear_running_container(job_name);
     }
 
     pub(crate) fn take_cancelled_job(&self, job_name: &str) -> bool {
-        if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
-            cancelled.remove(job_name)
-        } else {
-            false
-        }
+        self.runtime_state.take_cancelled_job(job_name)
     }
 
     pub(crate) fn cancel_running_job(&self, job_name: &str) -> bool {
-        let container = {
-            let map = match self.running_containers.lock() {
-                Ok(map) => map,
-                Err(_) => return false,
-            };
-            map.get(job_name).cloned()
-        };
+        let container = self.runtime_state.running_container(job_name);
         if let Some(container_name) = container {
-            self.mark_job_cancelled(job_name);
+            self.runtime_state.mark_job_cancelled(job_name);
             self.kill_container(job_name, &container_name);
             true
         } else {
@@ -575,12 +436,8 @@ impl ExecutorCore {
     }
 
     pub(crate) fn cancel_all_running_jobs(&self) {
-        let containers: Vec<(String, String)> = match self.running_containers.lock() {
-            Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            Err(_) => return,
-        };
-        for (job, container) in containers {
-            self.mark_job_cancelled(&job);
+        for (job, container) in self.runtime_state.running_containers() {
+            self.runtime_state.mark_job_cancelled(&job);
             self.kill_container(&job, &container);
         }
     }
@@ -603,7 +460,7 @@ impl ExecutorCore {
             let finish_label = display.bold_green("    ✓ finished in");
             display::print_line(format!("{} {:.2}s", finish_label, elapsed));
 
-            if let Some(stage_elapsed) = self.stage_job_completed(stage_name) {
+            if let Some(stage_elapsed) = self.stage_tracker.complete_job(stage_name) {
                 let stage_footer = display.bold_blue("╰─ stage complete in");
                 display::print_line(format!("{stage_footer} {:.2}s", stage_elapsed));
             }
@@ -650,16 +507,6 @@ impl ExecutorCore {
             let owned_lookup: HashMap<String, String> = self.job_env(job).into_iter().collect();
             Ok(expand_value(&template, &owned_lookup))
         }
-    }
-
-    fn next_attempt(&self, job_name: &str) -> usize {
-        let mut attempts = self
-            .job_attempts
-            .lock()
-            .expect("job attempt tracker mutex poisoned");
-        let entry = attempts.entry(job_name.to_string()).or_insert(0);
-        *entry += 1;
-        *entry
     }
 
     fn job_container_name(&self, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
