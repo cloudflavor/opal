@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(mounts[1].container, PathBuf::from("/opal/run"));
         assert!(!mounts[1].read_only);
         assert_eq!(mounts[2].host, secrets_root);
-        assert_eq!(mounts[2].container, PathBuf::from(".opal/secrets"));
+        assert_eq!(mounts[2].container, PathBuf::from("/opal/secrets"));
         assert!(mounts[2].read_only);
 
         let _ = fs::remove_dir_all(temp_root);

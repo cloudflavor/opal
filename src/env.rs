@@ -292,6 +292,9 @@ mod tests {
     };
     use crate::secrets::SecretsStore;
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn expands_env_references() {
@@ -490,5 +493,69 @@ mod tests {
         let map: HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get("CI_COMMIT_TAG").map(String::as_str), Some("v1.2.3"));
         assert!(!map.contains_key("CI_COMMIT_BRANCH"));
+    }
+
+    #[test]
+    fn secret_file_env_uses_absolute_container_path() {
+        let temp_root = temp_path("env-secret-file");
+        let secrets_root = temp_root.join(".opal").join("env");
+        fs::create_dir_all(&secrets_root).expect("create secrets dir");
+        fs::write(secrets_root.join("API_TOKEN"), "super-secret").expect("write secret");
+        let secrets = SecretsStore::load(&temp_root).expect("load secrets");
+        let job = JobSpec {
+            name: "lint".into(),
+            stage: "test".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+
+        let env = build_job_env(
+            &[],
+            &HashMap::new(),
+            &job,
+            &secrets,
+            &temp_root,
+            Path::new("/builds/workspace"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::new(),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("API_TOKEN_FILE").map(String::as_str),
+            Some("/opal/secrets/API_TOKEN")
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
     }
 }
