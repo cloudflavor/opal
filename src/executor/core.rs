@@ -121,15 +121,9 @@ impl ExecutorCore {
             .unwrap_or(false);
         let verbose_scripts = config.trace_scripts || env_verbose;
         let mut env_vars = collect_env_vars(&config.env_includes)?;
-        let mut shared_env: HashMap<String, String> = env_vars
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let mut shared_env: HashMap<String, String> = env::vars().collect();
         expand_env_list(&mut env_vars[..], &shared_env);
-        shared_env = env_vars
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        shared_env.extend(env_vars.iter().cloned());
         let mut stage_positions = HashMap::new();
         let mut stage_states = HashMap::new();
         for (idx, stage) in pipeline.stages.iter().enumerate() {
