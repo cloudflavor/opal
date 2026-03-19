@@ -874,6 +874,7 @@ fn build_graph(
             dependencies: dependencies.clone(),
             before_script,
             after_script,
+            when: job_spec.when.clone(),
             rules: job_spec.rules.clone(),
             artifacts,
             cache: cache_entries,
@@ -1084,6 +1085,8 @@ struct RawJob {
     stage: Option<String>,
     #[serde(default)]
     script: Script,
+    #[serde(default)]
+    when: Option<String>,
     #[serde(default)]
     needs: Option<Vec<Need>>,
     #[serde(default)]

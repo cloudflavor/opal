@@ -351,16 +351,31 @@ fn apply_rule(rule: &JobRule, ctx: &RuleContext) -> RuleEvaluation {
         result.allow_failure = allow;
     }
     result.manual_auto_run = ctx.run_manual;
+    apply_when_config(
+        &mut result,
+        rule.when.as_deref(),
+        rule.start_in.as_deref(),
+        Some("manual job (rules)"),
+    );
 
-    if let Some(when) = rule.when.as_deref() {
+    result
+}
+
+pub(crate) fn apply_when_config(
+    result: &mut RuleEvaluation,
+    when: Option<&str>,
+    start_in: Option<&str>,
+    manual_reason: Option<&str>,
+) {
+    if let Some(when) = when {
         match when {
             "manual" => {
                 result.when = RuleWhen::Manual;
-                result.manual_reason = Some("manual job (rules)".into());
+                result.manual_reason = manual_reason.map(str::to_string);
             }
             "delayed" => {
                 result.when = RuleWhen::Delayed;
-                if let Some(start) = rule.start_in.as_deref()
+                if let Some(start) = start_in
                     && let Some(dur) = parse_duration(start)
                 {
                     result.start_in = Some(dur);
@@ -381,8 +396,6 @@ fn apply_rule(rule: &JobRule, ctx: &RuleContext) -> RuleEvaluation {
             }
         }
     }
-
-    result
 }
 
 fn matches_changes(changes: &RuleChangesRaw, ctx: &RuleContext) -> Result<bool> {

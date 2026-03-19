@@ -190,6 +190,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),

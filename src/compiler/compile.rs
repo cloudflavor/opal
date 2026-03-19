@@ -3,7 +3,7 @@ use crate::model::{
     DependencySourceSpec, JobDependencySpec, JobSpec, ParallelConfigSpec, ParallelMatrixEntrySpec,
     PipelineSpec,
 };
-use crate::pipeline::rules::{RuleEvaluation, evaluate_rules, filters_allow};
+use crate::pipeline::rules::{RuleEvaluation, apply_when_config, evaluate_rules, filters_allow};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 use tracing::warn;
@@ -94,6 +94,15 @@ pub fn compile_pipeline(
                 } else {
                     RuleEvaluation::default()
                 };
+                let mut evaluation = evaluation;
+                if expanded.job.rules.is_empty() {
+                    apply_when_config(
+                        &mut evaluation,
+                        expanded.job.when.as_deref(),
+                        None,
+                        Some("manual job"),
+                    );
+                }
                 if !evaluation.included {
                     if let Some(entry) = variant_lookup.get_mut(&expanded.base_name) {
                         entry.retain(|meta| meta.name != expanded.job.name);
@@ -507,6 +516,52 @@ mod tests {
         assert!(tag_compiled.jobs.contains_key("tag-only"));
     }
 
+    #[test]
+    fn compile_pipeline_applies_job_level_manual_when() {
+        let pipeline = pipeline_spec(
+            vec![StageSpec {
+                name: "deploy".into(),
+                jobs: vec!["stop-review".into()],
+            }],
+            vec![JobSpec {
+                when: Some("manual".into()),
+                ..job("stop-review", "deploy")
+            }],
+        );
+
+        let compiled = compile_pipeline(&pipeline, Some(&RuleContext::new(Path::new("."))))
+            .expect("pipeline compiles");
+
+        let stop_review = compiled.jobs.get("stop-review").expect("job exists");
+        assert_eq!(stop_review.rule.when, crate::pipeline::RuleWhen::Manual);
+        assert_eq!(
+            stop_review.rule.manual_reason.as_deref(),
+            Some("manual job")
+        );
+    }
+
+    #[test]
+    fn compile_pipeline_preserves_job_level_manual_when_from_fixture() {
+        let pipeline =
+            PipelineSpec::from_path(Path::new("pipelines/tests/environments.gitlab-ci.yml"))
+                .expect("pipeline loads");
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ]),
+            false,
+        );
+
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
+        let stop_review = compiled.jobs.get("stop-review").expect("job exists");
+
+        assert_eq!(stop_review.rule.when, crate::pipeline::RuleWhen::Manual);
+    }
+
     fn pipeline_spec(stages: Vec<StageSpec>, jobs: Vec<JobSpec>) -> PipelineSpec {
         PipelineSpec {
             stages,
@@ -532,6 +587,7 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            when: None,
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),
