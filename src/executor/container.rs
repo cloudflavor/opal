@@ -26,6 +26,7 @@ impl ContainerExecutor {
 
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
         ContainerCommandBuilder::new(ctx)
+            .with_workspace_volume()
             .with_volumes()
             .with_network()
             .with_env()
@@ -82,6 +83,11 @@ impl<'a> ContainerCommandBuilder<'a> {
         self
     }
 
+    fn with_workspace_volume(mut self) -> Self {
+        self.command.arg("--volume").arg(&self.workspace_mount);
+        self
+    }
+
     fn with_network(mut self) -> Self {
         if let Some(network) = self.ctx.network {
             self.command.arg("--network").arg(network);
@@ -98,8 +104,6 @@ impl<'a> ContainerCommandBuilder<'a> {
 
     fn build(mut self) -> Command {
         self.command
-            .arg("--volume")
-            .arg(&self.workspace_mount)
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);
@@ -135,6 +139,7 @@ fn host_container_arch() -> Option<String> {
 mod tests {
     use super::ContainerExecutor;
     use crate::engine::EngineCommandContext;
+    use crate::pipeline::VolumeMount;
     use std::path::Path;
 
     #[test]
@@ -160,5 +165,44 @@ mod tests {
             .collect();
 
         assert!(args.iter().any(|arg| arg == "--rm"));
+    }
+
+    #[test]
+    fn build_command_mounts_workspace_before_nested_artifacts() {
+        let mounts = [VolumeMount {
+            host: "/tmp/artifacts".into(),
+            container: "/builds/workspace/tests-temp/shared".into(),
+            read_only: true,
+        }];
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            mounts: &mounts,
+            env_vars: &[],
+            network: None,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = ContainerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let workspace_mount = "/workspace:/builds/workspace";
+        let artifact_mount = "/tmp/artifacts:/builds/workspace/tests-temp/shared:ro";
+        let workspace_idx = args
+            .iter()
+            .position(|arg| arg == workspace_mount)
+            .expect("workspace mount present");
+        let artifact_idx = args
+            .iter()
+            .position(|arg| arg == artifact_mount)
+            .expect("artifact mount present");
+
+        assert!(workspace_idx < artifact_idx);
     }
 }

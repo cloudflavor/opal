@@ -22,6 +22,7 @@ impl OrbstackExecutor {
 
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
         OrbstackCommandBuilder::new(ctx)
+            .with_workspace_volume()
             .with_volumes()
             .with_network()
             .with_env()
@@ -62,6 +63,11 @@ impl<'a> OrbstackCommandBuilder<'a> {
         self
     }
 
+    fn with_workspace_volume(mut self) -> Self {
+        self.command.arg("--volume").arg(&self.workspace_mount);
+        self
+    }
+
     fn with_network(mut self) -> Self {
         if let Some(network) = self.ctx.network {
             self.command.arg("--network").arg(network);
@@ -78,8 +84,6 @@ impl<'a> OrbstackCommandBuilder<'a> {
 
     fn build(mut self) -> Command {
         self.command
-            .arg("--volume")
-            .arg(&self.workspace_mount)
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);
