@@ -356,3 +356,136 @@ fn format_gitlab_variant_values(labels: &[(String, String)]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gitlab::rules::JobRule;
+    use crate::model::{
+        ArtifactSpec, PipelineDefaultsSpec, PipelineFilterSpec, PipelineSpec, RetryPolicySpec,
+        StageSpec,
+    };
+    use crate::pipeline::rules::RuleContext;
+    use std::path::Path;
+
+    #[test]
+    fn compile_pipeline_applies_rule_variables_and_excludes_unmatched_jobs() {
+        let included = JobSpec {
+            rules: vec![JobRule {
+                if_expr: Some("$CI_COMMIT_BRANCH == \"main\"".into()),
+                variables: HashMap::from([("FROM_RULE".into(), "1".into())]),
+                ..JobRule::default()
+            }],
+            ..job("lint", "test")
+        };
+        let excluded = JobSpec {
+            rules: vec![JobRule {
+                if_expr: Some("$CI_COMMIT_BRANCH == \"release\"".into()),
+                ..JobRule::default()
+            }],
+            ..job("publish", "deploy")
+        };
+        let pipeline = pipeline_spec(
+            vec![
+                StageSpec {
+                    name: "test".into(),
+                    jobs: vec!["lint".into()],
+                },
+                StageSpec {
+                    name: "deploy".into(),
+                    jobs: vec!["publish".into()],
+                },
+            ],
+            vec![included, excluded],
+        );
+        let ctx = RuleContext::new(Path::new("."));
+
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
+
+        assert!(compiled.jobs.contains_key("lint"));
+        assert!(!compiled.jobs.contains_key("publish"));
+        assert_eq!(
+            compiled.jobs["lint"].job.variables.get("FROM_RULE"),
+            Some(&"1".to_string())
+        );
+        assert!(
+            compiled
+                .variants
+                .get("publish")
+                .is_none_or(|variants| variants.is_empty())
+        );
+    }
+
+    #[test]
+    fn compile_pipeline_resolves_matrix_needs_to_variant_dependencies() {
+        let pipeline = PipelineSpec::from_path(Path::new(
+            "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
+        ))
+        .expect("pipeline loads");
+        let ctx = RuleContext::new(Path::new("."));
+
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
+
+        let package = compiled
+            .jobs
+            .get("package-linux")
+            .expect("package job exists");
+        assert!(compiled.jobs.contains_key("build-matrix: [linux, release]"));
+        assert!(
+            package
+                .dependencies
+                .iter()
+                .any(|dep| dep == "build-matrix: [linux, release]")
+        );
+
+        let matrix_need = package
+            .job
+            .needs
+            .iter()
+            .find(|need| need.job == "build-matrix")
+            .expect("matrix dependency present");
+        let variants = compiled.variants_for_dependency(matrix_need);
+        assert_eq!(variants, vec!["build-matrix: [linux, release]".to_string()]);
+    }
+
+    fn pipeline_spec(stages: Vec<StageSpec>, jobs: Vec<JobSpec>) -> PipelineSpec {
+        PipelineSpec {
+            stages,
+            jobs: jobs
+                .into_iter()
+                .map(|job| (job.name.clone(), job))
+                .collect::<HashMap<_, _>>(),
+            defaults: PipelineDefaultsSpec::default(),
+            workflow: None,
+            filters: PipelineFilterSpec::default(),
+        }
+    }
+
+    fn job(name: &str, stage: &str) -> JobSpec {
+        JobSpec {
+            name: name.into(),
+            stage: stage.into(),
+            commands: vec!["true".into()],
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            rules: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        }
+    }
+}
