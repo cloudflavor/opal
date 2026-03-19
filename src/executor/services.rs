@@ -88,7 +88,7 @@ impl ServiceRuntime {
             if matches!(engine, EngineKind::ContainerCli) && !ports.is_empty() {
                 runtime
                     .link_env
-                    .extend(build_service_env(&alias, &container_name, &ports).into_iter());
+                    .extend(build_service_env(&alias, &container_name, &ports));
             }
         }
 
