@@ -8,6 +8,7 @@ pub mod config;
 pub mod display;
 pub mod engine;
 pub mod env;
+pub mod execution_plan;
 pub mod executor;
 pub mod git;
 pub mod gitlab;
