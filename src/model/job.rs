@@ -16,6 +16,8 @@ pub struct JobSpec {
     pub inherit_default_before_script: bool,
     pub inherit_default_after_script: bool,
     pub rules: Vec<JobRule>,
+    pub only: Vec<String>,
+    pub except: Vec<String>,
     pub artifacts: ArtifactSpec,
     pub cache: Vec<CacheSpec>,
     pub image: Option<String>,

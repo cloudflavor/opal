@@ -3,7 +3,7 @@ use crate::model::{
     DependencySourceSpec, JobDependencySpec, JobSpec, ParallelConfigSpec, ParallelMatrixEntrySpec,
     PipelineSpec,
 };
-use crate::pipeline::rules::{RuleEvaluation, evaluate_rules};
+use crate::pipeline::rules::{RuleEvaluation, evaluate_rules, filters_allow};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 use tracing::warn;
@@ -84,6 +84,12 @@ pub fn compile_pipeline(
             };
             for mut expanded in variants {
                 let evaluation = if let Some(ctx) = rule_ctx {
+                    if !filters_allow(&expanded.job, ctx) {
+                        if let Some(entry) = variant_lookup.get_mut(&expanded.base_name) {
+                            entry.retain(|meta| meta.name != expanded.job.name);
+                        }
+                        continue;
+                    }
                     evaluate_rules(&expanded.job, ctx)?
                 } else {
                     RuleEvaluation::default()
@@ -448,6 +454,59 @@ mod tests {
         assert_eq!(variants, vec!["build-matrix: [linux, release]".to_string()]);
     }
 
+    #[test]
+    fn compile_pipeline_applies_job_only_except_filters() {
+        let branch_only = JobSpec {
+            only: vec!["branches".into()],
+            ..job("branch-only", "build")
+        };
+        let tag_only = JobSpec {
+            only: vec!["tags".into()],
+            ..job("tag-only", "test")
+        };
+        let release_excluded = JobSpec {
+            only: vec!["branches".into()],
+            except: vec!["/^release\\/.*$/".into()],
+            ..job("no-release", "test")
+        };
+        let pipeline = pipeline_spec(
+            vec![
+                StageSpec {
+                    name: "build".into(),
+                    jobs: vec!["branch-only".into()],
+                },
+                StageSpec {
+                    name: "test".into(),
+                    jobs: vec!["tag-only".into(), "no-release".into()],
+                },
+            ],
+            vec![branch_only, tag_only, release_excluded],
+        );
+        let branch_ctx = RuleContext::new(Path::new("."));
+
+        let branch_compiled =
+            compile_pipeline(&pipeline, Some(&branch_ctx)).expect("branch pipeline compiles");
+
+        assert!(branch_compiled.jobs.contains_key("branch-only"));
+        assert!(branch_compiled.jobs.contains_key("no-release"));
+        assert!(!branch_compiled.jobs.contains_key("tag-only"));
+
+        let tag_ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_TAG".into(), "v1.2.0".into()),
+                ("CI_COMMIT_REF_NAME".into(), "v1.2.0".into()),
+            ]),
+            false,
+        );
+        let tag_compiled =
+            compile_pipeline(&pipeline, Some(&tag_ctx)).expect("tag pipeline compiles");
+
+        assert!(!tag_compiled.jobs.contains_key("branch-only"));
+        assert!(tag_compiled.jobs.contains_key("tag-only"));
+    }
+
     fn pipeline_spec(stages: Vec<StageSpec>, jobs: Vec<JobSpec>) -> PipelineSpec {
         PipelineSpec {
             stages,
@@ -474,6 +533,8 @@ mod tests {
             inherit_default_before_script: true,
             inherit_default_after_script: true,
             rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
             artifacts: ArtifactSpec::default(),
             cache: Vec::new(),
             image: None,

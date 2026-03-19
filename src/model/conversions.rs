@@ -24,6 +24,8 @@ impl From<&JobSpec> for Job {
             inherit_default_before_script: value.inherit_default_before_script,
             inherit_default_after_script: value.inherit_default_after_script,
             rules: value.rules.clone(),
+            only: value.only.clone(),
+            except: value.except.clone(),
             artifacts: value.artifacts.paths.clone(),
             cache: value.cache.iter().map(CacheConfig::from).collect(),
             image: value.image.clone(),
@@ -54,6 +56,8 @@ impl From<&Job> for JobSpec {
             inherit_default_before_script: value.inherit_default_before_script,
             inherit_default_after_script: value.inherit_default_after_script,
             rules: value.rules.clone(),
+            only: value.only.clone(),
+            except: value.except.clone(),
             artifacts: ArtifactSpec {
                 paths: value.artifacts.clone(),
             },

@@ -191,6 +191,8 @@ mod tests {
             inherit_default_before_script: true,
             inherit_default_after_script: true,
             rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
             artifacts: ArtifactSpec::default(),
             cache: Vec::new(),
             image: None,

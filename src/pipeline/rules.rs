@@ -86,6 +86,16 @@ impl RuleJob for JobSpec {
     }
 }
 
+impl RuleFilters for JobSpec {
+    fn only_filters(&self) -> &[String] {
+        &self.only
+    }
+
+    fn except_filters(&self) -> &[String] {
+        &self.except
+    }
+}
+
 impl RuleFilters for PipelineFilters {
     fn only_filters(&self) -> &[String] {
         &self.only
@@ -112,11 +122,16 @@ impl RuleContext {
         Self::from_env(workspace, std::env::vars().collect(), run_manual)
     }
 
-    fn from_env(workspace: &Path, mut env: HashMap<String, String>, run_manual: bool) -> Self {
+    pub(crate) fn from_env(
+        workspace: &Path,
+        mut env: HashMap<String, String>,
+        run_manual: bool,
+    ) -> Self {
         if !env.contains_key("CI_PIPELINE_SOURCE") {
             env.insert("CI_PIPELINE_SOURCE".into(), "push".into());
         }
         if !env.contains_key("CI_COMMIT_BRANCH")
+            && env.get("CI_COMMIT_TAG").is_none_or(|tag| tag.is_empty())
             && let Ok(branch) = git::current_branch(workspace)
         {
             env.insert("CI_COMMIT_BRANCH".into(), branch);

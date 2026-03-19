@@ -453,6 +453,8 @@ type ParsedJobSpec = (
     Vec<CacheConfig>,
     Vec<ServiceConfig>,
     Option<ParallelConfig>,
+    Vec<String>,
+    Vec<String>,
 );
 
 fn parse_job(value: Value) -> Result<ParsedJobSpec> {
@@ -463,6 +465,8 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
             let cache_value = map.remove(Value::String("cache".to_string()));
             let services_value = map.remove(Value::String("services".to_string()));
             let parallel_value = map.remove(Value::String("parallel".to_string()));
+            let only_value = map.remove(Value::String("only".to_string()));
+            let except_value = map.remove(Value::String("except".to_string()));
             let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
@@ -478,7 +482,17 @@ fn parse_job(value: Value) -> Result<ParsedJobSpec> {
                 .transpose()?
                 .unwrap_or_default();
             let parallel = parallel_value.map(parse_parallel_value).transpose()?;
-            Ok((job_spec, image, variables, cache, services, parallel))
+            let only = only_value
+                .map(|value| parse_filter_list(value, "only"))
+                .transpose()?
+                .unwrap_or_default();
+            let except = except_value
+                .map(|value| parse_filter_list(value, "except"))
+                .transpose()?
+                .unwrap_or_default();
+            Ok((
+                job_spec, image, variables, cache, services, parallel, only, except,
+            ))
         }
         other => bail!("job definition must be a mapping, got {other:?}"),
     }
@@ -768,8 +782,16 @@ fn build_graph(
     for job_name in job_names {
         let merged_map =
             resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
-        let (job_spec, job_image, job_variables, job_cache, job_services, job_parallel) =
-            parse_job(Value::Mapping(merged_map))?;
+        let (
+            job_spec,
+            job_image,
+            job_variables,
+            job_cache,
+            job_services,
+            job_parallel,
+            only,
+            except,
+        ) = parse_job(Value::Mapping(merged_map))?;
         let inherit_flags = job_inherit_flags(&job_spec);
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
@@ -865,6 +887,8 @@ fn build_graph(
             inherit_default_before_script: inherit_flags.0,
             inherit_default_after_script: inherit_flags.1,
             parallel,
+            only,
+            except,
             tags: job_spec.tags.clone(),
             environment,
         });
