@@ -51,6 +51,7 @@ pub struct Job {
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactConfig {
     pub paths: Vec<PathBuf>,
+    pub exclude: Vec<String>,
     pub when: ArtifactWhen,
 }
 

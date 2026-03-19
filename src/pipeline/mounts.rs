@@ -4,6 +4,7 @@ use crate::pipeline::{
     ArtifactManager, CacheManager, CacheMountSpec, artifacts::ExternalArtifactsManager,
 };
 use anyhow::{Context, Result, anyhow};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -104,7 +105,11 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                         completed_jobs.get(&variant).copied(),
                         dependency.optional,
                     ) {
-                        dependency_mounts.push((host, relative));
+                        dependency_mounts.push(DependencyMount {
+                            host,
+                            relative,
+                            exclude: dep_job.artifacts.exclude.clone(),
+                        });
                     }
                 }
             }
@@ -168,7 +173,11 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                     warn!(job = dep_planned.instance.job.name, path = %relative.display(), "artifact missing");
                     continue;
                 }
-                dependency_mounts.push((host, relative.clone()));
+                dependency_mounts.push(DependencyMount {
+                    host,
+                    relative: relative.clone(),
+                    exclude: dep_planned.instance.job.artifacts.exclude.clone(),
+                });
             }
             continue;
         }
@@ -190,7 +199,11 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
                 warn!(job = dep_name, path = %relative.display(), "artifact missing");
                 continue;
             }
-            dependency_mounts.push((host, relative.clone()));
+            dependency_mounts.push(DependencyMount {
+                host,
+                relative: relative.clone(),
+                exclude: dep_job.artifacts.exclude.clone(),
+            });
         }
     }
 
@@ -214,26 +227,32 @@ fn add_dependency_mounts(
     job: &JobSpec,
     artifacts: &ArtifactManager,
     collector: &mut MountCollector<'_>,
-    mounts: Vec<(PathBuf, PathBuf)>,
+    mounts: Vec<DependencyMount>,
 ) -> Result<()> {
-    let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-    for (host, relative) in mounts {
-        grouped.entry(relative).or_default().push(host);
+    let mut grouped: HashMap<PathBuf, Vec<DependencyMount>> = HashMap::new();
+    for mount in mounts {
+        grouped
+            .entry(mount.relative.clone())
+            .or_default()
+            .push(mount);
     }
 
-    for (relative, hosts) in grouped {
+    for (relative, mounts) in grouped {
         let container = collector.container_path(&relative);
-        if hosts.len() == 1 {
+        let must_stage = mounts.len() > 1 || mounts.iter().any(|mount| !mount.exclude.is_empty());
+        if !must_stage {
             collector.push(
-                hosts.into_iter().next().expect("single host"),
+                mounts.into_iter().next().expect("single mount").host,
                 container,
                 true,
             );
             continue;
         }
 
-        let staged = stage_dependency_mount(artifacts, &job.name, &relative, &hosts)?;
-        collector.push(staged, container, true);
+        let staged = stage_dependency_mount(artifacts, &job.name, &relative, &mounts)?;
+        if staged.exists() {
+            collector.push(staged, container, true);
+        }
     }
 
     Ok(())
@@ -243,7 +262,7 @@ fn stage_dependency_mount(
     artifacts: &ArtifactManager,
     job_name: &str,
     relative: &Path,
-    hosts: &[PathBuf],
+    mounts: &[DependencyMount],
 ) -> Result<PathBuf> {
     let staged = artifacts.job_dependency_host_path(job_name, relative);
     if staged.exists() {
@@ -251,15 +270,21 @@ fn stage_dependency_mount(
             .with_context(|| format!("failed to clear staged dependency {}", staged.display()))?;
     }
 
-    let any_dir = hosts.iter().any(|host| host.is_dir());
+    let any_dir = mounts.iter().any(|mount| mount.host.is_dir());
     if any_dir {
         fs::create_dir_all(&staged)
             .with_context(|| format!("failed to create {}", staged.display()))?;
-        for host in hosts {
-            if host.is_dir() {
-                copy_dir_contents(host, &staged)?;
+        for mount in mounts {
+            let exclude = build_exclude_matcher(&mount.exclude)?;
+            if mount.host.is_dir() {
+                copy_dir_contents(&mount.host, &staged, relative, exclude.as_ref())?;
             } else {
-                copy_path(host, &staged.join(file_name_or_default(host)))?;
+                copy_dependency_file(
+                    &mount.host,
+                    &staged.join(file_name_or_default(&mount.host)),
+                    relative,
+                    exclude.as_ref(),
+                )?;
             }
         }
     } else {
@@ -267,30 +292,52 @@ fn stage_dependency_mount(
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        for host in hosts {
-            copy_path(host, &staged)?;
+        for mount in mounts {
+            let exclude = build_exclude_matcher(&mount.exclude)?;
+            copy_dependency_file(&mount.host, &staged, relative, exclude.as_ref())?;
         }
     }
 
     Ok(staged)
 }
 
-fn copy_dir_contents(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dir_contents(
+    src: &Path,
+    dest: &Path,
+    base_relative: &Path,
+    exclude: Option<&GlobSet>,
+) -> Result<()> {
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let child_src = entry.path();
         let child_dest = dest.join(entry.file_name());
-        copy_path(&child_src, &child_dest)?;
+        let child_relative = base_relative.join(entry.file_name());
+        copy_path(&child_src, &child_dest, &child_relative, exclude)?;
     }
     Ok(())
 }
 
-fn copy_path(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dependency_file(
+    src: &Path,
+    dest: &Path,
+    relative: &Path,
+    exclude: Option<&GlobSet>,
+) -> Result<()> {
+    if should_exclude_artifact(relative, exclude) {
+        return Ok(());
+    }
+    copy_path(src, dest, relative, exclude)
+}
+
+fn copy_path(src: &Path, dest: &Path, relative: &Path, exclude: Option<&GlobSet>) -> Result<()> {
     let metadata =
         fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
     if metadata.is_dir() {
         fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
-        copy_dir_contents(src, dest)?;
+        copy_dir_contents(src, dest, relative, exclude)?;
+        return Ok(());
+    }
+    if should_exclude_artifact(relative, exclude) {
         return Ok(());
     }
 
@@ -301,6 +348,25 @@ fn copy_path(src: &Path, dest: &Path) -> Result<()> {
     fs::copy(src, dest)
         .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
     Ok(())
+}
+
+fn build_exclude_matcher(patterns: &[String]) -> Result<Option<GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            Glob::new(pattern)
+                .with_context(|| format!("invalid artifacts.exclude pattern '{pattern}'"))?,
+        );
+    }
+    Ok(Some(builder.build()?))
+}
+
+fn should_exclude_artifact(path: &Path, exclude: Option<&GlobSet>) -> bool {
+    exclude.is_some_and(|glob| glob.is_match(path))
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -315,6 +381,13 @@ fn file_name_or_default(path: &Path) -> OsString {
     path.file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| OsString::from("artifact"))
+}
+
+#[derive(Debug, Clone)]
+struct DependencyMount {
+    host: PathBuf,
+    relative: PathBuf,
+    exclude: Vec<String>,
 }
 
 impl VolumeMount {
@@ -373,7 +446,7 @@ impl<'a> MountCollector<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MountCollector, add_dependency_mounts};
+    use super::{DependencyMount, MountCollector, add_dependency_mounts};
     use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
     use crate::pipeline::ArtifactManager;
     use std::collections::HashMap;
@@ -399,8 +472,16 @@ mod tests {
             &artifacts,
             &mut collector,
             vec![
-                (first, PathBuf::from("tests-temp/build")),
-                (second, PathBuf::from("tests-temp/build")),
+                DependencyMount {
+                    host: first,
+                    relative: PathBuf::from("tests-temp/build"),
+                    exclude: Vec::new(),
+                },
+                DependencyMount {
+                    host: second,
+                    relative: PathBuf::from("tests-temp/build"),
+                    exclude: Vec::new(),
+                },
             ],
         )
         .expect("merge dependency mounts");
@@ -413,6 +494,45 @@ mod tests {
         );
         assert!(mounts[0].host.join("linux-debug.txt").exists());
         assert!(mounts[0].host.join("linux-release.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn add_dependency_mounts_applies_artifact_excludes_when_staging() {
+        let root = temp_path("dependency-exclude");
+        let artifacts = ArtifactManager::new(root.clone());
+        let job = job("package-linux");
+        let source = root.join("source");
+        fs::create_dir_all(source.join("sub")).expect("create source dir");
+        fs::write(source.join("include.txt"), "keep").expect("write include");
+        fs::write(source.join("ignore.txt"), "skip").expect("write ignore");
+        fs::write(source.join("sub").join("trace.log"), "skip").expect("write nested ignore");
+
+        let mut collector = MountCollector::new(Path::new("/builds/opal"));
+        add_dependency_mounts(
+            &job,
+            &artifacts,
+            &mut collector,
+            vec![DependencyMount {
+                host: source,
+                relative: PathBuf::from("tests-temp/filtered"),
+                exclude: vec![
+                    "tests-temp/filtered/ignore.txt".into(),
+                    "tests-temp/filtered/**/*.log".into(),
+                ],
+            }],
+        )
+        .expect("stage filtered dependency mount");
+
+        let mount = collector
+            .into_mounts()
+            .into_iter()
+            .next()
+            .expect("staged mount");
+        assert!(mount.host.join("include.txt").exists());
+        assert!(!mount.host.join("ignore.txt").exists());
+        assert!(!mount.host.join("sub").join("trace.log").exists());
 
         let _ = fs::remove_dir_all(root);
     }

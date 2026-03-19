@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use globset::Glob;
 use humantime;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::Deserialize;
@@ -1141,16 +1142,32 @@ struct RawArtifacts {
     #[serde(default)]
     paths: Vec<PathBuf>,
     #[serde(default)]
+    exclude: StringList,
+    #[serde(default)]
     when: Option<String>,
 }
 
 impl RawArtifacts {
     fn into_config(self, job_name: &str) -> Result<ArtifactConfig> {
+        validate_artifact_excludes(&self.exclude.0, job_name)?;
         Ok(ArtifactConfig {
             paths: self.paths,
+            exclude: self.exclude.into_vec(),
             when: parse_artifact_when(self.when.as_deref(), job_name)?,
         })
     }
+}
+
+fn validate_artifact_excludes(patterns: &[String], job_name: &str) -> Result<()> {
+    for pattern in patterns {
+        Glob::new(pattern).with_context(|| {
+            format!(
+                "job '{}' has invalid artifacts.exclude pattern '{}'",
+                job_name, pattern
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn parse_artifact_when(value: Option<&str>, job_name: &str) -> Result<ArtifactWhen> {
@@ -1776,6 +1793,36 @@ build-job:
         let build_idx = find_job(&pipeline, "build-job");
         let job = &pipeline.graph[build_idx];
         assert_eq!(job.artifacts.when, ArtifactWhen::Always);
+    }
+
+    #[test]
+    fn parses_artifacts_exclude() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  artifacts:
+    paths:
+      - tests-temp/output/
+    exclude:
+      - tests-temp/output/**/*.log
+      - tests-temp/output/ignore.txt
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert_eq!(
+            job.artifacts.exclude,
+            vec![
+                "tests-temp/output/**/*.log".to_string(),
+                "tests-temp/output/ignore.txt".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -400,7 +400,11 @@ mod tests {
             rules: Vec::new(),
             only: Vec::new(),
             except: Vec::new(),
-            artifacts: ArtifactSpec { paths, when },
+            artifacts: ArtifactSpec {
+                paths,
+                exclude: Vec::new(),
+                when,
+            },
             cache: Vec::new(),
             image: None,
             variables: HashMap::new(),

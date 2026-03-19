@@ -30,6 +30,7 @@ impl From<&JobSpec> for Job {
             except: value.except.clone(),
             artifacts: ArtifactConfig {
                 paths: value.artifacts.paths.clone(),
+                exclude: value.artifacts.exclude.clone(),
                 when: ArtifactWhen::from(&value.artifacts.when),
             },
             cache: value.cache.iter().map(CacheConfig::from).collect(),
@@ -66,6 +67,7 @@ impl From<&Job> for JobSpec {
             except: value.except.clone(),
             artifacts: ArtifactSpec {
                 paths: value.artifacts.paths.clone(),
+                exclude: value.artifacts.exclude.clone(),
                 when: ArtifactWhenSpec::from(&value.artifacts.when),
             },
             cache: value.cache.iter().map(CacheSpec::from).collect(),
