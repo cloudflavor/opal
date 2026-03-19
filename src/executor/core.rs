@@ -1,6 +1,8 @@
+mod preparer;
+
 use super::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
-    job_runner::PreparedJobRun, orchestrator, paths, script, services::ServiceRuntime,
+    orchestrator, paths,
 };
 use crate::config::ResolvedRegistryAuth;
 use crate::display::{
@@ -11,11 +13,11 @@ use crate::env::{build_job_env, collect_env_vars, expand_env_list, expand_value}
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::history::{self, HistoryCache, HistoryEntry, HistoryJob, HistoryStatus};
 use crate::logging::{self, LogFormatter, sanitize_fragments};
-use crate::model::{CachePolicySpec, JobSpec, PipelineSpec, ServiceSpec};
+use crate::model::{CachePolicySpec, JobSpec, PipelineSpec};
 use crate::naming::{generate_run_id, job_name_slug, stage_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobStatus,
-    JobSummary, RuleContext, StageState, VolumeMount, mounts,
+    JobSummary, RuleContext, StageState, VolumeMount,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -496,61 +498,8 @@ impl ExecutorCore {
         &self,
         plan: &ExecutionPlan,
         job: &JobSpec,
-    ) -> Result<PreparedJobRun> {
-        self.artifacts.prepare_targets(job)?;
-        let mut env_vars = self.job_env(job);
-        let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
-        let service_configs = self.job_services(job);
-        let service_runtime = ServiceRuntime::start(
-            self.config.engine,
-            &self.run_id,
-            &job.name,
-            &service_configs,
-            &env_vars,
-            &self.shared_env,
-        )?;
-        if let Some(runtime) = service_runtime.as_ref() {
-            env_vars.extend(runtime.link_env().iter().cloned());
-        }
-        let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
-            job,
-            plan,
-            pipeline: &self.pipeline,
-            artifacts: &self.artifacts,
-            cache: &self.cache,
-            cache_env: &cache_env,
-            container_root: &self.container_workdir,
-            external: self.external_artifacts.as_ref(),
-        })?;
-        mounts.push(VolumeMount {
-            host: self.session_dir.clone(),
-            container: self.container_session_dir.clone(),
-            read_only: false,
-        });
-        if let Some((host, container_path)) = self.secrets.volume_mount() {
-            mounts.push(VolumeMount {
-                host,
-                container: container_path,
-                read_only: true,
-            });
-        }
-        let job_image = self.resolve_job_image_with_env(job, Some(&cache_env))?;
-        let script_commands = self.expanded_commands(job);
-        let script_path = script::write_job_script(
-            &self.scripts_dir,
-            &self.container_workdir,
-            job,
-            &script_commands,
-            self.verbose_scripts,
-        )?;
-
-        Ok(PreparedJobRun {
-            env_vars,
-            service_runtime,
-            mounts,
-            job_image,
-            script_path,
-        })
+    ) -> Result<preparer::PreparedJobRun> {
+        preparer::prepare_job_run(self, plan, job)
     }
 
     fn stage_started(&self, stage_name: &str) -> bool {
@@ -970,24 +919,6 @@ impl ExecutorCore {
             let _ = FmtWrite::write_fmt(&mut short, format_args!("{:02x}", byte));
         }
         format!("opal-{short}-{:02}", attempt)
-    }
-
-    fn expanded_commands(&self, job: &JobSpec) -> Vec<String> {
-        let mut cmds = Vec::new();
-        if job.inherit_default_before_script {
-            cmds.extend(self.pipeline.defaults.before_script.iter().cloned());
-        }
-        if let Some(custom) = &job.before_script {
-            cmds.extend(custom.iter().cloned());
-        }
-        cmds.extend(job.commands.iter().cloned());
-        if let Some(custom) = &job.after_script {
-            cmds.extend(custom.iter().cloned());
-        }
-        if job.inherit_default_after_script {
-            cmds.extend(self.pipeline.defaults.after_script.iter().cloned());
-        }
-        cmds
     }
 
     fn job_env(&self, job: &JobSpec) -> Vec<(String, String)> {

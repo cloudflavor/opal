@@ -1,20 +1,11 @@
-use super::{core::ExecutorCore, services::ServiceRuntime};
+use super::core::ExecutorCore;
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::pipeline::{JobEvent, JobRunInfo};
 use crate::runner::ExecuteContext;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::{Result, anyhow};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-
-pub(crate) struct PreparedJobRun {
-    pub env_vars: Vec<(String, String)>,
-    pub service_runtime: Option<ServiceRuntime>,
-    pub mounts: Vec<crate::pipeline::VolumeMount>,
-    pub job_image: String,
-    pub script_path: PathBuf,
-}
 
 pub(crate) fn run_planned_job(
     exec: &ExecutorCore,
