@@ -22,6 +22,7 @@ SCENARIOS_JSON='[
   {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1"},
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push"},
   {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push"},
   {"name":"environment-stop","pipeline":"pipelines/tests/environments.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -91,6 +92,11 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "env token=[MASKED]"
       assert_log_contains "${log_file}" "file token=[MASKED]"
       assert_log_not_contains "${log_file}" "super-secret-e2e"
+      ;;
+    cache-policies)
+      assert_log_contains "${log_file}" "cache mutated in pull-only job"
+      assert_log_contains "${log_file}" "cache policy seed"
+      assert_log_not_contains "${log_file}" "cache policy mutated"
       ;;
   esac
 }

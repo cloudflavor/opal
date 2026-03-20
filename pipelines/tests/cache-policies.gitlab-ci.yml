@@ -1,0 +1,38 @@
+stages:
+  - seed
+  - mutate
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - tests-temp/cache-data/
+  before_script:
+    - set -eu
+
+seed-cache:
+  stage: seed
+  script:
+    - mkdir -p tests-temp/cache-data
+    - echo "seed" > tests-temp/cache-data/policy.txt
+
+pull-only-mutator:
+  stage: mutate
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - tests-temp/cache-data/
+  script:
+    - test -f tests-temp/cache-data/policy.txt
+    - echo "mutated" > tests-temp/cache-data/policy.txt
+    - echo "cache mutated in pull-only job"
+
+verify-cache:
+  stage: verify
+  script:
+    - test -f tests-temp/cache-data/policy.txt
+    - echo "cache policy $(cat tests-temp/cache-data/policy.txt)"
+    - test "$(cat tests-temp/cache-data/policy.txt)" = "seed"

@@ -8,6 +8,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `rules-playground.gitlab-ci.yml` – Focuses on the `rules:` mini-language: `if`, `changes`, `exists`, `when: manual|delayed`, inline `allow_failure`, schedule-only behavior, and interaction with `workflow:rules`.
 - `includes-and-extends.gitlab-ci.yml` – Exercises local `include:`, hidden/template jobs, `extends`, `inherit: { default: [...] }`, and shared variables (see `job_inherit_flags` in `src/gitlab/parser.rs`).
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
+- `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `filters.gitlab-ci.yml` – Tests `workflow`, `only`, `except`, tag-only jobs, and `rules:changes`/`rules:if` combos.
 - `environments.gitlab-ci.yml` – Covers `environment` metadata, `on_stop`, manual stop jobs, and `auto_stop_in`.
 
