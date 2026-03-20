@@ -44,6 +44,8 @@ Short answer: Opal is not on par with official GitLab today. It supports a usefu
 - `script`
 - `before_script`
 - `after_script`
+- `when`
+  - `manual`
 - `rules`
   - `if`
   - `changes`
@@ -94,10 +96,14 @@ Short answer: Opal is not on par with official GitLab today. It supports a usefu
 
 - `artifacts`
   - `paths`
+  - `when`
+  - `exclude`
+  - `untracked`
 - `cache`
   - `key`
   - `paths`
   - `policy`
+  - `fallback_keys`
 - `services`
   - string form
   - mapping form with `name` / `image`
@@ -125,16 +131,50 @@ These features exist in Opal, but they do not match GitLab completely.
 - `only` / `except` are narrower than GitLab.
   Opal matches branch names, tag names, exact refs, and regexes. GitLab supports a broader filter language.
 - `artifacts` is subset-only.
-  Opal models `paths`, but not the broader artifacts feature set from GitLab.
+  Opal models `paths`, `when`, `exclude`, and `untracked`, but not the broader artifacts feature set from GitLab.
 - `cache` is subset-only.
-  Opal models `key`, `paths`, and `policy`.
-- `services` are approximated through local container engines.
-  Alias and startup behavior work for common cases, but this is not a full GitLab Runner service implementation.
+  Opal models `key`, `paths`, `policy`, and `fallback_keys`, but not the full GitLab cache surface.
+- `services` are approximated through local container engines rather than matching GitLab Runner exactly.
+  GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
 - `retry.when` is parsed, but execution behavior is not modeled with GitLab's full retry policy semantics.
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `workflow` support is limited to `workflow:rules`.
   The broader workflow surface from GitLab is not implemented.
+
+## Best Fit For Local Development
+
+GitLab's YAML surface is much broader than what is worth mirroring locally. The best local-development targets are the features that change which jobs run, what data they see, and whether those jobs are fast and trustworthy on one machine.
+
+High-value local-first features:
+
+- `workflow:rules`, job `rules`, and job/pipeline `only` / `except`
+  These decide whether Opal runs the same jobs a developer would otherwise wait for in CI.
+- local composition features
+  `include:local`, hidden jobs, `extends`, `!reference`, and `inherit:default` matter because real repository pipelines are heavily templated.
+- `needs`, `dependencies`, and `parallel:matrix`
+  These define local execution order, fan-out, and artifact flow.
+- `artifacts`
+  Artifact passing is critical for chained local jobs such as build -> test -> package.
+- `cache`
+  Cache fidelity directly affects local feedback time for ecosystems such as Rust, Node, Python, and Java.
+- `services`
+  Local databases, message brokers, and Docker sidecars are common reasons to reproduce CI jobs before pushing.
+- `environment`, `timeout`, `retry`, `interruptible`, and `resource_group`
+  These affect local control flow and developer-visible behavior even without GitLab's remote orchestration layer.
+
+Lower-value or intentionally out-of-scope local targets:
+
+- remote/project/template/component `include`
+  These are useful in GitLab-managed estates, but they depend on remote config resolution rather than a single local checkout.
+- `trigger`, child pipelines, and multi-project pipelines
+  These are orchestration features for distributed CI, not core single-repo local execution features.
+- Pages, release jobs, and GitLab-managed deployment features
+  They matter in GitLab's control plane, but they are not usually what a developer wants from a fast local pre-push loop.
+- identity, `id_tokens`, and GitLab secret-management features
+  These depend on GitLab-issued credentials and hosted integrations.
+- runner tags and protected-runner routing
+  GitLab uses these for remote runner selection. Opal always runs on the local machine, so the scheduling meaning does not translate.
 
 ## Major GitLab Features Missing From Opal
 
