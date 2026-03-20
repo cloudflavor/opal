@@ -3,6 +3,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct CacheSpec {
     pub key: String,
+    pub fallback_keys: Vec<String>,
     pub paths: Vec<PathBuf>,
     pub policy: CachePolicySpec,
 }

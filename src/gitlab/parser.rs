@@ -567,6 +567,7 @@ fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
         other => bail!("cache entry must be a mapping, got {other:?}"),
     };
     let key = raw.key.unwrap_or_else(|| "default".to_string());
+    let fallback_keys = raw.fallback_keys;
     let paths = if raw.paths.is_empty() {
         bail!("cache entry must specify at least one path");
     } else {
@@ -577,7 +578,12 @@ fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
         .as_deref()
         .map(CachePolicy::from_str)
         .unwrap_or(CachePolicy::PullPush);
-    Ok(CacheConfig { key, paths, policy })
+    Ok(CacheConfig {
+        key,
+        fallback_keys,
+        paths,
+        policy,
+    })
 }
 
 fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
@@ -1313,6 +1319,8 @@ impl<'de> serde::Deserialize<'de> for StringList {
 #[derive(Debug, Deserialize, Default)]
 struct CacheEntryRaw {
     key: Option<String>,
+    #[serde(default)]
+    fallback_keys: Vec<String>,
     #[serde(default)]
     paths: Vec<PathBuf>,
     #[serde(default)]

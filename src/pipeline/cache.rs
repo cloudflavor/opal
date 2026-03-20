@@ -21,6 +21,7 @@ pub struct CacheMountSpec {
 #[derive(Debug, Clone)]
 pub struct CacheEntryInfo {
     pub key: String,
+    pub fallback_keys: Vec<String>,
     pub policy: CachePolicySpec,
     pub host: PathBuf,
     pub paths: Vec<PathBuf>,
@@ -45,14 +46,29 @@ impl CacheManager {
         let mut specs = Vec::new();
         for cache in caches {
             let key = render_cache_key(&cache.key, env);
+            let fallback_keys: Vec<String> = cache
+                .fallback_keys
+                .iter()
+                .map(|fallback| render_cache_key(fallback, env))
+                .collect();
             let entry_root = self.entry_root(&key);
             fs::create_dir_all(&entry_root).with_context(|| {
                 format!("failed to prepare cache root {}", entry_root.display())
             })?;
+            for fallback in &fallback_keys {
+                let fallback_root = self.entry_root(fallback);
+                fs::create_dir_all(&fallback_root).with_context(|| {
+                    format!("failed to prepare cache root {}", fallback_root.display())
+                })?;
+            }
 
             for relative in &cache.paths {
                 let rel = cache_relative_path(relative);
                 let entry_path = entry_root.join(&rel);
+                let fallback_entry_paths: Vec<PathBuf> = fallback_keys
+                    .iter()
+                    .map(|fallback| self.entry_root(fallback).join(&rel))
+                    .collect();
                 let host = prepare_cache_mount(
                     cache.policy,
                     job_name,
@@ -60,6 +76,7 @@ impl CacheManager {
                     &key,
                     &rel,
                     &entry_path,
+                    &fallback_entry_paths,
                 )?;
                 specs.push(CacheMountSpec {
                     host,
@@ -84,6 +101,11 @@ impl CacheManager {
                 let host = self.entry_root(&key);
                 CacheEntryInfo {
                     key,
+                    fallback_keys: cache
+                        .fallback_keys
+                        .iter()
+                        .map(|fallback| render_cache_key(fallback, env))
+                        .collect(),
                     policy: cache.policy,
                     host,
                     paths: cache.paths.clone(),
@@ -104,13 +126,14 @@ fn prepare_cache_mount(
     key: &str,
     relative: &Path,
     entry_path: &Path,
+    fallback_entry_paths: &[PathBuf],
 ) -> Result<PathBuf> {
     match policy {
         CachePolicySpec::Pull => {
             let staged = staged_cache_path(staging_root, job_name, key, relative);
             reset_path(&staged)?;
-            if entry_path.exists() {
-                copy_cache_path(entry_path, &staged)?;
+            if let Some(source) = restore_source_path(entry_path, fallback_entry_paths) {
+                copy_cache_path(source, &staged)?;
             } else {
                 prepare_cache_path(&staged)?;
             }
@@ -122,10 +145,28 @@ fn prepare_cache_mount(
             Ok(entry_path.to_path_buf())
         }
         CachePolicySpec::PullPush => {
-            prepare_cache_path(entry_path)?;
+            if !entry_path.exists() {
+                if let Some(source) = restore_source_path(entry_path, fallback_entry_paths) {
+                    copy_cache_path(source, entry_path)?;
+                } else {
+                    prepare_cache_path(entry_path)?;
+                }
+            } else {
+                prepare_cache_path(entry_path)?;
+            }
             Ok(entry_path.to_path_buf())
         }
     }
+}
+
+fn restore_source_path<'a>(primary: &'a Path, fallbacks: &'a [PathBuf]) -> Option<&'a Path> {
+    if primary.exists() {
+        return Some(primary);
+    }
+    fallbacks
+        .iter()
+        .find(|candidate| candidate.exists())
+        .map(PathBuf::as_path)
 }
 
 fn staged_cache_path(staging_root: &Path, job_name: &str, key: &str, relative: &Path) -> PathBuf {
@@ -352,9 +393,60 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn pull_push_policy_restores_from_fallback_key_into_primary() {
+        let root = temp_path("cache-fallback");
+        let manager = CacheManager::new(root.join("cache-root"));
+        let primary_key = "branch-feature";
+        let fallback_key = "branch-main";
+        let fallback_entry = root
+            .join("cache-root")
+            .join(cache_dir_name(fallback_key))
+            .join("tests-temp/cache-data");
+        fs::create_dir_all(&fallback_entry).expect("create fallback entry");
+        fs::write(fallback_entry.join("seed.txt"), "fallback").expect("write fallback");
+
+        let specs = manager
+            .mount_specs(
+                "verify-job",
+                &root.join("session"),
+                &[cache_with_fallback(
+                    "tests-temp/cache-data/",
+                    primary_key,
+                    &[fallback_key],
+                    CachePolicySpec::PullPush,
+                )],
+                &HashMap::new(),
+            )
+            .expect("mount specs");
+
+        let primary_entry = root
+            .join("cache-root")
+            .join(cache_dir_name(primary_key))
+            .join("tests-temp/cache-data");
+
+        assert_eq!(specs[0].host, primary_entry);
+        assert_eq!(
+            fs::read_to_string(primary_entry.join("seed.txt")).expect("read restored"),
+            "fallback"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn cache(path: &str, key: &str, policy: CachePolicySpec) -> CacheSpec {
+        cache_with_fallback(path, key, &[], policy)
+    }
+
+    fn cache_with_fallback(
+        path: &str,
+        key: &str,
+        fallback_keys: &[&str],
+        policy: CachePolicySpec,
+    ) -> CacheSpec {
         CacheSpec {
             key: key.into(),
+            fallback_keys: fallback_keys.iter().map(|key| (*key).to_string()).collect(),
             paths: vec![PathBuf::from(path)],
             policy,
         }

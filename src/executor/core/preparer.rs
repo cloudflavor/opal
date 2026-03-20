@@ -266,6 +266,7 @@ mod tests {
             artifacts: ArtifactSpec::default(),
             cache: vec![CacheSpec {
                 key: "cache".into(),
+                fallback_keys: Vec::new(),
                 paths: vec![Path::new("target").to_path_buf()],
                 policy: CachePolicySpec::PullPush,
             }],

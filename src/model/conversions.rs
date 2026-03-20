@@ -350,6 +350,7 @@ impl From<&CacheConfig> for CacheSpec {
     fn from(value: &CacheConfig) -> Self {
         Self {
             key: value.key.clone(),
+            fallback_keys: value.fallback_keys.clone(),
             paths: value.paths.clone(),
             policy: CachePolicySpec::from(value.policy),
         }
@@ -360,6 +361,7 @@ impl From<&CacheSpec> for CacheConfig {
     fn from(value: &CacheSpec) -> Self {
         Self {
             key: value.key.clone(),
+            fallback_keys: value.fallback_keys.clone(),
             paths: value.paths.clone(),
             policy: CachePolicy::from(value.policy),
         }

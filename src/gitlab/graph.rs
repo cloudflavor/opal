@@ -147,6 +147,7 @@ pub enum EnvironmentAction {
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
     pub key: String,
+    pub fallback_keys: Vec<String>,
     pub paths: Vec<PathBuf>,
     pub policy: CachePolicy,
 }
