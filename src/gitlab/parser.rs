@@ -1144,6 +1144,8 @@ struct RawArtifacts {
     #[serde(default)]
     exclude: StringList,
     #[serde(default)]
+    untracked: bool,
+    #[serde(default)]
     when: Option<String>,
 }
 
@@ -1153,6 +1155,7 @@ impl RawArtifacts {
         Ok(ArtifactConfig {
             paths: self.paths,
             exclude: self.exclude.into_vec(),
+            untracked: self.untracked,
             when: parse_artifact_when(self.when.as_deref(), job_name)?,
         })
     }
@@ -1822,6 +1825,32 @@ build-job:
                 "tests-temp/output/**/*.log".to_string(),
                 "tests-temp/output/ignore.txt".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parses_artifacts_untracked() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  artifacts:
+    untracked: true
+    exclude:
+      - tests-temp/output/**/*.log
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert!(job.artifacts.untracked);
+        assert_eq!(
+            job.artifacts.exclude,
+            vec!["tests-temp/output/**/*.log".to_string()]
         );
     }
 

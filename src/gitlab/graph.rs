@@ -52,6 +52,7 @@ pub struct Job {
 pub struct ArtifactConfig {
     pub paths: Vec<PathBuf>,
     pub exclude: Vec<String>,
+    pub untracked: bool,
     pub when: ArtifactWhen,
 }
 

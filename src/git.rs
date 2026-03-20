@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use git2::{DiffOptions, Repository};
+use git2::{DiffOptions, Repository, Status, StatusOptions};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -173,6 +173,37 @@ pub fn changed_files(
     Ok(paths)
 }
 
+pub fn untracked_files(workdir: &Path) -> Result<Vec<String>> {
+    let repo = open_repository(workdir)?;
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true)
+        .recurse_ignored_dirs(true)
+        .include_unmodified(false);
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .context("failed to enumerate git status entries")?;
+
+    let mut paths = Vec::new();
+    for entry in statuses.iter() {
+        let status = entry.status();
+        if !status_intersects_untracked(status) {
+            continue;
+        }
+        if let Some(path) = entry.path() {
+            paths.push(path.to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn status_intersects_untracked(status: Status) -> bool {
+    status.is_wt_new() || status.is_ignored()
+}
+
 fn path_to_string(path: &Path) -> Option<String> {
     path.to_str().map(str::to_string)
 }
@@ -206,5 +237,47 @@ pub(crate) mod test_support {
             .expect("create lightweight tag");
 
         dir
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::untracked_files;
+    use git2::{RepositoryInitOptions, Signature};
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn untracked_files_include_ignored_paths() {
+        let dir = tempdir().expect("tempdir");
+        let mut init = RepositoryInitOptions::new();
+        init.initial_head("main");
+        let repo = git2::Repository::init_opts(dir.path(), &init).expect("init repository");
+
+        std::fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
+        std::fs::write(dir.path().join(".gitignore"), "tests-temp/\n").expect("write ignore");
+
+        let mut index = repo.index().expect("open index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("add README to index");
+        index
+            .add_path(Path::new(".gitignore"))
+            .expect("add ignore to index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = Signature::now("Opal Tests", "opal@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("create commit");
+
+        std::fs::create_dir_all(dir.path().join("tests-temp")).expect("create ignored dir");
+        std::fs::write(dir.path().join("tests-temp").join("generated.txt"), "hi")
+            .expect("write ignored artifact");
+        std::fs::write(dir.path().join("scratch.txt"), "hello").expect("write untracked file");
+
+        let files = untracked_files(dir.path()).expect("list untracked files");
+
+        assert!(files.iter().any(|path| path == "scratch.txt"));
+        assert!(files.iter().any(|path| path == "tests-temp/generated.txt"));
     }
 }

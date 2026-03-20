@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct ArtifactSpec {
     pub paths: Vec<PathBuf>,
     pub exclude: Vec<String>,
+    pub untracked: bool,
     pub when: ArtifactWhenSpec,
 }
 

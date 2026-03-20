@@ -1,6 +1,8 @@
+use crate::git;
 use crate::model::{ArtifactSourceOutcome, JobSpec};
 use crate::naming::{job_name_slug, project_slug};
 use anyhow::{Context, Result, anyhow};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ impl ArtifactManager {
     }
 
     pub fn prepare_targets(&self, job: &JobSpec) -> Result<()> {
-        if job.artifacts.paths.is_empty() {
+        if job.artifacts.paths.is_empty() && !job.artifacts.untracked {
             return Ok(());
         }
         let root = self.job_artifacts_root(&job.name);
@@ -95,6 +97,18 @@ impl ArtifactManager {
             }
             specs.push((host, relative.clone()));
         }
+        if dep_job.artifacts.untracked {
+            for relative in self.read_untracked_manifest(job_name) {
+                let host = self.job_artifact_host_path(job_name, &relative);
+                if !host.exists() {
+                    continue;
+                }
+                if !dep_job.artifacts.when.includes(outcome) && !artifact_path_has_content(&host) {
+                    continue;
+                }
+                specs.push((host, relative));
+            }
+        }
 
         specs
     }
@@ -115,6 +129,81 @@ impl ArtifactManager {
     pub fn job_dependency_host_path(&self, job_name: &str, artifact: &Path) -> PathBuf {
         self.job_dependency_root(job_name)
             .join(artifact_relative_path(artifact))
+    }
+
+    pub fn collect_untracked(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+        if !job.artifacts.untracked {
+            return Ok(());
+        }
+
+        let exclude = build_exclude_matcher(&job.artifacts.exclude)?;
+        let explicit_paths = &job.artifacts.paths;
+        let mut collected = Vec::new();
+        for relative in git::untracked_files(workspace)? {
+            let relative = PathBuf::from(relative);
+            if path_is_covered_by_explicit_artifacts(&relative, explicit_paths) {
+                continue;
+            }
+            if should_exclude(&relative, exclude.as_ref()) {
+                continue;
+            }
+
+            let src = workspace.join(&relative);
+            if !src.exists() {
+                continue;
+            }
+            copy_untracked_entry(
+                workspace,
+                &src,
+                self.job_artifact_host_path(&job.name, &relative),
+                &relative,
+                exclude.as_ref(),
+                &mut collected,
+            )?;
+        }
+
+        collected.sort();
+        collected.dedup();
+        self.write_untracked_manifest(&job.name, &collected)
+    }
+
+    fn write_untracked_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
+        let manifest = self.job_untracked_manifest_path(job_name);
+        if let Some(parent) = manifest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let content = if paths.is_empty() {
+            String::new()
+        } else {
+            let mut body = paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push('\n');
+            body
+        };
+        fs::write(&manifest, content)
+            .with_context(|| format!("failed to write {}", manifest.display()))
+    }
+
+    fn read_untracked_manifest(&self, job_name: &str) -> Vec<PathBuf> {
+        let manifest = self.job_untracked_manifest_path(job_name);
+        let Ok(contents) = fs::read_to_string(&manifest) else {
+            return Vec::new();
+        };
+        contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    fn job_untracked_manifest_path(&self, job_name: &str) -> PathBuf {
+        self.root
+            .join(job_name_slug(job_name))
+            .join("untracked-manifest.txt")
     }
 }
 
@@ -161,6 +250,83 @@ fn artifact_path_has_content(path: &Path) -> bool {
             .is_some(),
         _ => false,
     }
+}
+
+fn build_exclude_matcher(patterns: &[String]) -> Result<Option<GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            Glob::new(pattern)
+                .with_context(|| format!("invalid artifacts.exclude pattern '{pattern}'"))?,
+        );
+    }
+    Ok(Some(builder.build()?))
+}
+
+fn should_exclude(path: &Path, exclude: Option<&GlobSet>) -> bool {
+    exclude.is_some_and(|glob| glob.is_match(path))
+}
+
+fn path_is_covered_by_explicit_artifacts(path: &Path, explicit_paths: &[PathBuf]) -> bool {
+    explicit_paths
+        .iter()
+        .any(|artifact| match artifact_kind(artifact) {
+            ArtifactPathKind::Directory => {
+                let base = artifact_relative_path(artifact);
+                path == base || path.starts_with(&base)
+            }
+            ArtifactPathKind::File => path == artifact_relative_path(artifact),
+        })
+}
+
+fn copy_untracked_entry(
+    workspace: &Path,
+    src: &Path,
+    dest: PathBuf,
+    relative: &Path,
+    exclude: Option<&GlobSet>,
+    collected: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        for entry in
+            fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
+        {
+            let entry = entry?;
+            let child_src = entry.path();
+            let child_relative = match child_src.strip_prefix(workspace) {
+                Ok(rel) => rel.to_path_buf(),
+                Err(_) => continue,
+            };
+            let child_dest = dest.join(entry.file_name());
+            copy_untracked_entry(
+                workspace,
+                &child_src,
+                child_dest,
+                &child_relative,
+                exclude,
+                collected,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if should_exclude(relative, exclude) {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(src, &dest)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    collected.push(relative.to_path_buf());
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -328,13 +494,16 @@ fn sanitize_reference(reference: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactManager, ArtifactPathKind, artifact_kind, artifact_path_has_content};
+    use super::{
+        ArtifactManager, ArtifactPathKind, artifact_kind, artifact_path_has_content,
+        path_is_covered_by_explicit_artifacts,
+    };
     use crate::model::{
         ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec, JobSpec, RetryPolicySpec,
     };
     use std::collections::HashMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -360,7 +529,13 @@ mod tests {
         let root = temp_path("artifact-presence");
         let manager = ArtifactManager::new(root.clone());
         let relative = PathBuf::from("tests-temp/build/");
-        let job = job("build", vec![relative.clone()], ArtifactWhenSpec::OnSuccess);
+        let job = job(
+            "build",
+            vec![relative.clone()],
+            Vec::new(),
+            false,
+            ArtifactWhenSpec::OnSuccess,
+        );
         let host = manager.job_artifact_host_path("build", &relative);
         fs::create_dir_all(&host).expect("create artifact dir");
         fs::write(host.join("linux-release.txt"), "release").expect("write artifact");
@@ -384,7 +559,91 @@ mod tests {
         assert!(!ArtifactWhenSpec::OnFailure.includes(None));
     }
 
-    fn job(name: &str, paths: Vec<PathBuf>, when: ArtifactWhenSpec) -> JobSpec {
+    #[test]
+    fn collect_untracked_includes_ignored_workspace_files() {
+        let root = temp_path("artifact-untracked");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let repo = git2::Repository::init(&workspace).expect("init repo");
+        fs::write(workspace.join("README.md"), "opal\n").expect("write readme");
+        fs::write(workspace.join(".gitignore"), "tests-temp/\n").expect("write ignore");
+        let mut index = repo.index().expect("open index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("add readme to index");
+        index
+            .add_path(Path::new(".gitignore"))
+            .expect("add ignore to index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Opal Tests", "opal@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("commit");
+
+        fs::create_dir_all(workspace.join("tests-temp")).expect("create ignored dir");
+        fs::write(workspace.join("tests-temp/generated.txt"), "hello").expect("write ignored");
+        fs::write(workspace.join("scratch.txt"), "hi").expect("write untracked");
+
+        let manager = ArtifactManager::new(root.join("artifacts"));
+        let job = job(
+            "build",
+            Vec::new(),
+            vec!["tests-temp/**/*.log".into()],
+            true,
+            ArtifactWhenSpec::OnSuccess,
+        );
+
+        manager
+            .prepare_targets(&job)
+            .expect("prepare artifact targets");
+        manager
+            .collect_untracked(&job, &workspace)
+            .expect("collect untracked artifacts");
+
+        let manifest = manager.read_untracked_manifest("build");
+        assert!(manifest.iter().any(|path| path == Path::new("scratch.txt")));
+        assert!(
+            manifest
+                .iter()
+                .any(|path| path == Path::new("tests-temp/generated.txt"))
+        );
+        assert!(
+            manager
+                .job_artifact_host_path("build", Path::new("scratch.txt"))
+                .exists()
+        );
+        assert!(
+            manager
+                .job_artifact_host_path("build", Path::new("tests-temp/generated.txt"))
+                .exists()
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_is_covered_by_explicit_artifacts_matches_directory_and_file_paths() {
+        assert!(path_is_covered_by_explicit_artifacts(
+            Path::new("tests-temp/build/linux.txt"),
+            &[PathBuf::from("tests-temp/build/")]
+        ));
+        assert!(path_is_covered_by_explicit_artifacts(
+            Path::new("output/report.txt"),
+            &[PathBuf::from("output/report.txt")]
+        ));
+        assert!(!path_is_covered_by_explicit_artifacts(
+            Path::new("other.txt"),
+            &[PathBuf::from("output/report.txt")]
+        ));
+    }
+
+    fn job(
+        name: &str,
+        paths: Vec<PathBuf>,
+        exclude: Vec<String>,
+        untracked: bool,
+        when: ArtifactWhenSpec,
+    ) -> JobSpec {
         JobSpec {
             name: name.into(),
             stage: "build".into(),
@@ -402,7 +661,8 @@ mod tests {
             except: Vec::new(),
             artifacts: ArtifactSpec {
                 paths,
-                exclude: Vec::new(),
+                exclude,
+                untracked,
                 when,
             },
             cache: Vec::new(),

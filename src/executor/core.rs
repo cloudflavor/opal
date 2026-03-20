@@ -366,6 +366,14 @@ impl ExecutorCore {
         preparer::prepare_job_run(self, plan, job)
     }
 
+    pub(crate) fn collect_untracked_artifacts(
+        &self,
+        job: &JobSpec,
+        workspace: &Path,
+    ) -> Result<()> {
+        self.artifacts.collect_untracked(job, workspace)
+    }
+
     pub(crate) fn clear_running_container(&self, job_name: &str) {
         self.runtime_state.clear_running_container(job_name);
     }
