@@ -70,6 +70,7 @@ verify_scenario_log() {
   case "${name}" in
     needs-branch)
       assert_log_contains "${log_file}" "artifact exclude ok"
+      assert_log_contains "${log_file}" "artifact untracked ok"
       ;;
     filters-branch)
       assert_log_contains "${log_file}" "only-branches"

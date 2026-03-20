@@ -109,6 +109,19 @@ artifact-filtered:
       - tests-temp/filtered/ignore.txt
       - tests-temp/filtered/**/*.log
 
+artifact-untracked:
+  stage: build
+  script:
+    - mkdir -p tests-temp/untracked/sub
+    - echo "keep" > tests-temp/untracked/ignored-generated.txt
+    - echo "drop" > tests-temp/untracked/sub/trace.log
+  artifacts:
+    untracked: true
+    exclude:
+      - notes/**
+      - .codex/**
+      - tests-temp/untracked/**/*.log
+
 lint:
   stage: test
   needs: []
@@ -147,6 +160,8 @@ smoke-tests:
       optional: true
     - job: artifact-filtered
       artifacts: true
+    - job: artifact-untracked
+      artifacts: true
   script:
     - echo "package contents:"
     - cat tests-temp/package/summary.txt
@@ -154,6 +169,9 @@ smoke-tests:
     - test ! -e tests-temp/filtered/ignore.txt
     - test ! -e tests-temp/filtered/sub/trace.log
     - echo "artifact exclude ok"
+    - test -f tests-temp/untracked/ignored-generated.txt
+    - test ! -e tests-temp/untracked/sub/trace.log
+    - echo "artifact untracked ok"
 
 deploy-summary:
   stage: deploy
