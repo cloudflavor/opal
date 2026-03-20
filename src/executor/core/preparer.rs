@@ -47,6 +47,7 @@ pub(super) fn prepare_job_run(
         cache: &exec.cache,
         cache_env: &cache_env,
         completed_jobs: &completed_jobs,
+        session_dir: &exec.session_dir,
         container_root: &exec.container_workdir,
         external: exec.external_artifacts.as_ref(),
     })?;

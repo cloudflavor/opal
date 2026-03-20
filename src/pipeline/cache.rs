@@ -1,4 +1,5 @@
 use crate::model::{CachePolicySpec, CacheSpec};
+use crate::naming::job_name_slug;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -32,6 +33,8 @@ impl CacheManager {
 
     pub fn mount_specs(
         &self,
+        job_name: &str,
+        staging_root: &Path,
         caches: &[CacheSpec],
         env: &HashMap<String, String>,
     ) -> Result<Vec<CacheMountSpec>> {
@@ -49,18 +52,19 @@ impl CacheManager {
 
             for relative in &cache.paths {
                 let rel = cache_relative_path(relative);
-                let host = entry_root.join(&rel);
-                if !cache.policy.allows_pull() && host.exists() {
-                    fs::remove_dir_all(&host).with_context(|| {
-                        format!("failed to clear cache path {}", host.display())
-                    })?;
-                }
-                fs::create_dir_all(&host)
-                    .with_context(|| format!("failed to prepare cache path {}", host.display()))?;
+                let entry_path = entry_root.join(&rel);
+                let host = prepare_cache_mount(
+                    cache.policy,
+                    job_name,
+                    staging_root,
+                    &key,
+                    &rel,
+                    &entry_path,
+                )?;
                 specs.push(CacheMountSpec {
                     host,
                     relative: relative.clone(),
-                    read_only: !cache.policy.allows_push(),
+                    read_only: false,
                 });
             }
         }
@@ -90,6 +94,90 @@ impl CacheManager {
 
     fn entry_root(&self, key: &str) -> PathBuf {
         self.root.join(cache_dir_name(key))
+    }
+}
+
+fn prepare_cache_mount(
+    policy: CachePolicySpec,
+    job_name: &str,
+    staging_root: &Path,
+    key: &str,
+    relative: &Path,
+    entry_path: &Path,
+) -> Result<PathBuf> {
+    match policy {
+        CachePolicySpec::Pull => {
+            let staged = staged_cache_path(staging_root, job_name, key, relative);
+            reset_path(&staged)?;
+            if entry_path.exists() {
+                copy_cache_path(entry_path, &staged)?;
+            } else {
+                prepare_cache_path(&staged)?;
+            }
+            Ok(staged)
+        }
+        CachePolicySpec::Push => {
+            reset_path(entry_path)?;
+            prepare_cache_path(entry_path)?;
+            Ok(entry_path.to_path_buf())
+        }
+        CachePolicySpec::PullPush => {
+            prepare_cache_path(entry_path)?;
+            Ok(entry_path.to_path_buf())
+        }
+    }
+}
+
+fn staged_cache_path(staging_root: &Path, job_name: &str, key: &str, relative: &Path) -> PathBuf {
+    staging_root
+        .join("cache-staging")
+        .join(job_name_slug(job_name))
+        .join(cache_dir_name(key))
+        .join(relative)
+}
+
+fn prepare_cache_path(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to prepare cache path {}", path.display()))
+}
+
+fn reset_path(path: &Path) -> Result<()> {
+    if path.exists() {
+        remove_path(path)?;
+    }
+    Ok(())
+}
+
+fn copy_cache_path(src: &Path, dest: &Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        for entry in
+            fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
+        {
+            let entry = entry?;
+            let child_src = entry.path();
+            let child_dest = dest.join(entry.file_name());
+            copy_cache_path(&child_src, &child_dest)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(src, dest)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
+    } else {
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))
     }
 }
 
@@ -186,4 +274,97 @@ fn expand_variables(template: &str, env: &HashMap<String, String>) -> String {
 
 fn is_var_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CacheManager, cache_dir_name};
+    use crate::model::{CachePolicySpec, CacheSpec};
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn pull_policy_stages_cache_into_job_local_copy() {
+        let root = temp_path("cache-pull");
+        let manager = CacheManager::new(root.join("cache-root"));
+        let key = "branch-main";
+        let entry = root
+            .join("cache-root")
+            .join(cache_dir_name(key))
+            .join("tests-temp/cache-data");
+        fs::create_dir_all(&entry).expect("create cache entry");
+        fs::write(entry.join("seed.txt"), "seed").expect("write seed");
+
+        let specs = manager
+            .mount_specs(
+                "test-job",
+                &root.join("session"),
+                &[cache("tests-temp/cache-data/", key, CachePolicySpec::Pull)],
+                &HashMap::new(),
+            )
+            .expect("mount specs");
+
+        assert_eq!(specs.len(), 1);
+        assert!(!specs[0].read_only);
+        assert!(
+            specs[0]
+                .host
+                .starts_with(root.join("session").join("cache-staging").join("test-job"))
+        );
+        assert!(specs[0].host.ends_with(Path::new("tests-temp/cache-data")));
+        assert!(specs[0].host.join("seed.txt").exists());
+
+        fs::write(specs[0].host.join("seed.txt"), "mutated").expect("mutate staged copy");
+        assert_eq!(
+            fs::read_to_string(entry.join("seed.txt")).expect("read original"),
+            "seed"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn push_policy_restarts_from_empty_cache_path() {
+        let root = temp_path("cache-push");
+        let manager = CacheManager::new(root.join("cache-root"));
+        let key = "branch-main";
+        let entry = root
+            .join("cache-root")
+            .join(cache_dir_name(key))
+            .join("tests-temp/cache-data");
+        fs::create_dir_all(&entry).expect("create cache entry");
+        fs::write(entry.join("old.txt"), "old").expect("write old");
+
+        let specs = manager
+            .mount_specs(
+                "seed-job",
+                &root.join("session"),
+                &[cache("tests-temp/cache-data/", key, CachePolicySpec::Push)],
+                &HashMap::new(),
+            )
+            .expect("mount specs");
+
+        assert_eq!(specs[0].host, entry);
+        assert!(!specs[0].host.join("old.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn cache(path: &str, key: &str, policy: CachePolicySpec) -> CacheSpec {
+        CacheSpec {
+            key: key.into(),
+            paths: vec![PathBuf::from(path)],
+            policy,
+        }
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
+    }
 }
