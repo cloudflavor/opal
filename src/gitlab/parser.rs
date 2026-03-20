@@ -1837,6 +1837,37 @@ build-job:
     }
 
     #[test]
+    fn parses_cache_fallback_keys() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  cache:
+    key: cache-$CI_COMMIT_REF_SLUG
+    fallback_keys:
+      - cache-$CI_DEFAULT_BRANCH
+      - cache-default
+    paths:
+      - vendor/
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert_eq!(
+            job.cache[0].fallback_keys,
+            vec![
+                "cache-$CI_DEFAULT_BRANCH".to_string(),
+                "cache-default".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn parses_artifacts_untracked() {
         let yaml = r#"
 stages:

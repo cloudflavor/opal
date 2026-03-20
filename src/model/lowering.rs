@@ -72,4 +72,26 @@ mod tests {
             Some(ParallelConfigSpec::Matrix(_))
         ));
     }
+
+    #[test]
+    fn lowers_default_cache_fallback_keys_into_pipeline_spec() {
+        let spec =
+            PipelineSpec::from_path(Path::new("pipelines/tests/cache-fallback.gitlab-ci.yml"))
+                .expect("pipeline lowers");
+
+        assert_eq!(
+            spec.defaults.cache[0].fallback_keys,
+            vec![
+                "$CACHE_NAMESPACE-$CI_DEFAULT_BRANCH".to_string(),
+                "$CACHE_NAMESPACE-default".to_string()
+            ]
+        );
+        assert_eq!(
+            spec.jobs["verify-fallback-cache"].cache[0].fallback_keys,
+            vec![
+                "$CACHE_NAMESPACE-$CI_DEFAULT_BRANCH".to_string(),
+                "$CACHE_NAMESPACE-default".to_string()
+            ]
+        );
+    }
 }

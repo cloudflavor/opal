@@ -1,0 +1,34 @@
+stages:
+  - seed
+  - verify
+
+variables:
+  CACHE_NAMESPACE: "$CI_CACHE_NAMESPACE"
+
+default:
+  image: docker.io/library/alpine:3.19
+  cache:
+    key: "$CACHE_NAMESPACE-$CI_COMMIT_REF_SLUG"
+    fallback_keys:
+      - "$CACHE_NAMESPACE-$CI_DEFAULT_BRANCH"
+      - "$CACHE_NAMESPACE-default"
+    paths:
+      - tests-temp/cache-data/
+  before_script:
+    - set -eu
+
+seed-default-cache:
+  stage: seed
+  only:
+    - main
+  script:
+    - mkdir -p tests-temp/cache-data
+    - echo "main-seed" > tests-temp/cache-data/fallback.txt
+    - echo "seeded default branch cache"
+
+verify-fallback-cache:
+  stage: verify
+  script:
+    - test -f tests-temp/cache-data/fallback.txt
+    - echo "fallback cache $(cat tests-temp/cache-data/fallback.txt)"
+    - test "$(cat tests-temp/cache-data/fallback.txt)" = "main-seed"

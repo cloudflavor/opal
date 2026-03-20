@@ -8,6 +8,7 @@ OPAL_TEST_COMMAND="${OPAL_TEST_COMMAND:-run}"
 DEFAULT_ARGS="--no-tui --max-parallel-jobs 1"
 read -r -a OPAL_ARGS <<<"${OPAL_TEST_ARGS:-$DEFAULT_ARGS}"
 LOG_DIR="${REPO_ROOT}/tests-temp/test-pipeline-logs"
+TEST_RUN_ID="$(date +%s%N)"
 mkdir -p "${LOG_DIR}"
 
 if [[ "${OPAL_BIN}" != /* ]]; then
@@ -23,6 +24,7 @@ SCENARIOS_JSON='[
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push"},
   {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push"},
   {"name":"environment-stop","pipeline":"pipelines/tests/environments.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -98,6 +100,10 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "cache policy seed"
       assert_log_not_contains "${log_file}" "cache policy mutated"
       ;;
+    cache-fallback)
+      assert_log_contains "${log_file}" "seeded default branch cache"
+      assert_log_contains "${log_file}" "fallback cache main-seed"
+      ;;
   esac
 }
 
@@ -169,6 +175,71 @@ run_scenario() {
   return ${status}
 }
 
+run_cache_fallback_scenario() {
+  local pipeline_rel="$1"
+  local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
+  local log_file="${LOG_DIR}/cache-fallback.log"
+  local namespace="cache-fallback-${TEST_RUN_ID}"
+  local common_env="CI_PIPELINE_SOURCE=push CI_DEFAULT_BRANCH=main CI_CACHE_NAMESPACE=${namespace}"
+  local cache_root="${OPAL_HOME:-${HOME}/.opal}/cache"
+
+  : > "${log_file}"
+
+  local env_string
+  local run_index=0
+  for env_string in \
+    "CI_COMMIT_BRANCH=main ${common_env}" \
+    "CI_COMMIT_BRANCH=feature/fallback ${common_env}"
+  do
+    run_index=$((run_index + 1))
+    local cmd=("${OPAL_BIN}" "${OPAL_TEST_COMMAND}")
+    if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
+      cmd+=("${OPAL_ARGS[@]}")
+    fi
+    cmd+=("--workdir" "${REPO_ROOT}")
+    cmd+=("--pipeline" "${pipeline_path}")
+
+    pushd "${REPO_ROOT}" >/dev/null
+    # shellcheck disable=SC2086
+    env ${env_string} "${cmd[@]}" 2>&1 | tee -a "${log_file}"
+    local status=${PIPESTATUS[0]}
+    popd >/dev/null
+    if (( status != 0 )); then
+      echo "    log saved to ${log_file} (failed)"
+      return ${status}
+    fi
+    if (( run_index == 1 )); then
+      if ! wait_for_seeded_cache "${cache_root}" "${namespace}"; then
+        echo "    log saved to ${log_file} (verification failed)"
+        return 1
+      fi
+    fi
+  done
+
+  if ! verify_scenario_log "cache-fallback" "${log_file}"; then
+    echo "    log saved to ${log_file} (verification failed)"
+    return 1
+  fi
+  echo "    log saved to ${log_file}"
+  return 0
+}
+
+wait_for_seeded_cache() {
+  local cache_root="$1"
+  local namespace="$2"
+
+  local attempt
+  for attempt in {1..10}; do
+    if find "${cache_root}" -maxdepth 4 -path "*/${namespace}-main-*/tests-temp/cache-data/fallback.txt" -print -quit | grep -q .; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "!! expected seeded fallback cache for namespace ${namespace}" >&2
+  return 1
+}
+
 for entry in "${ACTIVE_SCENARIOS[@]}"; do
   name=$(jq -r '.name' <<<"${entry}")
   pipeline=$(jq -r '.pipeline' <<<"${entry}")
@@ -176,6 +247,13 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   workdir=$(jq -r '.workdir // ""' <<<"${entry}")
   secret_name=$(jq -r '.secret_name // ""' <<<"${entry}")
   secret_value=$(jq -r '.secret_value // ""' <<<"${entry}")
+  if [[ "${name}" == "cache-fallback" ]]; then
+    echo "==> ${name}"
+    if ! run_cache_fallback_scenario "${pipeline}"; then
+      failures+=("${name}")
+    fi
+    continue
+  fi
   if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}"; then
     failures+=("${name}")
   fi
