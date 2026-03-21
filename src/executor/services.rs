@@ -10,12 +10,14 @@ use std::env;
 use std::fmt::Write as FmtWrite;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 const MAX_NAME_LEN: usize = 63;
 const CONTAINER_NETWORK_RETRY_ATTEMPTS: usize = 3;
 const CONTAINER_NETWORK_RETRY_DELAY_MS: u64 = 500;
+const SERVICE_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
+const SERVICE_READY_POLL_MS: u64 = 250;
 
 pub struct ServiceRuntime {
     engine: EngineKind,
@@ -82,6 +84,10 @@ impl ServiceRuntime {
             if let Err(err) =
                 runtime.start_service(&container_name, service, &alias, base_env, shared_env)
             {
+                runtime.cleanup();
+                return Err(err);
+            }
+            if let Err(err) = runtime.wait_for_service_readiness(&container_name, service) {
                 runtime.cleanup();
                 return Err(err);
             }
@@ -178,6 +184,52 @@ impl ServiceRuntime {
         self.containers.push(container_name.to_string());
         Ok(())
     }
+
+    fn wait_for_service_readiness(
+        &self,
+        container_name: &str,
+        service: &ServiceSpec,
+    ) -> Result<()> {
+        let timeout = service_ready_timeout();
+        let started = Instant::now();
+
+        loop {
+            let state = match inspect_service_state(self.engine, container_name) {
+                Ok(state) => state,
+                Err(err) => {
+                    warn!(
+                        service = container_name,
+                        "failed to inspect service readiness ({err}); continuing without readiness gate"
+                    );
+                    return Ok(());
+                }
+            };
+
+            match readiness_from_state(&state) {
+                ServiceReadiness::Ready => return Ok(()),
+                ServiceReadiness::Waiting(detail) => {
+                    if started.elapsed() >= timeout {
+                        return Err(anyhow!(
+                            "service '{}' ({}) did not become ready within {}s: {}",
+                            container_name,
+                            service.image,
+                            timeout.as_secs(),
+                            detail
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                }
+                ServiceReadiness::Failed(detail) => {
+                    return Err(anyhow!(
+                        "service '{}' ({}) failed readiness check: {}",
+                        container_name,
+                        service.image,
+                        detail
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn service_supported(engine: EngineKind) -> Result<()> {
@@ -213,6 +265,111 @@ fn service_command(engine: EngineKind) -> Command {
         command.arg("--arch").arg("x86_64");
     }
     command
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceState {
+    running: bool,
+    status: Option<String>,
+    health: Option<String>,
+    exit_code: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServiceReadiness {
+    Ready,
+    Waiting(String),
+    Failed(String),
+}
+
+fn service_ready_timeout() -> Duration {
+    env::var("OPAL_SERVICE_READY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(SERVICE_READY_TIMEOUT_DEFAULT_SECS))
+}
+
+fn inspect_service_state(engine: EngineKind, container_name: &str) -> Result<ServiceState> {
+    let mut command = Command::new(engine_binary(engine));
+    command.arg("inspect").arg(container_name);
+    let output = command
+        .output()
+        .with_context(|| format!("failed to inspect service container '{}'", container_name))?;
+    if !output.status.success() {
+        return Err(command_failed(
+            &command,
+            &output.stdout,
+            &output.stderr,
+            output.status.code(),
+        ));
+    }
+    parse_service_state(&output.stdout)
+}
+
+fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .context("failed to parse service inspect output as json")?;
+    let service = value
+        .as_array()
+        .and_then(|items| items.first())
+        .or_else(|| value.as_object().map(|_| &value))
+        .ok_or_else(|| anyhow!("service inspect output was not an object or array"))?;
+
+    let state = service
+        .get("State")
+        .ok_or_else(|| anyhow!("service inspect output missing State field"))?;
+
+    let running = state
+        .get("Running")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let status = state
+        .get("Status")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_lowercase());
+    let health = state
+        .get("Health")
+        .and_then(|health| health.get("Status"))
+        .and_then(|status| status.as_str())
+        .map(|s| s.to_ascii_lowercase());
+    let exit_code = state.get("ExitCode").and_then(|v| v.as_i64());
+
+    Ok(ServiceState {
+        running,
+        status,
+        health,
+        exit_code,
+    })
+}
+
+fn readiness_from_state(state: &ServiceState) -> ServiceReadiness {
+    if !state.running {
+        if matches!(state.status.as_deref(), Some("exited" | "dead"))
+            || state.exit_code.is_some_and(|code| code != 0)
+        {
+            return ServiceReadiness::Failed(format!(
+                "status={}, running=false, exit_code={}",
+                state.status.as_deref().unwrap_or("unknown"),
+                state
+                    .exit_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+        return ServiceReadiness::Waiting(format!(
+            "status={}, running=false",
+            state.status.as_deref().unwrap_or("unknown")
+        ));
+    }
+
+    match state.health.as_deref() {
+        Some("healthy") => ServiceReadiness::Ready,
+        Some("unhealthy") => ServiceReadiness::Failed("health=unhealthy".to_string()),
+        Some(status) => ServiceReadiness::Waiting(format!("health={status}")),
+        None => ServiceReadiness::Ready,
+    }
 }
 
 fn sanitize_identifier(input: &str) -> String {
@@ -471,7 +628,10 @@ fn default_service_alias(image: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::should_retry_container_network_error;
+    use super::{
+        ServiceReadiness, ServiceState, parse_service_state, readiness_from_state,
+        should_retry_container_network_error,
+    };
 
     #[test]
     fn retries_container_network_xpc_timeouts() {
@@ -484,5 +644,76 @@ mod tests {
         assert!(!should_retry_container_network_error(
             "cannot delete subnet with referring containers"
         ));
+    }
+
+    #[test]
+    fn parse_service_state_reads_running_and_health_status() {
+        let payload = br#"[{"State":{"Running":true,"Status":"running","ExitCode":0,"Health":{"Status":"starting"}}}]"#;
+        let state = parse_service_state(payload).expect("parse service state");
+
+        assert!(state.running);
+        assert_eq!(state.status.as_deref(), Some("running"));
+        assert_eq!(state.health.as_deref(), Some("starting"));
+        assert_eq!(state.exit_code, Some(0));
+    }
+
+    #[test]
+    fn readiness_from_state_is_ready_without_healthcheck() {
+        let state = ServiceState {
+            running: true,
+            status: Some("running".to_string()),
+            health: None,
+            exit_code: Some(0),
+        };
+
+        assert!(matches!(
+            readiness_from_state(&state),
+            ServiceReadiness::Ready
+        ));
+    }
+
+    #[test]
+    fn readiness_from_state_waits_while_healthcheck_is_starting() {
+        let state = ServiceState {
+            running: true,
+            status: Some("running".to_string()),
+            health: Some("starting".to_string()),
+            exit_code: Some(0),
+        };
+
+        match readiness_from_state(&state) {
+            ServiceReadiness::Waiting(detail) => assert!(detail.contains("starting")),
+            other => panic!("expected waiting readiness, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readiness_from_state_fails_when_service_exits() {
+        let state = ServiceState {
+            running: false,
+            status: Some("exited".to_string()),
+            health: None,
+            exit_code: Some(1),
+        };
+
+        match readiness_from_state(&state) {
+            ServiceReadiness::Failed(detail) => assert!(detail.contains("exit_code=1")),
+            other => panic!("expected failed readiness, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readiness_from_state_fails_when_healthcheck_unhealthy() {
+        let state = ServiceState {
+            running: true,
+            status: Some("running".to_string()),
+            health: Some("unhealthy".to_string()),
+            exit_code: Some(0),
+        };
+
+        match readiness_from_state(&state) {
+            ServiceReadiness::Failed(detail) => assert!(detail.contains("unhealthy")),
+            other => panic!("expected failed readiness, got {other:?}"),
+        }
     }
 }

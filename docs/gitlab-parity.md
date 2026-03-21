@@ -145,6 +145,7 @@ These features exist in Opal, but they do not match GitLab completely.
   - if no files are present, the key falls back to `default` (or `<prefix>-default` when prefix is set)
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
+  Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script, but this still does not reproduce all GitLab Runner wait-probe semantics.
 - `retry.when` is parsed, but execution behavior is not modeled with GitLab's full retry policy semantics.
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
