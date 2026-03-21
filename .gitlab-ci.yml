@@ -58,7 +58,37 @@ extended-tests:
   script:
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
     - cargo build --release --locked
-    - ./scripts/test-pipelines.sh
+    - >
+      ./scripts/test-pipelines.sh
+      needs-branch
+      needs-optional
+      needs-tag
+      rules-schedule
+      rules-force-docs
+      includes-inherit
+      filters-branch
+      filters-tag
+      environment-stop
+  artifacts:
+    when: always
+    paths:
+      - tests-temp/test-pipeline-logs/
+
+e2e-tests:
+  stage: test
+  needs:
+    - fetch-sources
+    - lint
+    - unit-tests
+  script:
+    - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - cargo build --release --locked
+    - >
+      ./scripts/test-pipelines.sh
+      resources-services
+      cache-policies
+      cache-fallback
+      secret-masking
   artifacts:
     when: always
     paths:
@@ -69,6 +99,7 @@ build-release:
   needs:
     - unit-tests
     - extended-tests
+    - e2e-tests
     - lint
   script:
     - cargo build --release --locked
