@@ -22,9 +22,9 @@ pub fn write_job_script(
         .with_context(|| format!("failed to create script for {}", job.name))?;
     writeln!(file, "#!/usr/bin/env sh")?;
     if verbose {
-        writeln!(file, "set -eux")?;
+        writeln!(file, "set -ex")?;
     } else {
-        writeln!(file, "set -eu")?;
+        writeln!(file, "set -e")?;
     }
     writeln!(file, "cd {}", container_workdir.display())?;
     writeln!(file)?;
@@ -37,4 +37,78 @@ pub fn write_job_script(
     }
 
     Ok(script_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_job_script;
+    use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
+    use std::collections::HashMap;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn writes_non_verbose_script_without_nounset() {
+        let dir = tempdir().expect("tempdir");
+        let script_path = write_job_script(
+            dir.path(),
+            Path::new("/builds/project"),
+            &job(),
+            &["echo hello".to_string()],
+            false,
+        )
+        .expect("write script");
+        let script = fs::read_to_string(script_path).expect("read script");
+        assert!(script.contains("set -e"));
+        assert!(!script.contains("set -eu"));
+    }
+
+    #[test]
+    fn writes_verbose_script_without_nounset() {
+        let dir = tempdir().expect("tempdir");
+        let script_path = write_job_script(
+            dir.path(),
+            Path::new("/builds/project"),
+            &job(),
+            &["echo hello".to_string()],
+            true,
+        )
+        .expect("write script");
+        let script = fs::read_to_string(script_path).expect("read script");
+        assert!(script.contains("set -ex"));
+        assert!(!script.contains("set -eux"));
+    }
+
+    fn job() -> JobSpec {
+        JobSpec {
+            name: "test".into(),
+            stage: "build".into(),
+            commands: vec!["echo hello".into()],
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        }
+    }
+
+    use std::path::Path;
 }

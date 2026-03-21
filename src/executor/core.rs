@@ -111,6 +111,7 @@ impl ExecutorCore {
         let stage_tracker = stage_tracker::StageTracker::new(&stage_specs);
 
         let secrets = SecretsStore::load(&config.workdir)?;
+        shared_env.extend(secrets.env_pairs());
         let artifacts = ArtifactManager::new(session_dir.clone());
         let cache_root = runtime::cache_root();
         fs::create_dir_all(&cache_root)

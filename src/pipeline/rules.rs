@@ -122,11 +122,7 @@ impl RuleContext {
         Self::from_env(workspace, std::env::vars().collect(), run_manual)
     }
 
-    pub(crate) fn from_env(
-        workspace: &Path,
-        mut env: HashMap<String, String>,
-        run_manual: bool,
-    ) -> Self {
+    pub fn from_env(workspace: &Path, mut env: HashMap<String, String>, run_manual: bool) -> Self {
         if !env.contains_key("CI_PIPELINE_SOURCE") {
             env.insert("CI_PIPELINE_SOURCE".into(), "push".into());
         }

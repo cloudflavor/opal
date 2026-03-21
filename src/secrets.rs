@@ -68,6 +68,12 @@ impl SecretsStore {
         }
     }
 
+    pub fn env_pairs(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        self.extend_env(&mut env);
+        env
+    }
+
     pub fn mask_fragment<'a>(&self, fragment: &'a str) -> Cow<'a, str> {
         if self.entries.is_empty() {
             return Cow::Borrowed(fragment);
@@ -93,5 +99,27 @@ impl SecretsStore {
     pub fn volume_mount(&self) -> Option<(PathBuf, PathBuf)> {
         let root = self.root.as_ref()?;
         Some((root.clone(), PathBuf::from(SECRETS_CONTAINER_DIR)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SECRETS_CONTAINER_DIR, SecretsStore};
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn env_pairs_include_value_and_file_reference() {
+        let dir = tempdir().expect("tempdir");
+        let secrets_dir = dir.path().join(".opal").join("env");
+        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+        fs::write(secrets_dir.join("QUAY_PASSWORD"), "dummy-token").expect("write secret");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let pairs = store.env_pairs();
+        assert!(pairs.contains(&("QUAY_PASSWORD".to_string(), "dummy-token".to_string())));
+        assert!(pairs.iter().any(|(k, v)| {
+            k == "QUAY_PASSWORD_FILE" && v == &format!("{SECRETS_CONTAINER_DIR}/QUAY_PASSWORD")
+        }));
     }
 }

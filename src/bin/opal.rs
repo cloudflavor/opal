@@ -9,6 +9,7 @@ use opal::executor::{
 use opal::logging;
 use opal::model::PipelineSpec;
 use opal::pipeline::{self, RuleContext};
+use opal::secrets::SecretsStore;
 use opal::terminal;
 use opal::ui;
 use opal::{
@@ -18,6 +19,7 @@ use opal::{
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 use structopt::StructOpt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
@@ -129,7 +131,7 @@ fn run_plan(args: PlanArgs) -> Result<()> {
         .unwrap_or_else(|| workdir.join(".gitlab-ci.yml"));
     let pipeline_spec = PipelineSpec::from_path(&pipeline)
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
-    let ctx = RuleContext::new(&workdir);
+    let ctx = rule_context_for_workdir(&workdir);
     if !pipeline::rules::filters_allow(&pipeline_spec.filters, &ctx) {
         println!("pipeline skipped: top-level only/except filters exclude this ref");
         return Ok(());
@@ -151,6 +153,15 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     let display = DisplayFormatter::new(terminal::should_use_color());
     display::print_pipeline_plan(&display, &plan, display::print_line);
     Ok(())
+}
+
+fn rule_context_for_workdir(workdir: &Path) -> RuleContext {
+    let mut ctx_env: std::collections::HashMap<String, String> = env::vars().collect();
+    let run_manual = env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
+    if let Ok(secrets) = SecretsStore::load(workdir) {
+        ctx_env.extend(secrets.env_pairs());
+    }
+    RuleContext::from_env(workdir, ctx_env, run_manual)
 }
 
 #[cfg(target_os = "macos")]
@@ -202,4 +213,22 @@ fn resolve_engine(choice: EngineChoice) -> EngineKind {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn resolve_engine(_: EngineChoice) -> EngineKind {
     EngineKind::Docker
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rule_context_for_workdir;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rule_context_includes_opal_env_values() {
+        let dir = tempdir().expect("tempdir");
+        let secrets_dir = dir.path().join(".opal").join("env");
+        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "robot-user").expect("write secret");
+
+        let ctx = rule_context_for_workdir(dir.path());
+        assert_eq!(ctx.env_value("QUAY_USERNAME"), Some("robot-user"));
+    }
 }
