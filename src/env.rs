@@ -191,18 +191,33 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
         inferred.push(("CI_COMMIT_BRANCH".into(), branch.clone()));
     } else if host_env
         .get("CI_COMMIT_TAG")
-        .is_none_or(|value| value.is_empty())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            host_env
+                .get("GIT_COMMIT_TAG")
+                .filter(|value| !value.is_empty())
+        })
+        .is_none()
         && let Ok(branch) = git::current_branch(workdir)
         && !branch.is_empty()
     {
         inferred.push(("CI_COMMIT_BRANCH".into(), branch));
     }
-    insert_inferred_env(
-        &mut inferred,
-        "CI_COMMIT_TAG",
-        host_env,
-        Some(|| git::current_tag(workdir)),
-    );
+    if let Some(tag) = host_env
+        .get("CI_COMMIT_TAG")
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            host_env
+                .get("GIT_COMMIT_TAG")
+                .filter(|value| !value.is_empty())
+        })
+    {
+        inferred.push(("CI_COMMIT_TAG".into(), tag.clone()));
+    } else if let Ok(tag) = git::current_tag(workdir)
+        && !tag.is_empty()
+    {
+        inferred.push(("CI_COMMIT_TAG".into(), tag));
+    }
     insert_inferred_env(
         &mut inferred,
         "CI_DEFAULT_BRANCH",
@@ -549,6 +564,61 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn maps_git_commit_tag_into_ci_tag_variables() {
+        let job = JobSpec {
+            name: "release-artifacts".into(),
+            stage: "release".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+
+        let env = build_job_env(
+            &[],
+            &HashMap::new(),
+            &job,
+            &SecretsStore::default(),
+            Path::new("/workspace"),
+            Path::new("/workspace"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::from([("GIT_COMMIT_TAG".into(), "v9.9.9".into())]),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(map.get("CI_COMMIT_TAG").map(String::as_str), Some("v9.9.9"));
+        assert_eq!(
+            map.get("CI_COMMIT_REF_NAME").map(String::as_str),
+            Some("v9.9.9")
+        );
+        assert_eq!(
+            map.get("CI_COMMIT_REF_SLUG").map(String::as_str),
+            Some("v999")
+        );
+        assert!(!map.contains_key("CI_COMMIT_BRANCH"));
     }
 
     #[test]

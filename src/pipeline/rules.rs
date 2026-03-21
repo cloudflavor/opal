@@ -126,6 +126,16 @@ impl RuleContext {
         if !env.contains_key("CI_PIPELINE_SOURCE") {
             env.insert("CI_PIPELINE_SOURCE".into(), "push".into());
         }
+        if env
+            .get("CI_COMMIT_TAG")
+            .is_none_or(|value| value.is_empty())
+            && let Some(tag) = env
+                .get("GIT_COMMIT_TAG")
+                .filter(|value| !value.is_empty())
+                .cloned()
+        {
+            env.insert("CI_COMMIT_TAG".into(), tag);
+        }
         if !env.contains_key("CI_COMMIT_BRANCH")
             && env.get("CI_COMMIT_TAG").is_none_or(|tag| tag.is_empty())
             && let Ok(branch) = git::current_branch(workspace)
@@ -470,6 +480,7 @@ mod tests {
     use super::*;
     use crate::git::test_support::init_repo_with_commit_and_tag;
     use std::collections::HashMap;
+    use tempfile::tempdir;
 
     #[test]
     fn infers_commit_tag_from_repo_when_env_is_missing() {
@@ -479,6 +490,27 @@ mod tests {
 
         assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v1.2.3"));
         assert_eq!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
+    }
+
+    #[test]
+    fn maps_git_commit_tag_to_ci_commit_tag() {
+        let dir = tempdir().expect("tempdir");
+        let ctx = RuleContext::from_env(
+            dir.path(),
+            HashMap::from([("GIT_COMMIT_TAG".into(), "opal-recheck-123".into())]),
+            false,
+        );
+
+        assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("opal-recheck-123"));
+        assert_eq!(
+            ctx.env_value("CI_COMMIT_REF_NAME"),
+            Some("opal-recheck-123")
+        );
+        assert_eq!(
+            ctx.env_value("CI_COMMIT_REF_SLUG"),
+            Some("opal-recheck-123")
+        );
+        assert!(ctx.env_value("CI_COMMIT_BRANCH").is_none());
     }
 }
 
