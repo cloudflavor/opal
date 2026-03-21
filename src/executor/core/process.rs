@@ -63,7 +63,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
     };
 
     let mut proc = spawn_container_process(exec, &command_ctx)?;
-    capture_output(
+    let output_line_count = capture_output(
         proc.stdout
             .take()
             .context("missing stdout from container process")?,
@@ -78,6 +78,14 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
 
     let status = proc.wait()?;
     if !status.success() {
+        if output_line_count == 0 {
+            return Err(anyhow!(
+                "container command exited with status {:?} before script output; check runtime env keys and container startup (script: {}, image: {})",
+                status.code(),
+                container_script.display(),
+                image
+            ));
+        }
         return Err(anyhow!(
             "container command exited with status {:?}",
             status.code()
@@ -108,11 +116,12 @@ fn capture_output(
     log_path: &Path,
     ui: Option<&UiBridge>,
     formatter: &LogFormatter<'_>,
-) -> Result<()> {
+) -> Result<usize> {
     let line_prefix = formatter.line_prefix().to_string();
     let mut log_file = File::create(log_path)
         .with_context(|| format!("failed to create log at {}", log_path.display()))?;
     let mut display_line_no = 1usize;
+    let mut emitted = 0usize;
 
     stream_lines(stdout, stderr, |line| {
         let timestamp = OffsetDateTime::now_utc()
@@ -131,9 +140,12 @@ fn capture_output(
             }
             logging::write_log_line(&mut log_file, &timestamp, display_line_no, masked.as_ref())?;
             display_line_no += 1;
+            emitted += 1;
         }
         Ok(())
-    })
+    })?;
+
+    Ok(emitted)
 }
 
 #[cfg(test)]
@@ -156,7 +168,7 @@ mod tests {
         let formatter = LogFormatter::new(false).with_secrets(&secrets);
         let log_path = temp_root.join("job.log");
 
-        capture_output(
+        let emitted = capture_output(
             Cursor::new(b"stdout hello\n".to_vec()),
             Cursor::new(b"token=super-secret\n".to_vec()),
             "job",
@@ -165,11 +177,33 @@ mod tests {
             &formatter,
         )
         .expect("capture output");
+        assert_eq!(emitted, 2);
 
         let contents = fs::read_to_string(&log_path).expect("read log");
         assert!(contents.contains("stdout hello"));
         assert!(contents.contains("token=[MASKED]"));
         assert!(!contents.contains("super-secret"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn capture_output_reports_zero_when_streams_are_empty() {
+        let temp_root = temp_path("process-output-empty");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        let formatter = LogFormatter::new(false);
+        let log_path = temp_root.join("job.log");
+
+        let emitted = capture_output(
+            Cursor::new(Vec::<u8>::new()),
+            Cursor::new(Vec::<u8>::new()),
+            "job",
+            &log_path,
+            None,
+            &formatter,
+        )
+        .expect("capture output");
+        assert_eq!(emitted, 0);
 
         let _ = fs::remove_dir_all(temp_root);
     }

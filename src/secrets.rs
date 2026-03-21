@@ -27,7 +27,7 @@ impl SecretsStore {
             if scoped_path.is_dir() {
                 return Ok(Self {
                     root: Some(scoped_path.clone()),
-                    entries: load_secret_entries(&scoped_path, false)?,
+                    entries: load_secret_entries(&scoped_path)?,
                 });
             }
             if scoped_path.is_file() {
@@ -43,7 +43,7 @@ impl SecretsStore {
 
         let legacy_dir = workdir.join(LEGACY_SECRETS_RELATIVE_DIR);
         if legacy_dir.exists() && legacy_dir.is_dir() {
-            let entries = load_secret_entries(&legacy_dir, true)?;
+            let entries = load_secret_entries(&legacy_dir)?;
             if !entries.is_empty() {
                 return Ok(Self {
                     root: Some(legacy_dir),
@@ -106,7 +106,7 @@ impl SecretsStore {
     }
 }
 
-fn load_secret_entries(dir: &Path, require_env_var_name: bool) -> Result<Vec<SecretEntry>> {
+fn load_secret_entries(dir: &Path) -> Result<Vec<SecretEntry>> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir)
         .with_context(|| format!("failed to read secrets directory at {}", dir.display()))?
@@ -119,7 +119,7 @@ fn load_secret_entries(dir: &Path, require_env_var_name: bool) -> Result<Vec<Sec
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if require_env_var_name && !is_env_var_name(&name) {
+        if !is_env_var_name(&name) {
             continue;
         }
         let bytes =
@@ -253,6 +253,20 @@ mod tests {
             store.volume_mount().map(|(host, _)| host),
             Some(secrets_dir)
         );
+    }
+
+    #[test]
+    fn scoped_env_dir_ignores_non_env_file_names() {
+        let dir = tempdir().expect("tempdir");
+        let secrets_dir = dir.path().join(".opal").join("env");
+        fs::create_dir_all(&secrets_dir).expect("create .opal/env dir");
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user").expect("write scoped secret");
+        fs::write(secrets_dir.join("config.toml"), "ignored=true").expect("write config");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let pairs = store.env_pairs();
+        assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "scoped-user".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key == "config.toml"));
     }
 
     #[test]
