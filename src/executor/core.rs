@@ -286,7 +286,11 @@ impl ExecutorCore {
                 let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
                 let caches = self
                     .cache
-                    .describe_entries(&planned.instance.job.cache, &cache_env)
+                    .describe_entries(
+                        &planned.instance.job.cache,
+                        &self.config.workdir,
+                        &cache_env,
+                    )
                     .into_iter()
                     .map(|entry| HistoryCache {
                         key: entry.key,

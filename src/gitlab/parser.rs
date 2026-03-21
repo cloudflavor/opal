@@ -14,10 +14,10 @@ use serde_yaml::{Mapping, Value};
 use tracing::warn;
 
 use super::graph::{
-    ArtifactConfig, ArtifactWhen, CacheConfig, CachePolicy, DependencySource, EnvironmentAction,
-    EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry,
-    ParallelVariable, PipelineDefaults, PipelineGraph, RetryPolicy, ServiceConfig, StageGroup,
-    WorkflowConfig,
+    ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig,
+    ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineGraph, RetryPolicy,
+    ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -566,7 +566,7 @@ fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
         Value::Mapping(_) => serde_yaml::from_value(value)?,
         other => bail!("cache entry must be a mapping, got {other:?}"),
     };
-    let key = raw.key.unwrap_or_else(|| "default".to_string());
+    let key = parse_cache_key(raw.key)?;
     let fallback_keys = raw.fallback_keys;
     let paths = if raw.paths.is_empty() {
         bail!("cache entry must specify at least one path");
@@ -584,6 +584,28 @@ fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
         paths,
         policy,
     })
+}
+
+fn parse_cache_key(raw: Option<CacheKeyRaw>) -> Result<CacheKey> {
+    let Some(raw) = raw else {
+        return Ok(CacheKey::default());
+    };
+
+    match raw {
+        CacheKeyRaw::Literal(value) => Ok(CacheKey::Literal(value)),
+        CacheKeyRaw::Detailed(details) => {
+            if details.files.is_empty() {
+                bail!("cache key map must include at least one file in 'files'");
+            }
+            if details.files.len() > 2 {
+                bail!("cache key map supports at most two files");
+            }
+            Ok(CacheKey::Files {
+                files: details.files,
+                prefix: details.prefix.filter(|value| !value.is_empty()),
+            })
+        }
+    }
 }
 
 fn parse_variables_map(value: Value) -> Result<HashMap<String, String>> {
@@ -1318,13 +1340,29 @@ impl<'de> serde::Deserialize<'de> for StringList {
 
 #[derive(Debug, Deserialize, Default)]
 struct CacheEntryRaw {
-    key: Option<String>,
+    key: Option<CacheKeyRaw>,
     #[serde(default)]
     fallback_keys: Vec<String>,
     #[serde(default)]
     paths: Vec<PathBuf>,
     #[serde(default)]
     policy: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CacheKeyRaw {
+    Literal(String),
+    Detailed(CacheKeyDetailedRaw),
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CacheKeyDetailedRaw {
+    #[serde(default)]
+    files: Vec<PathBuf>,
+    #[serde(default)]
+    prefix: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1864,6 +1902,65 @@ build-job:
                 "cache-$CI_DEFAULT_BRANCH".to_string(),
                 "cache-default".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parses_cache_key_files_mapping() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  cache:
+    key:
+      files:
+        - Cargo.lock
+      prefix: $CI_JOB_NAME
+    paths:
+      - vendor/
+"#;
+
+        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let build_idx = find_job(&pipeline, "build-job");
+        let job = &pipeline.graph[build_idx];
+        assert_eq!(
+            job.cache[0].key,
+            CacheKey::Files {
+                files: vec![PathBuf::from("Cargo.lock")],
+                prefix: Some("$CI_JOB_NAME".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn errors_when_cache_key_files_has_more_than_two_paths() {
+        let yaml = r#"
+stages:
+  - build
+
+build-job:
+  stage: build
+  script:
+    - echo build
+  cache:
+    key:
+      files:
+        - Cargo.lock
+        - package-lock.json
+        - yarn.lock
+    paths:
+      - vendor/
+"#;
+
+        let err = PipelineGraph::from_yaml_str(yaml).expect_err("pipeline should fail");
+        assert!(
+            err.to_string()
+                .contains("cache key map supports at most two files"),
+            "unexpected error: {err:#}"
         );
     }
 

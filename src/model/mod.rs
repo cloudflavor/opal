@@ -9,7 +9,7 @@ pub mod pipeline;
 pub mod services;
 
 pub use artifacts::{ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec};
-pub use cache::{CachePolicySpec, CacheSpec};
+pub use cache::{CacheKeySpec, CachePolicySpec, CacheSpec};
 pub use dependencies::{DependencySourceSpec, ExternalDependencySpec, JobDependencySpec};
 pub use environment::{EnvironmentActionSpec, EnvironmentSpec};
 pub use job::{

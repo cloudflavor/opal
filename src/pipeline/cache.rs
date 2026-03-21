@@ -1,10 +1,12 @@
-use crate::model::{CachePolicySpec, CacheSpec};
+use crate::model::{CacheKeySpec, CachePolicySpec, CacheSpec};
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result};
+use globset::Glob;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct CacheManager {
@@ -37,6 +39,7 @@ impl CacheManager {
         job_name: &str,
         staging_root: &Path,
         caches: &[CacheSpec],
+        workspace: &Path,
         env: &HashMap<String, String>,
     ) -> Result<Vec<CacheMountSpec>> {
         if caches.is_empty() {
@@ -45,7 +48,7 @@ impl CacheManager {
 
         let mut specs = Vec::new();
         for cache in caches {
-            let key = render_cache_key(&cache.key, env);
+            let key = resolve_cache_key(&cache.key, env, workspace);
             let fallback_keys: Vec<String> = cache
                 .fallback_keys
                 .iter()
@@ -92,12 +95,13 @@ impl CacheManager {
     pub fn describe_entries(
         &self,
         caches: &[CacheSpec],
+        workspace: &Path,
         env: &HashMap<String, String>,
     ) -> Vec<CacheEntryInfo> {
         caches
             .iter()
             .map(|cache| {
-                let key = render_cache_key(&cache.key, env);
+                let key = resolve_cache_key(&cache.key, env, workspace);
                 let host = self.entry_root(&key);
                 CacheEntryInfo {
                     key,
@@ -226,6 +230,100 @@ fn render_cache_key(template: &str, env: &HashMap<String, String>) -> String {
     expand_variables(template, env)
 }
 
+fn resolve_cache_key(
+    cache_key: &CacheKeySpec,
+    env: &HashMap<String, String>,
+    workspace: &Path,
+) -> String {
+    match cache_key {
+        CacheKeySpec::Literal(template) => render_cache_key(template, env),
+        CacheKeySpec::Files { files, prefix } => {
+            files_cache_key(files, prefix.as_deref(), env, workspace)
+        }
+    }
+}
+
+fn files_cache_key(
+    files: &[PathBuf],
+    prefix: Option<&str>,
+    env: &HashMap<String, String>,
+    workspace: &Path,
+) -> String {
+    let mut matched = Vec::new();
+    for file in files {
+        matched.extend(resolve_cache_key_file_entry(file, workspace));
+    }
+    matched.sort();
+    matched.dedup();
+
+    let suffix = if matched.is_empty() {
+        "default".to_string()
+    } else {
+        let mut digest = Sha256::new();
+        let mut had_input = false;
+        for path in matched {
+            if let Ok(bytes) = fs::read(&path) {
+                digest.update(&bytes);
+                had_input = true;
+            }
+        }
+        if had_input {
+            format!("{:x}", digest.finalize())
+        } else {
+            "default".to_string()
+        }
+    };
+
+    if let Some(prefix) = prefix {
+        let rendered = expand_variables(prefix, env);
+        if !rendered.is_empty() {
+            return format!("{rendered}-{suffix}");
+        }
+    }
+    suffix
+}
+
+fn resolve_cache_key_file_entry(entry: &Path, workspace: &Path) -> Vec<PathBuf> {
+    let pattern = entry.to_string_lossy();
+    if has_glob_pattern(&pattern) {
+        let Ok(glob) = Glob::new(&pattern) else {
+            return Vec::new();
+        };
+        let matcher = glob.compile_matcher();
+        let mut matches = Vec::new();
+        for walk in WalkDir::new(workspace)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
+            if !walk.path().is_file() {
+                continue;
+            }
+            let Ok(relative) = walk.path().strip_prefix(workspace) else {
+                continue;
+            };
+            if matcher.is_match(relative) {
+                matches.push(walk.path().to_path_buf());
+            }
+        }
+        return matches;
+    }
+    let path = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        workspace.join(entry)
+    };
+    if path.is_file() {
+        vec![path]
+    } else {
+        Vec::new()
+    }
+}
+
+fn has_glob_pattern(value: &str) -> bool {
+    value.contains('*') || value.contains('?') || value.contains('[') || value.contains('{')
+}
+
 fn cache_dir_name(key: &str) -> String {
     let mut slug = String::new();
     for ch in key.chars() {
@@ -320,7 +418,7 @@ fn is_var_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{CacheManager, cache_dir_name};
-    use crate::model::{CachePolicySpec, CacheSpec};
+    use crate::model::{CacheKeySpec, CachePolicySpec, CacheSpec};
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -343,6 +441,7 @@ mod tests {
                 "test-job",
                 &root.join("session"),
                 &[cache("tests-temp/cache-data/", key, CachePolicySpec::Pull)],
+                &root,
                 &HashMap::new(),
             )
             .expect("mount specs");
@@ -383,6 +482,7 @@ mod tests {
                 "seed-job",
                 &root.join("session"),
                 &[cache("tests-temp/cache-data/", key, CachePolicySpec::Push)],
+                &root,
                 &HashMap::new(),
             )
             .expect("mount specs");
@@ -416,6 +516,7 @@ mod tests {
                     &[fallback_key],
                     CachePolicySpec::PullPush,
                 )],
+                &root,
                 &HashMap::new(),
             )
             .expect("mount specs");
@@ -434,6 +535,59 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn files_cache_key_uses_workspace_file_content_with_prefix() {
+        let root = temp_path("cache-files-key");
+        let manager = CacheManager::new(root.join("cache-root"));
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(root.join("Cargo.lock"), "content-v1").expect("write lockfile");
+
+        let entries = manager.describe_entries(
+            &[CacheSpec {
+                key: CacheKeySpec::Files {
+                    files: vec![PathBuf::from("Cargo.lock")],
+                    prefix: Some("$CI_JOB_NAME".to_string()),
+                },
+                fallback_keys: Vec::new(),
+                paths: vec![PathBuf::from("target")],
+                policy: CachePolicySpec::PullPush,
+            }],
+            &root,
+            &HashMap::from([("CI_JOB_NAME".to_string(), "lint".to_string())]),
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].key.starts_with("lint-"));
+        assert_ne!(entries[0].key, "lint-default");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_cache_key_falls_back_to_default_when_files_missing() {
+        let root = temp_path("cache-files-default");
+        let manager = CacheManager::new(root.join("cache-root"));
+        fs::create_dir_all(&root).expect("create root");
+
+        let entries = manager.describe_entries(
+            &[CacheSpec {
+                key: CacheKeySpec::Files {
+                    files: vec![PathBuf::from("missing.lock")],
+                    prefix: Some("deps".to_string()),
+                },
+                fallback_keys: Vec::new(),
+                paths: vec![PathBuf::from("target")],
+                policy: CachePolicySpec::PullPush,
+            }],
+            &root,
+            &HashMap::new(),
+        );
+
+        assert_eq!(entries[0].key, "deps-default");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn cache(path: &str, key: &str, policy: CachePolicySpec) -> CacheSpec {
         cache_with_fallback(path, key, &[], policy)
     }
@@ -445,7 +599,7 @@ mod tests {
         policy: CachePolicySpec,
     ) -> CacheSpec {
         CacheSpec {
-            key: key.into(),
+            key: CacheKeySpec::Literal(key.into()),
             fallback_keys: fallback_keys.iter().map(|key| (*key).to_string()).collect(),
             paths: vec![PathBuf::from(path)],
             policy,

@@ -22,6 +22,7 @@ pub struct VolumeMountContext<'a> {
     pub job: &'a JobSpec,
     pub plan: &'a ExecutionPlan,
     pub pipeline: &'a PipelineSpec,
+    pub workspace_root: &'a Path,
     pub artifacts: &'a ArtifactManager,
     pub cache: &'a CacheManager,
     pub cache_env: &'a HashMap<String, String>,
@@ -56,6 +57,7 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
         job,
         plan,
         pipeline,
+        workspace_root,
         artifacts,
         cache,
         cache_env,
@@ -211,7 +213,13 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
 
     add_dependency_mounts(job, artifacts, &mut collector, dependency_mounts)?;
 
-    let cache_specs = cache.mount_specs(&job.name, session_dir, &job.cache, cache_env)?;
+    let cache_specs = cache.mount_specs(
+        &job.name,
+        session_dir,
+        &job.cache,
+        workspace_root,
+        cache_env,
+    )?;
     for CacheMountSpec {
         host,
         relative,

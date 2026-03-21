@@ -43,6 +43,7 @@ pub(super) fn prepare_job_run(
         job,
         plan,
         pipeline: &exec.pipeline,
+        workspace_root: &exec.config.workdir,
         artifacts: &exec.artifacts,
         cache: &exec.cache,
         cache_env: &cache_env,
@@ -130,8 +131,8 @@ mod tests {
     use super::{append_runtime_mounts, expanded_commands, selected_services};
     use crate::gitlab::rules::JobRule;
     use crate::model::{
-        ArtifactSpec, CachePolicySpec, CacheSpec, DependencySourceSpec, JobDependencySpec, JobSpec,
-        PipelineDefaultsSpec, RetryPolicySpec, ServiceSpec,
+        ArtifactSpec, CacheKeySpec, CachePolicySpec, CacheSpec, DependencySourceSpec,
+        JobDependencySpec, JobSpec, PipelineDefaultsSpec, RetryPolicySpec, ServiceSpec,
     };
     use crate::pipeline::VolumeMount;
     use crate::secrets::SecretsStore;
@@ -294,7 +295,7 @@ mod tests {
             except: Vec::new(),
             artifacts: ArtifactSpec::default(),
             cache: vec![CacheSpec {
-                key: "cache".into(),
+                key: CacheKeySpec::Literal("cache".into()),
                 fallback_keys: Vec::new(),
                 paths: vec![Path::new("target").to_path_buf()],
                 policy: CachePolicySpec::PullPush,

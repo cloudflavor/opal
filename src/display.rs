@@ -545,7 +545,7 @@ fn format_cache_line(cache: &CacheSpec) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("• key {} ({policy}) – paths: {paths}", cache.key)
+    format!("• key {} ({policy}) – paths: {paths}", cache.key.describe())
 }
 
 fn emit_section<F>(display: &DisplayFormatter, title: &str, lines: &[String], emit_line: &mut F)
@@ -767,7 +767,7 @@ fn cache_tree_nodes(job: &JobSpec) -> Vec<Tree> {
                         .collect(),
                 ));
             }
-            Tree::Node(format!("key {}", cache.key), children)
+            Tree::Node(format!("key {}", cache.key.describe()), children)
         })
         .collect()
 }

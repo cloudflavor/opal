@@ -1,11 +1,11 @@
 use crate::gitlab::{
-    ArtifactConfig, ArtifactWhen, CacheConfig, CachePolicy, DependencySource, EnvironmentAction,
-    EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig, ParallelMatrixEntry,
-    ParallelVariable, PipelineDefaults, PipelineFilters, RetryPolicy, ServiceConfig,
-    WorkflowConfig,
+    ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig,
+    ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters, RetryPolicy,
+    ServiceConfig, WorkflowConfig,
 };
 use crate::model::{
-    ArtifactSpec, ArtifactWhenSpec, CachePolicySpec, CacheSpec, DependencySourceSpec,
+    ArtifactSpec, ArtifactWhenSpec, CacheKeySpec, CachePolicySpec, CacheSpec, DependencySourceSpec,
     EnvironmentActionSpec, EnvironmentSpec, ExternalDependencySpec, JobDependencySpec, JobSpec,
     ParallelConfigSpec, ParallelMatrixEntrySpec, ParallelVariableSpec, PipelineDefaultsSpec,
     PipelineFilterSpec, RetryPolicySpec, ServiceSpec, WorkflowSpec,
@@ -349,7 +349,13 @@ impl From<EnvironmentActionSpec> for EnvironmentAction {
 impl From<&CacheConfig> for CacheSpec {
     fn from(value: &CacheConfig) -> Self {
         Self {
-            key: value.key.clone(),
+            key: match &value.key {
+                CacheKey::Literal(raw) => CacheKeySpec::Literal(raw.clone()),
+                CacheKey::Files { files, prefix } => CacheKeySpec::Files {
+                    files: files.clone(),
+                    prefix: prefix.clone(),
+                },
+            },
             fallback_keys: value.fallback_keys.clone(),
             paths: value.paths.clone(),
             policy: CachePolicySpec::from(value.policy),
@@ -360,7 +366,13 @@ impl From<&CacheConfig> for CacheSpec {
 impl From<&CacheSpec> for CacheConfig {
     fn from(value: &CacheSpec) -> Self {
         Self {
-            key: value.key.clone(),
+            key: match &value.key {
+                CacheKeySpec::Literal(raw) => CacheKey::Literal(raw.clone()),
+                CacheKeySpec::Files { files, prefix } => CacheKey::Files {
+                    files: files.clone(),
+                    prefix: prefix.clone(),
+                },
+            },
             fallback_keys: value.fallback_keys.clone(),
             paths: value.paths.clone(),
             policy: CachePolicy::from(value.policy),

@@ -146,10 +146,45 @@ pub enum EnvironmentAction {
 
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
-    pub key: String,
+    pub key: CacheKey,
     pub fallback_keys: Vec<String>,
     pub paths: Vec<PathBuf>,
     pub policy: CachePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheKey {
+    Literal(String),
+    Files {
+        files: Vec<PathBuf>,
+        prefix: Option<String>,
+    },
+}
+
+impl Default for CacheKey {
+    fn default() -> Self {
+        Self::Literal("default".to_string())
+    }
+}
+
+impl CacheKey {
+    pub fn describe(&self) -> String {
+        match self {
+            CacheKey::Literal(value) => value.clone(),
+            CacheKey::Files { files, prefix } => {
+                let files_text = files
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(prefix) = prefix {
+                    format!("{{ files: [{files_text}], prefix: {prefix} }}")
+                } else {
+                    format!("{{ files: [{files_text}] }}")
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
