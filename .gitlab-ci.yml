@@ -63,6 +63,7 @@ extended-tests:
       needs-branch
       needs-optional
       needs-tag
+      tag-ambiguity
       rules-schedule
       rules-force-docs
       includes-inherit

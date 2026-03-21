@@ -19,6 +19,7 @@ SCENARIOS_JSON='[
   {"name":"needs-branch","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"needs-optional","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push ENABLE_OPTIONAL=1"},
   {"name":"needs-tag","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.3 CI_PIPELINE_SOURCE=push"},
+  {"name":"tag-ambiguity","pipeline":"pipelines/tests/tag-ambiguity.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push","workdir":"tests-temp/tag-ambiguity-workdir","init_git":"1","git_tags":"v0.1.2 v0.1.3","expect_failure":"multiple tags point at HEAD"},
   {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1"},
   {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1"},
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
@@ -116,8 +117,20 @@ prepare_scenario_workdir() {
   local workdir="$1"
   local secret_name="$2"
   local secret_value="$3"
+  local init_git="$4"
+  local git_tags="$5"
 
   mkdir -p "${workdir}"
+  if [[ "${init_git}" == "1" ]]; then
+    git -C "${workdir}" init -b main >/dev/null
+    printf 'opal\n' > "${workdir}/README.md"
+    git -C "${workdir}" add README.md
+    git -C "${workdir}" -c user.name='Opal Tests' -c user.email='opal@example.com' commit -m 'initial' >/dev/null
+    local tag
+    for tag in ${git_tags}; do
+      git -C "${workdir}" tag "${tag}"
+    done
+  fi
   if [[ -n "${secret_name}" ]]; then
     local secrets_dir="${workdir}/.opal/env"
     mkdir -p "${secrets_dir}"
@@ -132,6 +145,9 @@ run_scenario() {
   local workdir_rel="$4"
   local secret_name="$5"
   local secret_value="$6"
+  local init_git="$7"
+  local git_tags="$8"
+  local expect_failure="$9"
   local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
   local log_name="${name//[^A-Za-z0-9._-]/_}"
   local log_file="${LOG_DIR}/${log_name}.log"
@@ -140,13 +156,16 @@ run_scenario() {
   if [[ -n "${workdir_rel}" ]]; then
     workdir="${REPO_ROOT}/${workdir_rel}"
   fi
+  if [[ "${init_git}" == "1" ]]; then
+    workdir="${workdir}-${TEST_RUN_ID}"
+  fi
 
   if [[ ! -f "${pipeline_path}" ]]; then
     echo "!! ${name}: pipeline not found at ${pipeline_rel}" >&2
     return 1
   fi
 
-  prepare_scenario_workdir "${workdir}" "${secret_name}" "${secret_value}"
+  prepare_scenario_workdir "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}"
 
   echo "==> ${name}"
   pushd "${workdir}" >/dev/null
@@ -166,6 +185,20 @@ run_scenario() {
   fi
   local status=$?
   popd >/dev/null
+
+  if [[ -n "${expect_failure}" ]]; then
+    if (( status == 0 )); then
+      echo "!! ${name}: expected failure but scenario succeeded" >&2
+      echo "    log saved to ${log_file} (verification failed)"
+      return 1
+    fi
+    if ! assert_log_contains "${log_file}" "${expect_failure}"; then
+      echo "    log saved to ${log_file} (verification failed)"
+      return 1
+    fi
+    echo "    log saved to ${log_file} (expected failure)"
+    return 0
+  fi
 
   if (( status == 0 )); then
     if ! verify_scenario_log "${name}" "${log_file}"; then
@@ -252,6 +285,9 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   workdir=$(jq -r '.workdir // ""' <<<"${entry}")
   secret_name=$(jq -r '.secret_name // ""' <<<"${entry}")
   secret_value=$(jq -r '.secret_value // ""' <<<"${entry}")
+  init_git=$(jq -r '.init_git // "0"' <<<"${entry}")
+  git_tags=$(jq -r '.git_tags // ""' <<<"${entry}")
+  expect_failure=$(jq -r '.expect_failure // ""' <<<"${entry}")
   if [[ "${name}" == "cache-fallback" ]]; then
     echo "==> ${name}"
     if ! run_cache_fallback_scenario "${pipeline}"; then
@@ -259,7 +295,7 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
     fi
     continue
   fi
-  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}"; then
+  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${expect_failure}"; then
     failures+=("${name}")
   fi
 done

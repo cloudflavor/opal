@@ -12,6 +12,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.
 - `filters.gitlab-ci.yml` – Tests `workflow`, `only`, `except`, tag-only jobs, and `rules:changes`/`rules:if` combos.
 - `environments.gitlab-ci.yml` – Covers `environment` metadata, `on_stop`, manual stop jobs, and `auto_stop_in`.
+- `tag-ambiguity.gitlab-ci.yml` – Ensures Opal fails fast when multiple git tags point to `HEAD` and no explicit `CI_COMMIT_TAG`/`GIT_COMMIT_TAG` is provided.
 
 ## Running locally
 

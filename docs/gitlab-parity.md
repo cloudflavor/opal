@@ -150,6 +150,8 @@ These features exist in Opal, but they do not match GitLab completely.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `workflow` support is limited to `workflow:rules`.
   The broader workflow surface from GitLab is not implemented.
+- tag trigger source is inferred locally.
+  GitLab pipelines are created by a single explicit ref event. Opal may infer tag context from local git state; when multiple tags point to `HEAD`, Opal now requires an explicit `CI_COMMIT_TAG` or `GIT_COMMIT_TAG` and fails fast instead of picking one implicitly.
 
 ## Best Fit For Local Development
 
