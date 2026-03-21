@@ -49,10 +49,26 @@ unit-tests:
     paths:
       - target/debug/deps/
 
+extended-tests:
+  stage: test
+  needs:
+    - fetch-sources
+    - lint
+    - unit-tests
+  script:
+    - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - cargo build --release --locked
+    - ./scripts/test-pipelines.sh
+  artifacts:
+    when: always
+    paths:
+      - tests-temp/test-pipeline-logs/
+
 build-release:
   stage: build
   needs:
     - unit-tests
+    - extended-tests
     - lint
   script:
     - cargo build --release --locked
