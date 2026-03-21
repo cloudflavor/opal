@@ -64,9 +64,16 @@ pub fn current_tag(workdir: &Path) -> Result<String> {
     }
 
     tags.sort();
-    tags.into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("no tag points at HEAD"))
+    if tags.is_empty() {
+        return Err(anyhow!("no tag points at HEAD"));
+    }
+    if tags.len() > 1 {
+        return Err(anyhow!(
+            "multiple tags point at HEAD: {}; set CI_COMMIT_TAG or GIT_COMMIT_TAG explicitly",
+            tags.join(", ")
+        ));
+    }
+    Ok(tags.remove(0))
 }
 
 pub fn merge_base(workdir: &Path, base: &str, head: Option<&str>) -> Result<Option<String>> {
@@ -238,11 +245,38 @@ pub(crate) mod test_support {
 
         dir
     }
+
+    pub(crate) fn init_repo_with_commit_and_tags(tags: &[&str]) -> TempDir {
+        let dir = tempdir().expect("tempdir");
+        let mut init = RepositoryInitOptions::new();
+        init.initial_head("main");
+        let repo = Repository::init_opts(dir.path(), &init).expect("init repository");
+
+        std::fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
+
+        let mut index = repo.index().expect("open index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("add README to index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = Signature::now("Opal Tests", "opal@example.com").expect("signature");
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("create commit");
+        let object = repo.find_object(oid, None).expect("find commit object");
+        for tag in tags {
+            repo.tag_lightweight(tag, &object, false)
+                .expect("create lightweight tag");
+        }
+
+        dir
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::untracked_files;
+    use super::{current_tag, test_support::init_repo_with_commit_and_tags, untracked_files};
     use git2::{RepositoryInitOptions, Signature};
     use std::path::Path;
     use tempfile::tempdir;
@@ -279,5 +313,15 @@ mod tests {
 
         assert!(files.iter().any(|path| path == "scratch.txt"));
         assert!(files.iter().any(|path| path == "tests-temp/generated.txt"));
+    }
+
+    #[test]
+    fn current_tag_errors_when_multiple_tags_point_to_head() {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+        let err = current_tag(dir.path()).expect_err("multiple tags should be ambiguous");
+        assert!(
+            err.to_string().contains("multiple tags point at HEAD"),
+            "unexpected error: {err:#}"
+        );
     }
 }

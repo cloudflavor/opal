@@ -132,6 +132,7 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     let pipeline_spec = PipelineSpec::from_path(&pipeline)
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
     let ctx = rule_context_for_workdir(&workdir);
+    ctx.ensure_valid_tag_context()?;
     if !pipeline::rules::filters_allow(&pipeline_spec.filters, &ctx) {
         println!("pipeline skipped: top-level only/except filters exclude this ref");
         return Ok(());

@@ -236,6 +236,7 @@ impl ExecutorCore {
 
     fn plan_jobs(&self) -> Result<ExecutionPlan> {
         let ctx = RuleContext::new(&self.config.workdir);
+        ctx.ensure_valid_tag_context()?;
         if !pipeline::rules::filters_allow(&self.pipeline.filters, &ctx) {
             return Ok(ExecutionPlan {
                 ordered: Vec::new(),
