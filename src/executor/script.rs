@@ -33,10 +33,20 @@ pub fn write_job_script(
         if line.trim().is_empty() {
             continue;
         }
+        writeln!(
+            file,
+            "printf '%s\\n' {}",
+            shell_quote(&format!("$ {}", line))
+        )?;
         writeln!(file, "{}", line)?;
+        writeln!(file)?;
     }
 
     Ok(script_path)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(test)]
@@ -77,6 +87,22 @@ mod tests {
         let script = fs::read_to_string(script_path).expect("read script");
         assert!(script.contains("set -ex"));
         assert!(!script.contains("set -eux"));
+    }
+
+    #[test]
+    fn writes_script_with_command_tracing_lines() {
+        let dir = tempdir().expect("tempdir");
+        let script_path = write_job_script(
+            dir.path(),
+            Path::new("/builds/project"),
+            &job(),
+            &["test -n \"$QUAY_USERNAME\"".to_string()],
+            false,
+        )
+        .expect("write script");
+        let script = fs::read_to_string(script_path).expect("read script");
+        assert!(script.contains("printf '%s\\n' '$ test -n \"$QUAY_USERNAME\"'"));
+        assert!(script.contains("test -n \"$QUAY_USERNAME\""));
     }
 
     fn job() -> JobSpec {

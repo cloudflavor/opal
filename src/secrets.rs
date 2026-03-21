@@ -16,18 +16,29 @@ pub struct SecretsStore {
 #[derive(Debug, Clone)]
 struct SecretEntry {
     name: String,
-    rel_path: PathBuf,
+    rel_path: Option<PathBuf>,
     value: Option<String>,
 }
 
 impl SecretsStore {
     pub fn load(workdir: &Path) -> Result<Self> {
-        let scoped_dir = workdir.join(SECRETS_RELATIVE_DIR);
-        if scoped_dir.exists() && scoped_dir.is_dir() {
-            return Ok(Self {
-                root: Some(scoped_dir.clone()),
-                entries: load_secret_entries(&scoped_dir, false)?,
-            });
+        let scoped_path = workdir.join(SECRETS_RELATIVE_DIR);
+        if scoped_path.exists() {
+            if scoped_path.is_dir() {
+                return Ok(Self {
+                    root: Some(scoped_path.clone()),
+                    entries: load_secret_entries(&scoped_path, false)?,
+                });
+            }
+            if scoped_path.is_file() {
+                let entries = load_dotenv_file_entries(&scoped_path)?;
+                if !entries.is_empty() {
+                    return Ok(Self {
+                        root: None,
+                        entries,
+                    });
+                }
+            }
         }
 
         let legacy_dir = workdir.join(LEGACY_SECRETS_RELATIVE_DIR);
@@ -51,11 +62,13 @@ impl SecretsStore {
     pub fn extend_env(&self, env: &mut Vec<(String, String)>) {
         for entry in &self.entries {
             if let Some(value) = &entry.value {
-                env.push((entry.name.clone(), value.clone()));
+                upsert_env(env, &entry.name, value);
             }
-            let file_env = format!("{}_FILE", entry.name);
-            let file_path = Path::new(SECRETS_CONTAINER_DIR).join(&entry.rel_path);
-            env.push((file_env, file_path.display().to_string()));
+            if let Some(rel_path) = &entry.rel_path {
+                let file_env = format!("{}_FILE", entry.name);
+                let file_path = Path::new(SECRETS_CONTAINER_DIR).join(rel_path);
+                upsert_env(env, &file_env, &file_path.display().to_string());
+            }
         }
     }
 
@@ -114,8 +127,35 @@ fn load_secret_entries(dir: &Path, require_env_var_name: bool) -> Result<Vec<Sec
         let value = String::from_utf8(bytes).ok().map(|v| trim_secret_value(&v));
         entries.push(SecretEntry {
             name: name.clone(),
-            rel_path: PathBuf::from(name),
+            rel_path: Some(PathBuf::from(name)),
             value,
+        });
+    }
+    Ok(entries)
+}
+
+fn load_dotenv_file_entries(path: &Path) -> Result<Vec<SecretEntry>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read dotenv secrets file at {}", path.display()))?;
+    let mut entries = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = raw_key.trim();
+        if !is_env_var_name(key) {
+            continue;
+        }
+        let value = parse_dotenv_value(raw_value.trim());
+        entries.push(SecretEntry {
+            name: key.to_string(),
+            rel_path: None,
+            value: Some(value),
         });
     }
     Ok(entries)
@@ -123,6 +163,27 @@ fn load_secret_entries(dir: &Path, require_env_var_name: bool) -> Result<Vec<Sec
 
 fn trim_secret_value(value: &str) -> String {
     value.trim_end_matches(&['\r', '\n'][..]).to_string()
+}
+
+fn parse_dotenv_value(value: &str) -> String {
+    let unquoted = if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+    trim_secret_value(unquoted)
+}
+
+fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some((_, existing_value)) = env.iter_mut().find(|(existing_key, _)| existing_key == key)
+    {
+        *existing_value = value.to_string();
+    } else {
+        env.push((key.to_string(), value.to_string()));
+    }
 }
 
 fn is_env_var_name(name: &str) -> bool {
@@ -192,5 +253,40 @@ mod tests {
             store.volume_mount().map(|(host, _)| host),
             Some(secrets_dir)
         );
+    }
+
+    #[test]
+    fn load_supports_dotenv_file_under_dotopal_env() {
+        let dir = tempdir().expect("tempdir");
+        let dotopal_dir = dir.path().join(".opal");
+        fs::create_dir_all(&dotopal_dir).expect("create .opal dir");
+        fs::write(
+            dotopal_dir.join("env"),
+            "export QUAY_USERNAME=robot-user\nQUAY_PASSWORD=\"dummy-token\"\n",
+        )
+        .expect("write dotenv file");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let pairs = store.env_pairs();
+        assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "robot-user".to_string())));
+        assert!(pairs.contains(&("QUAY_PASSWORD".to_string(), "dummy-token".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key.ends_with("_FILE")));
+        assert!(store.volume_mount().is_none());
+    }
+
+    #[test]
+    fn secret_values_override_existing_env_entries() {
+        let dir = tempdir().expect("tempdir");
+        let secrets_dir = dir.path().join(".opal").join("env");
+        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "secret-user").expect("write secret");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let mut env = vec![("QUAY_USERNAME".to_string(), "".to_string())];
+        store.extend_env(&mut env);
+
+        assert!(env.contains(&("QUAY_USERNAME".to_string(), "secret-user".to_string())));
+        let username_count = env.iter().filter(|(k, _)| k == "QUAY_USERNAME").count();
+        assert_eq!(username_count, 1);
     }
 }
