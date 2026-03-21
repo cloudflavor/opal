@@ -42,6 +42,22 @@ enum HelpView {
     Document(usize),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TabDensity {
+    Auto,
+    Compact,
+    Full,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LogFilter {
+    All,
+    Errors,
+    Warnings,
+    Downloads,
+    Build,
+}
+
 pub(super) struct UiState {
     jobs: Vec<UiJobState>,
     order: HashMap<String, usize>,
@@ -66,6 +82,8 @@ pub(super) struct UiState {
     history_height: u16,
     loaded_dirs: HashSet<PathBuf>,
     has_current_run: bool,
+    tab_density: TabDensity,
+    log_filter: LogFilter,
 }
 
 impl UiState {
@@ -119,6 +137,8 @@ impl UiState {
             history_height: 0,
             loaded_dirs: HashSet::new(),
             has_current_run,
+            tab_density: TabDensity::Auto,
+            log_filter: LogFilter::All,
         }
     }
 
@@ -211,8 +231,12 @@ impl UiState {
 
     pub(super) fn tabs(&self, width: u16) -> (Paragraph<'static>, u16) {
         let (lines, rows) = self.tab_lines(width as usize);
+        let summary = self.pipeline_counts();
         let paragraph = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Jobs"))
+            .block(Block::default().borders(Borders::ALL).title(format!(
+                "Jobs  {}/{} done  run:{} fail:{}",
+                summary.done, summary.total, summary.running, summary.failed
+            )))
             .wrap(Wrap { trim: false });
 
         let content_height = rows.saturating_add(2); // account for top/bottom borders
@@ -1097,13 +1121,15 @@ impl UiState {
         if jobs.is_empty() {
             return (vec![Line::raw("")], 1);
         }
+        let compact = self.use_compact_tabs(available);
 
         let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
         let mut current: Vec<Span<'static>> = Vec::new();
         let mut width = 0usize;
 
         for (idx, job) in jobs.iter().enumerate() {
-            let label_spans = self.build_label_spans(job, idx == self.active_selected_index());
+            let label_spans =
+                self.build_label_spans(job, idx == self.active_selected_index(), compact);
             let label_width = Line::from(label_spans.clone()).width();
             let separator_width = if current.is_empty() { 0 } else { 3 };
 
@@ -1136,53 +1162,74 @@ impl UiState {
         (lines, row_count)
     }
 
-    pub(super) fn build_label_spans(&self, job: &UiJobState, selected: bool) -> Vec<Span<'static>> {
+    pub(super) fn build_label_spans(
+        &self,
+        job: &UiJobState,
+        selected: bool,
+        compact: bool,
+    ) -> Vec<Span<'static>> {
         let (icon_char, icon_color) = job.status.icon();
         let highlight = if selected {
-            Some(
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if job.status == UiJobStatus::Running {
+            Some(Style::default().add_modifier(Modifier::UNDERLINED))
+        } else {
+            None
+        };
+        let active = job.status == UiJobStatus::Running;
+        let active_style = if active {
             Some(
                 Style::default()
                     .bg(Color::Blue)
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )
-        } else if job.status == UiJobStatus::Pending {
-            Some(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
         } else {
             None
         };
-
+        let overlay = active_style.or(highlight);
         let mut spans = Vec::new();
+
         spans.push(Span::styled(
             icon_char.to_string(),
             Self::apply_highlight(
-                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+                Self::apply_highlight(
+                    Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+                    active_style,
+                ),
                 highlight,
             ),
         ));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            format!(" {}", job.name),
-            Self::apply_highlight(Style::default(), highlight),
+            format!("[{}]", job.status.badge()),
+            Self::apply_highlight(Self::status_badge_style(job.status), highlight),
         ));
         spans.push(Span::styled(
-            format!(" [{}]", job.stage),
-            Self::apply_highlight(Style::default().fg(Color::DarkGray), highlight),
+            " ".to_string(),
+            Self::apply_highlight(Style::default(), overlay),
         ));
-        spans.push(Span::styled(
-            format!(" ({})", job.log_hash),
-            Self::apply_highlight(Style::default().fg(Color::Yellow), highlight),
-        ));
+        if compact {
+            spans.push(Span::styled(
+                truncate_label(&job.name, 16),
+                Self::apply_highlight(Style::default().add_modifier(Modifier::BOLD), overlay),
+            ));
+            spans.push(Span::styled(
+                format!(" [{}]", job.stage),
+                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
+            ));
+        } else {
+            spans.push(Span::styled(
+                job.name.clone(),
+                Self::apply_highlight(Style::default().add_modifier(Modifier::BOLD), overlay),
+            ));
+            spans.push(Span::styled(
+                format!(" [{}]", job.stage),
+                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
+            ));
+            spans.push(Span::styled(
+                format!(" ({})", job.log_hash),
+                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
+            ));
+        }
         if job.manual_pending {
             spans.push(Span::styled(
                 " • MANUAL",
@@ -1190,35 +1237,29 @@ impl UiState {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
-                    highlight,
+                    overlay,
                 ),
             ));
-        } else {
-            match job.status {
-                UiJobStatus::Running => {
-                    spans.push(Span::styled(
-                        " • RUNNING",
-                        Self::apply_highlight(
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                            highlight,
-                        ),
-                    ));
-                }
-                UiJobStatus::Pending => {
-                    spans.push(Span::styled(
-                        " • WAITING ON DEPS",
-                        Self::apply_highlight(
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                            highlight,
-                        ),
-                    ));
-                }
-                _ => {}
-            }
+        } else if job.status == UiJobStatus::Pending {
+            spans.push(Span::styled(
+                " • WAITING",
+                Self::apply_highlight(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                    overlay,
+                ),
+            ));
+        } else if active {
+            spans.push(Span::styled(
+                " • ACTIVE",
+                Self::apply_highlight(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                    overlay,
+                ),
+            ));
         }
 
         spans
@@ -1233,12 +1274,34 @@ impl UiState {
     }
 
     pub(super) fn help_prompt(&self) -> Paragraph<'static> {
-        Paragraph::new(vec![Line::from(vec![
-            Self::hint_label("Help", Color::Cyan),
-            Span::raw(": press "),
-            key_span_color("?", Color::Yellow),
-            Span::raw(" for shortcuts"),
-        ])])
+        Paragraph::new(vec![
+            Line::from(vec![
+                Self::hint_label("Keys", Color::Cyan),
+                key_span_color("?", Color::Yellow),
+                Span::raw(" help  "),
+                key_span_color("Tab", Color::Yellow),
+                Span::raw(" panes  "),
+                key_span_color("q", Color::Yellow),
+                Span::raw(" quit  "),
+                key_span_color("o", Color::Yellow),
+                Span::raw(" log  "),
+                key_span_color("p", Color::Yellow),
+                Span::raw(" plan"),
+            ]),
+            Line::from(vec![
+                Self::hint_label("Run", Color::Green),
+                key_span_color("r", Color::Yellow),
+                Span::raw(" restart  "),
+                key_span_color("m", Color::Yellow),
+                Span::raw(" manual  "),
+                key_span_color("x", Color::Yellow),
+                Span::raw(" cancel  "),
+                key_span_color("0-4", Color::Yellow),
+                Span::raw(format!(" filter:{}  ", self.log_filter.label())),
+                key_span_color("c", Color::Yellow),
+                Span::raw(format!(" density:{}", self.tab_density.label())),
+            ]),
+        ])
         .wrap(Wrap { trim: false })
     }
 
@@ -1541,6 +1604,7 @@ impl UiState {
                     ("j/k/←/→", "change tab"),
                     ("↓/↑", "next/prev"),
                     ("r", "restart job"),
+                    ("c", "cycle lane density"),
                     ("o", "open log"),
                     ("x", "cancel job"),
                 ],
@@ -1555,6 +1619,7 @@ impl UiState {
                     ("Ctrl+u/d", "half page"),
                     ("Ctrl+f/b", "page"),
                     ("Ctrl+e/y", "line"),
+                    ("0-4", "log filters"),
                     ("Space", "page down"),
                 ],
             ),
@@ -1709,6 +1774,7 @@ impl UiState {
     }
 
     pub(super) fn info_panel(&self) -> Paragraph<'_> {
+        let summary = self.pipeline_counts();
         let job = match self.active_job() {
             Some(job) => job,
             None => {
@@ -1718,6 +1784,13 @@ impl UiState {
             }
         };
         let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Pipeline: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!(
+                    "{}/{} done  running:{}  failed:{}  pending:{}",
+                    summary.done, summary.total, summary.running, summary.failed, summary.pending
+                )),
+            ]),
             Line::from(vec![
                 Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
                 Span::raw(job.stage.clone()),
@@ -1767,9 +1840,10 @@ impl UiState {
         let mut lines: Vec<Line> = Vec::new();
         let status_span = Span::styled(
             format!(
-                "Status: {} ({:.2}s)",
+                "Status: {} ({:.2}s)  Filter: {}",
                 job.status.label(),
-                job.display_duration()
+                job.display_duration(),
+                self.log_filter.label(),
             ),
             Style::default().fg(job.status.icon().1),
         );
@@ -1796,11 +1870,14 @@ impl UiState {
         let inner_width = width.saturating_sub(2).max(1) as usize;
         let header_rows = total_rows(&lines, inner_width);
         let available_rows = inner_height.saturating_sub(header_rows as u16) as usize;
-        lines.extend(job.visible_logs(inner_width, available_rows));
+        lines.extend(job.visible_logs(inner_width, available_rows, self.log_filter));
 
         let mut title = "Logs".to_string();
         if job.status.is_done() {
             title.push_str(" (complete)");
+        }
+        if self.log_filter != LogFilter::All {
+            title.push_str(&format!(" [{}]", self.log_filter.label()));
         }
 
         Paragraph::new(lines)
@@ -2015,6 +2092,75 @@ impl UiState {
             job.scroll_to_bottom();
         }
     }
+
+    pub(super) fn set_log_filter(&mut self, filter: LogFilter) {
+        self.log_filter = filter;
+        if let Some(job) = self.active_job_mut() {
+            job.auto_follow();
+        }
+    }
+
+    pub(super) fn cycle_tab_density(&mut self) {
+        self.tab_density = match self.tab_density {
+            TabDensity::Auto => TabDensity::Compact,
+            TabDensity::Compact => TabDensity::Full,
+            TabDensity::Full => TabDensity::Auto,
+        };
+    }
+
+    fn use_compact_tabs(&self, available: usize) -> bool {
+        match self.tab_density {
+            TabDensity::Compact => true,
+            TabDensity::Full => false,
+            TabDensity::Auto => {
+                let jobs = self.active_jobs().len();
+                jobs >= 8 || available < jobs.saturating_mul(24)
+            }
+        }
+    }
+
+    fn pipeline_counts(&self) -> PipelineCounts {
+        let mut counts = PipelineCounts {
+            total: self.active_jobs().len(),
+            ..PipelineCounts::default()
+        };
+        for job in self.active_jobs() {
+            match job.status {
+                UiJobStatus::Running => counts.running += 1,
+                UiJobStatus::Pending => counts.pending += 1,
+                UiJobStatus::Success => counts.success += 1,
+                UiJobStatus::Failed => counts.failed += 1,
+                UiJobStatus::Skipped => counts.skipped += 1,
+            }
+        }
+        counts.done = counts.success + counts.failed + counts.skipped;
+        counts
+    }
+
+    fn status_badge_style(status: UiJobStatus) -> Style {
+        match status {
+            UiJobStatus::Pending => Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            UiJobStatus::Running => Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            UiJobStatus::Success => Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            UiJobStatus::Failed => Style::default()
+                .bg(Color::Red)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            UiJobStatus::Skipped => Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        }
+    }
 }
 
 fn key_span_color(text: &str, color: Color) -> Span<'static> {
@@ -2026,6 +2172,68 @@ fn key_span_color(text: &str, color: Color) -> Span<'static> {
 
 fn bullet() -> Span<'static> {
     Span::styled(" • ", Style::default().fg(Color::DarkGray))
+}
+
+#[derive(Default)]
+struct PipelineCounts {
+    total: usize,
+    done: usize,
+    running: usize,
+    pending: usize,
+    success: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+fn truncate_label(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn matches_log_filter(line: &str, filter: LogFilter) -> bool {
+    if filter == LogFilter::All {
+        return true;
+    }
+    let content = strip_log_metadata(line).to_ascii_lowercase();
+    match filter {
+        LogFilter::All => true,
+        LogFilter::Errors => {
+            content.contains("error")
+                || content.contains("failed")
+                || content.contains("panic")
+                || content.contains("exception")
+        }
+        LogFilter::Warnings => content.contains("warning") || content.contains("warn"),
+        LogFilter::Downloads => {
+            content.contains("downloaded")
+                || content.contains("downloading")
+                || content.contains("fetching")
+        }
+        LogFilter::Build => {
+            content.contains("compiling")
+                || content.contains("checking")
+                || content.contains("building")
+                || content.contains("running")
+                || content.contains("linking")
+                || content.contains("finished")
+        }
+    }
+}
+
+fn strip_log_metadata(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some(idx) = rest.find("] ")
+    {
+        return &rest[idx + 2..];
+    }
+    line
 }
 
 pub(super) struct UiJobState {
@@ -2144,14 +2352,32 @@ impl UiJobState {
         self.follow_logs = true;
     }
 
-    fn visible_logs(&self, wrap_width: usize, max_rows: usize) -> Vec<Line<'static>> {
+    fn visible_logs(
+        &self,
+        wrap_width: usize,
+        max_rows: usize,
+        filter: LogFilter,
+    ) -> Vec<Line<'static>> {
+        let filtered: Vec<&str> = self
+            .logs
+            .iter()
+            .map(String::as_str)
+            .filter(|line| matches_log_filter(line, filter))
+            .collect();
+
+        if filtered.is_empty() {
+            if self.logs.is_empty() {
+                return vec![Line::from("(no output yet)")];
+            }
+            return vec![Line::from("(no lines match current filter)")];
+        }
         if self.logs.is_empty() {
             return vec![Line::from("(no output yet)")];
         }
 
         let wrap_width = wrap_width.max(1);
         let mut remaining_rows = max_rows.max(1);
-        let total = self.logs.len();
+        let total = filtered.len();
         let offset = self.scroll_offset.min(total.saturating_sub(1));
         let mut end = total.saturating_sub(offset);
         if end == 0 {
@@ -2161,7 +2387,7 @@ impl UiJobState {
         let mut collected: Vec<Line<'static>> = Vec::new();
         while end > 0 {
             let idx = end - 1;
-            let line = format_log_entry(&self.logs[idx]);
+            let line = format_log_entry(filtered[idx]);
             let line_rows = rows_for_line(&line, wrap_width);
             if line_rows > remaining_rows && !collected.is_empty() {
                 break;
@@ -2357,6 +2583,38 @@ impl UiJobStatus {
             UiJobStatus::Success | UiJobStatus::Failed | UiJobStatus::Skipped
         )
     }
+
+    fn badge(self) -> &'static str {
+        match self {
+            UiJobStatus::Pending => "WAIT",
+            UiJobStatus::Running => "RUN",
+            UiJobStatus::Success => "PASS",
+            UiJobStatus::Failed => "FAIL",
+            UiJobStatus::Skipped => "SKIP",
+        }
+    }
+}
+
+impl LogFilter {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            LogFilter::All => "all",
+            LogFilter::Errors => "errors",
+            LogFilter::Warnings => "warnings",
+            LogFilter::Downloads => "downloads",
+            LogFilter::Build => "build",
+        }
+    }
+}
+
+impl TabDensity {
+    fn label(self) -> &'static str {
+        match self {
+            TabDensity::Auto => "auto",
+            TabDensity::Compact => "compact",
+            TabDensity::Full => "full",
+        }
+    }
 }
 
 fn format_log_entry(line: &str) -> Line<'static> {
@@ -2370,10 +2628,10 @@ fn format_log_entry(line: &str) -> Line<'static> {
             let number = number.trim();
             let mut spans = vec![
                 Span::raw("[".to_string()),
-                Span::styled(timestamp.to_string(), Style::default().fg(Color::Blue)),
+                Span::styled(timestamp.to_string(), Style::default().fg(Color::DarkGray)),
                 Span::raw(" ".to_string()),
-                Span::styled(number.to_string(), Style::default().fg(Color::Yellow)),
-                Span::raw("] ".to_string()),
+                Span::styled(number.to_string(), Style::default().fg(Color::DarkGray)),
+                Span::styled("] ".to_string(), Style::default().fg(Color::DarkGray)),
                 Span::raw(remainder.to_string()),
             ];
             if let Some(style) = diff_style(remainder) {
@@ -2781,7 +3039,10 @@ fn rows_for_line(line: &Line<'_>, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{HelpDocument, is_markdown_path, render_markdown_for_pager};
+    use super::{
+        HelpDocument, LogFilter, format_log_entry, is_markdown_path, matches_log_filter,
+        render_markdown_for_pager,
+    };
     use ratatui::style::{Color, Modifier};
     use std::path::Path;
 
@@ -2864,5 +3125,36 @@ mod tests {
             .expect("quote line");
         assert_eq!(quote.spans[0].content.as_ref(), "▌ ");
         assert_eq!(quote.spans[1].content.as_ref(), "quote");
+    }
+
+    #[test]
+    fn log_filter_modes_match_expected_lines() {
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] Downloaded serde v1.0.228",
+            LogFilter::Downloads
+        ));
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] Compiling opal v0.1.0-alpha",
+            LogFilter::Build
+        ));
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] warning: field is never read",
+            LogFilter::Warnings
+        ));
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] error[E0425]: cannot find value",
+            LogFilter::Errors
+        ));
+        assert!(!matches_log_filter(
+            "[11:45:19.541 0068] Downloaded serde v1.0.228",
+            LogFilter::Errors
+        ));
+    }
+
+    #[test]
+    fn format_log_entry_dims_metadata_prefix() {
+        let line = format_log_entry("[11:45:19.541 0068] Downloaded serde");
+        assert_eq!(line.spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(line.spans[3].style.fg, Some(Color::DarkGray));
     }
 }

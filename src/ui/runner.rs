@@ -20,7 +20,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
 
-use super::state::{UiState, page_file_with_pager, page_log_with_colors, page_text_with_pager};
+use super::state::{
+    LogFilter, UiState, page_file_with_pager, page_log_with_colors, page_text_with_pager,
+};
 use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo, UiJobResources};
 
 pub(super) struct UiRunner {
@@ -115,11 +117,11 @@ impl UiRunner {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(32), Constraint::Min(0)])
-                .split(frame.size());
+                .split(frame.area());
 
             let history_split = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .constraints([Constraint::Min(0), Constraint::Length(3)])
                 .split(columns[0]);
             let history_area = history_split[0];
             let (history_list, mut history_scrollbar) =
@@ -139,7 +141,7 @@ impl UiRunner {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(tab_height),
-                    Constraint::Length(4),
+                    Constraint::Length(5),
                     Constraint::Min(0),
                 ])
                 .split(columns[1]);
@@ -155,7 +157,7 @@ impl UiRunner {
             frame.render_widget(log_widget, layout[2]);
 
             if self.state.help_visible() {
-                let area = centered_rect(60, 80, frame.size());
+                let area = centered_rect(60, 80, frame.area());
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title(self.state.help_window_title());
@@ -425,6 +427,12 @@ impl UiRunner {
             KeyCode::Char('o') => {
                 self.view_current_log()?;
             }
+            KeyCode::Char('0') => self.state.set_log_filter(LogFilter::All),
+            KeyCode::Char('1') => self.state.set_log_filter(LogFilter::Errors),
+            KeyCode::Char('2') => self.state.set_log_filter(LogFilter::Warnings),
+            KeyCode::Char('3') => self.state.set_log_filter(LogFilter::Downloads),
+            KeyCode::Char('4') => self.state.set_log_filter(LogFilter::Build),
+            KeyCode::Char('c') => self.state.cycle_tab_density(),
             _ => {}
         }
 
