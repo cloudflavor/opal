@@ -81,7 +81,7 @@ pub(super) fn prepare_job_run(
 
 fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<String> {
     let mut cmds = Vec::new();
-    if job.inherit_default_before_script {
+    if job.inherit_default_before_script && job.before_script.is_none() {
         cmds.extend(defaults.before_script.iter().cloned());
     }
     if let Some(custom) = &job.before_script {
@@ -91,7 +91,7 @@ fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<Stri
     if let Some(custom) = &job.after_script {
         cmds.extend(custom.iter().cloned());
     }
-    if job.inherit_default_after_script {
+    if job.inherit_default_after_script && job.after_script.is_none() {
         cmds.extend(defaults.after_script.iter().cloned());
     }
     cmds
@@ -141,7 +141,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn expanded_commands_merges_default_and_job_scripts_in_order() {
+    fn expanded_commands_job_hooks_override_defaults() {
         let defaults = PipelineDefaultsSpec {
             before_script: vec!["default-before".into()],
             after_script: vec!["default-after".into()],
@@ -156,16 +156,45 @@ mod tests {
 
         let commands = expanded_commands(&defaults, &job);
 
-        assert_eq!(
-            commands,
-            vec![
-                "default-before",
-                "job-before",
-                "main",
-                "job-after",
-                "default-after"
-            ]
-        );
+        assert_eq!(commands, vec!["job-before", "main", "job-after"]);
+    }
+
+    #[test]
+    fn expanded_commands_uses_defaults_when_job_hooks_are_missing() {
+        let defaults = PipelineDefaultsSpec {
+            before_script: vec!["default-before".into()],
+            after_script: vec!["default-after".into()],
+            ..pipeline_defaults()
+        };
+        let job = JobSpec {
+            before_script: None,
+            after_script: None,
+            commands: vec!["main".into()],
+            ..job("build")
+        };
+
+        let commands = expanded_commands(&defaults, &job);
+
+        assert_eq!(commands, vec!["default-before", "main", "default-after"]);
+    }
+
+    #[test]
+    fn expanded_commands_empty_job_hooks_disable_default_hooks() {
+        let defaults = PipelineDefaultsSpec {
+            before_script: vec!["default-before".into()],
+            after_script: vec!["default-after".into()],
+            ..pipeline_defaults()
+        };
+        let job = JobSpec {
+            before_script: Some(Vec::new()),
+            after_script: Some(Vec::new()),
+            commands: vec!["main".into()],
+            ..job("build")
+        };
+
+        let commands = expanded_commands(&defaults, &job);
+
+        assert_eq!(commands, vec!["main"]);
     }
 
     #[test]
