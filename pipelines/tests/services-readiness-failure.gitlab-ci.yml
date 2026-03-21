@@ -1,0 +1,14 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+service-readiness-failure:
+  stage: test
+  services:
+    - name: docker.io/library/alpine:3.19
+      alias: unstable
+      command: ["sh", "-lc", "exit 1"]
+  script:
+    - echo "job script should not run when service readiness fails"
