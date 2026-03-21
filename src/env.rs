@@ -551,6 +551,62 @@ mod tests {
         let _ = fs::remove_dir_all(temp_root);
     }
 
+    #[test]
+    fn build_job_env_includes_legacy_dotopal_secrets() {
+        let temp_root = temp_path("env-legacy-secret-file");
+        let dotopal = temp_root.join(".opal");
+        fs::create_dir_all(&dotopal).expect("create .opal dir");
+        fs::write(dotopal.join("QUAY_USERNAME"), "robot-user").expect("write secret");
+        let secrets = SecretsStore::load(&temp_root).expect("load secrets");
+        let job = JobSpec {
+            name: "container-release".into(),
+            stage: "publish".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+
+        let env = build_job_env(
+            &[],
+            &HashMap::new(),
+            &job,
+            &secrets,
+            &temp_root,
+            Path::new("/builds/workspace"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::new(),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("QUAY_USERNAME").map(String::as_str),
+            Some("robot-user")
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
     fn temp_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

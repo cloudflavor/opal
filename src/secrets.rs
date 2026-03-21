@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SECRETS_RELATIVE_DIR: &str = ".opal/env";
+const LEGACY_SECRETS_RELATIVE_DIR: &str = ".opal";
 pub const SECRETS_CONTAINER_DIR: &str = "/opal/secrets";
 
 #[derive(Debug, Default, Clone)]
@@ -21,36 +22,26 @@ struct SecretEntry {
 
 impl SecretsStore {
     pub fn load(workdir: &Path) -> Result<Self> {
-        let dir = workdir.join(SECRETS_RELATIVE_DIR);
-        if !dir.exists() || !dir.is_dir() {
-            return Ok(Self::default());
+        let scoped_dir = workdir.join(SECRETS_RELATIVE_DIR);
+        if scoped_dir.exists() && scoped_dir.is_dir() {
+            return Ok(Self {
+                root: Some(scoped_dir.clone()),
+                entries: load_secret_entries(&scoped_dir, false)?,
+            });
         }
 
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&dir)
-            .with_context(|| format!("failed to read secrets directory at {}", dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            if let Some(name) = entry.file_name().to_str() {
-                let bytes = fs::read(&path)
-                    .with_context(|| format!("failed to read secret {}", path.display()))?;
-                let value = String::from_utf8(bytes.clone()).ok();
-                entries.push(SecretEntry {
-                    name: name.to_string(),
-                    rel_path: PathBuf::from(name),
-                    value,
+        let legacy_dir = workdir.join(LEGACY_SECRETS_RELATIVE_DIR);
+        if legacy_dir.exists() && legacy_dir.is_dir() {
+            let entries = load_secret_entries(&legacy_dir, true)?;
+            if !entries.is_empty() {
+                return Ok(Self {
+                    root: Some(legacy_dir),
+                    entries,
                 });
             }
         }
 
-        Ok(Self {
-            root: Some(dir),
-            entries,
-        })
+        Ok(Self::default())
     }
 
     pub fn has_secrets(&self) -> bool {
@@ -102,6 +93,49 @@ impl SecretsStore {
     }
 }
 
+fn load_secret_entries(dir: &Path, require_env_var_name: bool) -> Result<Vec<SecretEntry>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("failed to read secrets directory at {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if require_env_var_name && !is_env_var_name(&name) {
+            continue;
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("failed to read secret {}", path.display()))?;
+        let value = String::from_utf8(bytes).ok().map(|v| trim_secret_value(&v));
+        entries.push(SecretEntry {
+            name: name.clone(),
+            rel_path: PathBuf::from(name),
+            value,
+        });
+    }
+    Ok(entries)
+}
+
+fn trim_secret_value(value: &str) -> String {
+    value.trim_end_matches(&['\r', '\n'][..]).to_string()
+}
+
+fn is_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SECRETS_CONTAINER_DIR, SecretsStore};
@@ -121,5 +155,42 @@ mod tests {
         assert!(pairs.iter().any(|(k, v)| {
             k == "QUAY_PASSWORD_FILE" && v == &format!("{SECRETS_CONTAINER_DIR}/QUAY_PASSWORD")
         }));
+    }
+
+    #[test]
+    fn load_supports_legacy_dotopal_secret_files() {
+        let dir = tempdir().expect("tempdir");
+        let dotopal_dir = dir.path().join(".opal");
+        fs::create_dir_all(&dotopal_dir).expect("create .opal dir");
+        fs::write(dotopal_dir.join("QUAY_USERNAME"), "robot-user\n").expect("write secret");
+        fs::write(dotopal_dir.join("config.toml"), "ignored=true").expect("write config");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let pairs = store.env_pairs();
+        assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "robot-user".to_string())));
+        assert!(!pairs.iter().any(|(k, _)| k == "config.toml"));
+        assert_eq!(
+            store.volume_mount().map(|(host, _)| host),
+            Some(dotopal_dir.clone())
+        );
+    }
+
+    #[test]
+    fn scoped_env_dir_precedence_over_legacy_dotopal() {
+        let dir = tempdir().expect("tempdir");
+        let dotopal_dir = dir.path().join(".opal");
+        let secrets_dir = dotopal_dir.join("env");
+        fs::create_dir_all(&secrets_dir).expect("create .opal/env dir");
+        fs::write(dotopal_dir.join("QUAY_USERNAME"), "legacy-user").expect("write legacy secret");
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user").expect("write scoped secret");
+
+        let store = SecretsStore::load(dir.path()).expect("load store");
+        let pairs = store.env_pairs();
+        assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "scoped-user".to_string())));
+        assert!(!pairs.contains(&("QUAY_USERNAME".to_string(), "legacy-user".to_string())));
+        assert_eq!(
+            store.volume_mount().map(|(host, _)| host),
+            Some(secrets_dir)
+        );
     }
 }
