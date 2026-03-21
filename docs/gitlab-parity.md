@@ -4,6 +4,8 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
+Last updated: 2026-03-21
+
 ## Recognized By Opal
 
 ### Pipeline structure and defaults
@@ -100,7 +102,9 @@ Short answer: Opal is not on par with official GitLab today. It supports a usefu
   - `exclude`
   - `untracked`
 - `cache`
-  - `key`
+  - `key` (string form)
+  - `key:files`
+  - `key:prefix` (with `key:files`)
   - `paths`
   - `policy`
   - `fallback_keys`
@@ -133,7 +137,12 @@ These features exist in Opal, but they do not match GitLab completely.
 - `artifacts` is subset-only.
   Opal models `paths`, `when`, `exclude`, and `untracked`, but not the broader artifacts feature set from GitLab.
 - `cache` is subset-only.
-  Opal models `key`, `paths`, `policy`, and `fallback_keys`, but not the full GitLab cache surface.
+  Opal models string keys and `key:files` + optional `prefix`, plus `paths`, `policy`, and `fallback_keys`, but not the full GitLab cache surface.
+  Current behavior follows GitLab's practical shape for local runs:
+  - up to two `key:files` entries
+  - wildcard file patterns
+  - non-existent files are ignored
+  - if no files are present, the key falls back to `default` (or `<prefix>-default` when prefix is set)
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
 - `retry.when` is parsed, but execution behavior is not modeled with GitLab's full retry policy semantics.
@@ -194,6 +203,39 @@ GitLab's official CI/CD YAML surface is broader than the subset above. The main 
 - Pages/reporting-oriented job features
 - identity, token, and secret-management keywords from GitLab's YAML surface
 - the rest of GitLab's job keyword surface beyond the subset Opal parses today
+
+## Prioritized Parity Roadmap
+
+This is the practical order for closing the highest-value parity gaps for day-to-day repository pipelines.
+
+### Priority 1: CI composition parity (high impact)
+
+- Add non-local include sources where possible:
+  - project includes
+  - remote includes
+  - template includes
+- Keep local-first behavior deterministic:
+  - cache fetched includes locally
+  - surface explicit errors when remote includes cannot be resolved
+
+### Priority 2: Control-flow parity (high impact)
+
+- Expand pipeline orchestration semantics:
+  - `trigger`
+  - child pipelines
+  - multi-project downstream pipelines
+- Improve retry behavior to more closely follow GitLab semantics for `retry.when` at execution time.
+
+### Priority 3: Job keyword surface (medium impact)
+
+- Extend artifact feature coverage beyond `paths/when/exclude/untracked`.
+- Extend cache feature coverage beyond current key/path/policy/fallback subset.
+- Broaden `only`/`except` support where still narrower than GitLab.
+
+### Priority 4: Runner-environment fidelity (medium impact)
+
+- Narrow execution differences between local engines and GitLab Runner service networking/isolation.
+- Continue improving log fidelity so failure context matches GitLab UI expectations more closely.
 
 ## Practical Conclusion
 
