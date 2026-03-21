@@ -24,6 +24,7 @@ SCENARIOS_JSON='[
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"cache-key-files","pipeline":"pipelines/tests/cache-key-files.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push"},
   {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push"},
@@ -99,6 +100,10 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "cache mutated in pull-only job"
       assert_log_contains "${log_file}" "cache policy seed"
       assert_log_not_contains "${log_file}" "cache policy mutated"
+      ;;
+    cache-key-files)
+      assert_log_contains "${log_file}" "seeded files cache"
+      assert_log_contains "${log_file}" "files cache key from lockfile"
       ;;
     cache-fallback)
       assert_log_contains "${log_file}" "seeded default branch cache"

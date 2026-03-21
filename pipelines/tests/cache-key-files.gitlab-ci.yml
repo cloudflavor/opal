@@ -1,0 +1,29 @@
+stages:
+  - seed
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  cache:
+    key:
+      files:
+        - Cargo.lock
+      prefix: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - tests-temp/cache-key-files/
+  before_script:
+    - set -eu
+
+seed-files-cache:
+  stage: seed
+  script:
+    - mkdir -p tests-temp/cache-key-files
+    - echo "seed-from-files-key" > tests-temp/cache-key-files/marker.txt
+    - echo "seeded files cache"
+
+verify-files-cache:
+  stage: verify
+  script:
+    - test -f tests-temp/cache-key-files/marker.txt
+    - test "$(cat tests-temp/cache-key-files/marker.txt)" = "seed-from-files-key"
+    - echo "files cache key from lockfile"

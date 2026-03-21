@@ -66,6 +66,7 @@ extended-tests:
       rules-schedule
       rules-force-docs
       includes-inherit
+      cache-key-files
       filters-branch
       filters-tag
       environment-stop
