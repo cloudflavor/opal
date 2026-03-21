@@ -18,6 +18,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
+use termimad::MadSkin;
+use termimad::minimad::{
+    Composite, CompositeStyle, Compound, Line as MarkdownLine, Options, parse_text,
+};
 use walkdir::WalkDir;
 
 static EMBEDDED_DOCS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/docs");
@@ -2440,74 +2444,161 @@ impl HelpDocument {
     }
 
     fn markdown_lines(contents: &str) -> Vec<Line<'static>> {
+        let parsed = parse_text(contents, Options::default());
         let mut lines = Vec::new();
-        let mut in_code = false;
-        for raw in contents.lines() {
-            let trimmed_end = raw.trim_end();
-            let trimmed = trimmed_end.trim();
-            if trimmed.starts_with("```") {
-                in_code = !in_code;
-                lines.push(Line::from(""));
-                continue;
+        for line in parsed.lines {
+            match line {
+                MarkdownLine::Normal(composite) => {
+                    if composite.compounds.is_empty() {
+                        lines.push(Line::from(""));
+                        continue;
+                    }
+
+                    let add_blank_after = matches!(composite.style, CompositeStyle::Header(_));
+                    lines.push(Self::markdown_composite_line(&composite));
+                    if add_blank_after {
+                        lines.push(Line::from(""));
+                    }
+                }
+                MarkdownLine::HorizontalRule => lines.push(Line::from(Span::styled(
+                    "────────────────────────",
+                    Style::default().fg(Color::DarkGray),
+                ))),
+                _ => lines.push(Line::from("")),
             }
-            if trimmed.is_empty() {
-                lines.push(Line::from(""));
-                continue;
-            }
-            if in_code {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(trimmed_end.to_string(), Style::default().fg(Color::Green)),
-                ]));
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("# ") {
-                lines.push(Line::from(Span::styled(
-                    rest.trim().to_uppercase(),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("## ") {
-                lines.push(Line::from(Span::styled(
-                    rest.trim().to_string(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("### ") {
-                lines.push(Line::from(Span::styled(
-                    rest.trim().to_string(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-                continue;
-            }
-            if let Some(rest) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-            {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    bullet(),
-                    Span::raw(rest.trim().to_string()),
-                ]));
-                continue;
-            }
-            lines.push(Line::from(trimmed_end.to_string()));
         }
         if lines.is_empty() {
             lines.push(Line::from("This document is empty."));
         }
         lines
+    }
+
+    fn markdown_composite_line(composite: &Composite<'_>) -> Line<'static> {
+        let (mut spans, base_style, strip_prefix) = match composite.style {
+            CompositeStyle::Header(level) => (
+                Vec::new(),
+                Self::markdown_header_style(level.into()),
+                String::new(),
+            ),
+            CompositeStyle::Quote => (
+                vec![Span::styled(
+                    "▌ ",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )],
+                Style::default().fg(Color::LightBlue),
+                String::new(),
+            ),
+            CompositeStyle::Code => (
+                vec![Span::raw("    ")],
+                Style::default().fg(Color::Green),
+                String::new(),
+            ),
+            CompositeStyle::ListItem(depth) => (
+                vec![
+                    Span::raw("  ".repeat(depth.saturating_sub(1) as usize)),
+                    bullet(),
+                ],
+                Style::default(),
+                String::new(),
+            ),
+            CompositeStyle::Paragraph => {
+                if let Some((prefix, strip_prefix)) = Self::markdown_list_prefix(composite) {
+                    (prefix, Style::default(), strip_prefix)
+                } else {
+                    (Vec::new(), Style::default(), String::new())
+                }
+            }
+        };
+
+        spans.extend(Self::markdown_compound_spans(
+            &composite.compounds,
+            base_style,
+            strip_prefix,
+        ));
+        Line::from(spans)
+    }
+
+    fn markdown_header_style(level: usize) -> Style {
+        match level {
+            1 => Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            2 => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            _ => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        }
+    }
+
+    fn markdown_list_prefix(composite: &Composite<'_>) -> Option<(Vec<Span<'static>>, String)> {
+        let raw = composite
+            .compounds
+            .iter()
+            .map(|compound| compound.src)
+            .collect::<String>();
+        if raw.starts_with("- ") || raw.starts_with("* ") {
+            return Some((vec![Span::raw("  "), bullet()], raw[..2].to_string()));
+        }
+
+        let marker_len = raw.chars().take_while(|ch| ch.is_ascii_digit()).count();
+        if marker_len > 0 && raw[marker_len..].starts_with(". ") {
+            let marker = format!("{}.", &raw[..marker_len]);
+            return Some((
+                vec![Span::styled(
+                    format!("  {marker} "),
+                    Style::default().fg(Color::DarkGray),
+                )],
+                format!("{marker} "),
+            ));
+        }
+        None
+    }
+
+    fn markdown_compound_spans(
+        compounds: &[Compound<'_>],
+        base_style: Style,
+        strip_prefix: String,
+    ) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let mut strip_prefix = strip_prefix.as_str();
+        for compound in compounds {
+            let mut text = compound.src;
+            if !strip_prefix.is_empty() {
+                if let Some(rest) = text.strip_prefix(strip_prefix) {
+                    text = rest;
+                    strip_prefix = "";
+                } else if strip_prefix.starts_with(text) {
+                    strip_prefix = &strip_prefix[text.len()..];
+                    continue;
+                } else {
+                    strip_prefix = "";
+                }
+            }
+            if text.is_empty() {
+                continue;
+            }
+
+            let mut style = base_style;
+            if compound.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if compound.italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if compound.code {
+                style = style.fg(Color::Green).bg(Color::DarkGray);
+            }
+            if matches!(base_style.fg, Some(Color::LightBlue)) {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+
+            spans.push(Span::styled(text.to_string(), style));
+        }
+        spans
     }
 }
 
@@ -2539,8 +2630,19 @@ pub(super) fn page_log_with_colors(path: &Path) -> Result<()> {
 }
 
 pub(super) fn page_file_with_pager(title: &str, path: &Path) -> Result<()> {
+    if is_markdown_path(path) {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read markdown file {}", path.display()))?;
+        let rendered = render_markdown_for_pager(&contents);
+        return page_titled_text_with_pager(title, &rendered);
+    }
+
     let mut file =
         File::open(path).with_context(|| format!("failed to open file {}", path.display()))?;
+    page_raw_file_with_pager(title, path, &mut file)
+}
+
+fn page_raw_file_with_pager(title: &str, path: &Path, file: &mut File) -> Result<()> {
     let pager = env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
     let (cmd, args) = parse_pager_command(&pager);
     let mut child = Command::new(&cmd);
@@ -2549,7 +2651,7 @@ pub(super) fn page_file_with_pager(title: &str, path: &Path) -> Result<()> {
         if let Some(mut stdin) = handle.stdin.take() {
             writeln!(stdin, "==> {title} <==")?;
             stdin.write_all(b"\n")?;
-            std::io::copy(&mut file, &mut stdin)?;
+            std::io::copy(file, &mut stdin)?;
         }
         let _ = handle.wait();
         return Ok(());
@@ -2559,16 +2661,27 @@ pub(super) fn page_file_with_pager(title: &str, path: &Path) -> Result<()> {
 }
 
 pub(super) fn page_text_with_pager(content: &str) -> Result<()> {
+    page_titled_text_with_pager("", content)
+}
+
+fn page_titled_text_with_pager(title: &str, content: &str) -> Result<()> {
     let pager = env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
     let (cmd, args) = parse_pager_command(&pager);
     let mut child = Command::new(&cmd);
     child.args(&args).stdin(Stdio::piped());
     if let Ok(mut handle) = child.spawn() {
         if let Some(mut stdin) = handle.stdin.take() {
+            if !title.is_empty() {
+                writeln!(stdin, "==> {title} <==")?;
+                stdin.write_all(b"\n")?;
+            }
             stdin.write_all(content.as_bytes())?;
         }
         let _ = handle.wait();
         return Ok(());
+    }
+    if !title.is_empty() {
+        print!("==> {title} <==\n\n");
     }
     print!("{content}");
     Ok(())
@@ -2603,6 +2716,26 @@ fn colorize_log_line(line: &str) -> String {
         }
     }
     colorize_diff_body(line)
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown"))
+        .unwrap_or(false)
+}
+
+fn render_markdown_for_pager(contents: &str) -> String {
+    if contents.trim().is_empty() {
+        return "This document is empty.\n".to_string();
+    }
+
+    let skin = if crate::terminal::should_use_color() {
+        MadSkin::default()
+    } else {
+        MadSkin::no_style()
+    };
+    format!("{}", skin.term_text(contents))
 }
 
 fn colorize_diff_body(body: &str) -> String {
@@ -2643,5 +2776,93 @@ fn rows_for_line(line: &Line<'_>, width: usize) -> usize {
         1
     } else {
         text_width.div_ceil(width)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HelpDocument, is_markdown_path, render_markdown_for_pager};
+    use ratatui::style::{Color, Modifier};
+    use std::path::Path;
+
+    #[test]
+    fn renders_basic_markdown_for_pager() {
+        let rendered = render_markdown_for_pager("**bold** _italic_ `code`\n\n> quote\n");
+
+        assert!(!rendered.contains("**bold**"));
+        assert!(!rendered.contains("`code`"));
+        assert!(rendered.contains("bold"));
+        assert!(rendered.contains("italic"));
+        assert!(rendered.contains("code"));
+        assert!(rendered.contains("quote"));
+    }
+
+    #[test]
+    fn detects_common_markdown_extensions() {
+        assert!(is_markdown_path(Path::new("docs/guide.md")));
+        assert!(is_markdown_path(Path::new("docs/guide.MARKDOWN")));
+        assert!(!is_markdown_path(Path::new("docs/guide.txt")));
+    }
+
+    #[test]
+    fn help_markdown_lines_render_inline_styles() {
+        let lines =
+            HelpDocument::markdown_lines("# Title\n\nA **bold** *italic* `code`\n> quote\n");
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "Title");
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+
+        let body = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref() == "bold")
+            })
+            .expect("body line");
+        let body_text = body
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(body_text, "A bold italic code");
+
+        let bold = body
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "bold")
+            .expect("bold span");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+
+        let italic = body
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "italic")
+            .expect("italic span");
+        assert!(italic.style.add_modifier.contains(Modifier::ITALIC));
+
+        let code = body
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "code")
+            .expect("code span");
+        assert_eq!(code.style.fg, Some(Color::Green));
+        assert_eq!(code.style.bg, Some(Color::DarkGray));
+
+        let quote = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|span| span.content.as_ref() == "▌ ")
+            })
+            .expect("quote line");
+        assert_eq!(quote.spans[0].content.as_ref(), "▌ ");
+        assert_eq!(quote.spans[1].content.as_ref(), "quote");
     }
 }

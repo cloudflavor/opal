@@ -432,6 +432,15 @@ impl UiRunner {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) {
+        if self.state.help_visible() {
+            match event.kind {
+                MouseEventKind::ScrollUp => self.state.scroll_help(-1),
+                MouseEventKind::ScrollDown => self.state.scroll_help(1),
+                _ => {}
+            }
+            return;
+        }
+
         match event.kind {
             MouseEventKind::ScrollUp => {
                 if self.state.focus_is_history() {
