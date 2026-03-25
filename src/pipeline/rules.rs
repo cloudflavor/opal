@@ -908,6 +908,14 @@ fn filter_matches(filter: &str, ctx: &RuleContext) -> bool {
             .env_value("CI_COMMIT_TAG")
             .map(|s| !s.is_empty())
             .unwrap_or(false),
+        "merge_requests" => ctx.pipeline_source() == "merge_request_event",
+        "schedules" => ctx.pipeline_source() == "schedule",
+        "pushes" => ctx.pipeline_source() == "push",
+        "api" => ctx.pipeline_source() == "api",
+        "web" => ctx.pipeline_source() == "web",
+        "triggers" => ctx.pipeline_source() == "trigger",
+        "pipelines" => matches!(ctx.pipeline_source(), "pipeline" | "parent_pipeline"),
+        "external_pull_requests" => ctx.pipeline_source() == "external_pull_request_event",
         pattern => {
             if let Some(ref_name) = ctx
                 .env_value("CI_COMMIT_REF_NAME")
