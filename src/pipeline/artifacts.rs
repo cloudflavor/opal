@@ -693,10 +693,12 @@ mod tests {
             only: Vec::new(),
             except: Vec::new(),
             artifacts: ArtifactSpec {
+                name: None,
                 paths,
                 exclude,
                 untracked,
                 when,
+                expire_in: None,
                 report_dotenv: None,
             },
             cache: Vec::new(),
