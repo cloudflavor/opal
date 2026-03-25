@@ -140,7 +140,10 @@ Last updated: 2026-03-25
   - `url`
   - `on_stop`
   - `action`
-    - currently `stop` is modeled explicitly; other values behave like the default start action
+    - `stop`
+    - `prepare`
+    - `verify`
+    - `access`
   - `auto_stop_in`
 
 ## Partial Or Divergent Support
@@ -236,11 +239,12 @@ These features exist in Opal, but they do not match GitLab completely.
   - `archived_failure`
   GitLab-specific failure sources such as `stale_schedule` and `archived_failure` are rare in Opal's local execution model, but retry matching now recognizes them when those failure states are surfaced.
 - `environment.action` is subset-only.
-  Opal explicitly models `stop`; other action values are currently treated like the default start action for local metadata/display purposes.
+  Opal explicitly models:
+  - `stop`
+  - `prepare`
+  - `verify`
+  - `access`
   Unsupported environment behavior in Opal today includes:
-  - `action: prepare`
-  - `action: verify`
-  - `action: access`
   - `environment:kubernetes`
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
@@ -263,10 +267,6 @@ High-value local candidates:
 - `artifacts:expire_in` (if we want local retention metadata or cleanup behavior)
 - limited `artifacts:reports`, especially `reports:dotenv`
 - broader `only` / `except` selectors when real repository pipelines rely on them
-- `environment.action` values beyond `stop`:
-  - `prepare`
-  - `verify`
-  - `access`
 - service lifecycle and readiness fidelity
 
 Mostly GitLab control-plane or UI behavior:
