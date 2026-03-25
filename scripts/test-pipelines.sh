@@ -38,6 +38,7 @@ SCENARIOS_JSON='[
   {"name":"only-except-schedule","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule","command":"plan","opal_args":""},
   {"name":"only-except-mr","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=merge_request_event","command":"plan","opal_args":""},
   {"name":"only-except-api","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=api","command":"plan","opal_args":""},
+  {"name":"only-except-variables","pipeline":"pipelines/tests/only-except-variables.gitlab-ci.yml","env":"RELEASE=staging STAGING=1 SKIP_THIS=0","command":"plan","opal_args":""},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"resources-plan","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -282,6 +283,11 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "api-only"
       assert_log_contains "${log_file}" "except-schedules"
       assert_log_not_contains "${log_file}" "mr-only"
+      ;;
+    only-except-variables)
+      assert_log_contains "${log_file}" "release-only"
+      assert_log_contains "${log_file}" "flag-only"
+      assert_log_contains "${log_file}" "skip-when-disabled"
       ;;
     services-and-tags)
       assert_log_contains "${log_file}" "services: • docker.io/library/postgres:16"

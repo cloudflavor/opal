@@ -1,0 +1,29 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+
+release-only:
+  stage: verify
+  only:
+    variables:
+      - $RELEASE == "staging"
+  script:
+    - echo "release staging"
+
+flag-only:
+  stage: verify
+  only:
+    variables:
+      - $STAGING
+  script:
+    - echo "flag staging"
+
+skip-when-disabled:
+  stage: verify
+  except:
+    variables:
+      - $SKIP_THIS == "1"
+  script:
+    - echo "not skipped"
