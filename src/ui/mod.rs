@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 pub use handle::{UiBridge, UiHandle};
 pub use types::{UiCommand, UiJobInfo, UiJobResources, UiJobStatus};
 
+// TODO: DO NOT ADD CODE in mod.rs
 pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();

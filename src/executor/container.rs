@@ -62,6 +62,8 @@ impl<'a> ContainerCommandBuilder<'a> {
         if let Some(arch) = container_arch_override().or_else(host_container_arch) {
             command.arg("--arch").arg(arch);
         }
+        // TODO: why the fuck is this hardcoded, there should be a default, but it should be a
+        // static and it should be overidable
         if let Some(dns) = ctx
             .dns
             .filter(|value| !value.is_empty())

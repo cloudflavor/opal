@@ -35,6 +35,7 @@ fn select_variants<'a>(
     variants: &'a [JobVariantInfo],
     dep: &JobDependencySpec,
 ) -> Vec<&'a JobVariantInfo> {
+    // TODO: this is the nth function like this, stop it, please
     if let Some(filters) = &dep.parallel {
         variants
             .iter()

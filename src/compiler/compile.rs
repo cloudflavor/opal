@@ -64,6 +64,8 @@ pub fn compile_pipeline(
         expanded_jobs.insert(base_job.name.clone(), variants);
     }
 
+    // TODO: fox inside a for inside a for, this needs to be split up and structured properly
+
     for (stage_idx, stage) in pipeline.stages.iter().enumerate() {
         let default_deps: Vec<String> = if stage_idx == 0 {
             Vec::new()
@@ -242,6 +244,8 @@ fn select_variants<'a>(
     variants: &'a [JobVariantInfo],
     dep: &JobDependencySpec,
 ) -> Vec<&'a JobVariantInfo> {
+    // TODO: this logic is very nested and seems brittle. evaluate if this should be split
+    // lots of if else if
     if let Some(filters) = &dep.parallel {
         variants
             .iter()
@@ -301,6 +305,7 @@ fn expand_job_variants(job: JobSpec) -> Result<Vec<ExpandedVariant>> {
                 );
             }
             let total = combos.len();
+            // TODO: for inside a for inside a for loop. garbage, must be refactored and properly structured
             for (idx, combo) in combos.into_iter().enumerate() {
                 let mut clone = job.clone();
                 clone.parallel = None;
@@ -347,6 +352,7 @@ fn matrix_combinations(entries: &[ParallelMatrixEntrySpec]) -> Result<Vec<LabelC
     if entries.is_empty() {
         return Ok(vec![LabelCombination::empty()]);
     }
+    // TODO: for inside a for inside a for, needs to be restructured and refactored
     let mut combos = Vec::new();
     for entry in entries {
         let mut entry_combos = vec![LabelCombination::empty()];

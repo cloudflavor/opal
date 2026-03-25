@@ -361,6 +361,7 @@ fn cache_relative_path(path: &Path) -> PathBuf {
     rel
 }
 
+// TODO: why are expanding vars inside the pipeline cache, what the fuck?
 fn expand_variables(template: &str, env: &HashMap<String, String>) -> String {
     let mut out = String::new();
     let mut chars = template.chars().peekable();

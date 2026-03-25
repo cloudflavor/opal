@@ -52,6 +52,7 @@ fn mount_external_artifacts(root: &Path, collector: &mut MountCollector<'_>) -> 
     Ok(())
 }
 
+// TODO: this is garbabe, does too much, nested for loop logic
 pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMount>> {
     let VolumeMountContext {
         job,
@@ -283,6 +284,7 @@ fn stage_dependency_mount(
     }
 
     let any_dir = mounts.iter().any(|mount| mount.host.is_dir());
+    // TODO: why's there a random fs::create_dir_all inside here?
     if any_dir {
         fs::create_dir_all(&staged)
             .with_context(|| format!("failed to create {}", staged.display()))?;
@@ -352,6 +354,8 @@ fn copy_path(src: &Path, dest: &Path, relative: &Path, exclude: Option<&GlobSet>
     if should_exclude_artifact(relative, exclude) {
         return Ok(());
     }
+
+    // TODO: random fs::create_dir_all, refactor, separate concern here so you can test the functions
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)

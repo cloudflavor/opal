@@ -36,6 +36,7 @@ pub(super) struct UiRunner {
 }
 
 impl UiRunner {
+    // TODO: do not use skip clippy macros
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         jobs: Vec<UiJobInfo>,
@@ -113,6 +114,7 @@ impl UiRunner {
     }
 
     fn draw(&mut self) -> Result<()> {
+        // TODO: does too much - refactor
         self.terminal.draw(|frame| {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
@@ -222,6 +224,7 @@ impl UiRunner {
         }
     }
 
+    // TODO: does way too much, separate concerns
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         let modifiers = key.modifiers;
         if self.state.help_visible() {
