@@ -519,6 +519,19 @@ pub(crate) async fn execute_plan(
                                 ready.push_back(name);
                             }
                         }
+                        release_dependents(
+                            &plan,
+                            &event.name,
+                            &mut remaining,
+                            abort_requested,
+                            pipeline_failed,
+                            &mut ReadyQueues {
+                                ready: &mut ready,
+                                waiting_on_failure: &mut waiting_on_failure,
+                                delayed_pending: &mut delayed_pending,
+                            },
+                            &enqueue_ready,
+                        );
                         summaries.push(JobSummary {
                             name: event.name.clone(),
                             stage_name: event.stage_name.clone(),

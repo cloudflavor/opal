@@ -153,13 +153,8 @@ impl ServiceRuntime {
 
         command.arg(&service.image);
 
-        if matches!(self.engine, EngineKind::ContainerCli) && !service.command.is_empty() {
-            let joined = service.command.join(" ");
-            command.arg("sh").arg("-c").arg(joined);
-        } else {
-            for arg in &service.command {
-                command.arg(arg);
-            }
+        for arg in &service.command {
+            command.arg(arg);
         }
 
         if env::var("OPAL_DEBUG_CONTAINER")
@@ -191,6 +186,7 @@ impl ServiceRuntime {
     ) -> Result<()> {
         let timeout = service_ready_timeout();
         let started = Instant::now();
+        let mut confirmed_running_without_health = false;
 
         loop {
             let state = match inspect_service_state(self.engine, container_name) {
@@ -205,8 +201,16 @@ impl ServiceRuntime {
             };
 
             match readiness_from_state(&state) {
-                ServiceReadiness::Ready => return Ok(()),
+                ServiceReadiness::Ready => {
+                    if state.health.is_none() && !confirmed_running_without_health {
+                        confirmed_running_without_health = true;
+                        thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                        continue;
+                    }
+                    return Ok(());
+                }
                 ServiceReadiness::Waiting(detail) => {
+                    confirmed_running_without_health = false;
                     if started.elapsed() >= timeout {
                         return Err(anyhow!(
                             "service '{}' ({}) did not become ready within {}s: {}",
@@ -292,13 +296,26 @@ fn service_ready_timeout() -> Duration {
 
 fn inspect_service_state(engine: EngineKind, container_name: &str) -> Result<ServiceState> {
     let mut command = Command::new(engine_binary(engine));
-    command.arg("inspect").arg(container_name);
+    command
+        .arg("inspect")
+        .arg("--format")
+        .arg("{{json .State}}")
+        .arg(container_name);
     let output = command
+        .output()
+        .with_context(|| format!("failed to inspect service container '{}'", container_name))?;
+    if output.status.success() {
+        return parse_service_state(&output.stdout);
+    }
+
+    let mut fallback = Command::new(engine_binary(engine));
+    fallback.arg("inspect").arg(container_name);
+    let output = fallback
         .output()
         .with_context(|| format!("failed to inspect service container '{}'", container_name))?;
     if !output.status.success() {
         return Err(command_failed(
-            &command,
+            &fallback,
             &output.stdout,
             &output.stderr,
             output.status.code(),
@@ -316,24 +333,48 @@ fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
         .or_else(|| value.as_object().map(|_| &value))
         .ok_or_else(|| anyhow!("service inspect output was not an object or array"))?;
 
-    let state = service
-        .get("State")
-        .ok_or_else(|| anyhow!("service inspect output missing State field"))?;
+    let state = if let Some(state) = service.get("State") {
+        state
+    } else if service.get("Running").is_some()
+        || service.get("Status").is_some()
+        || service.get("status").is_some()
+    {
+        service
+    } else {
+        return Err(anyhow!("service inspect output missing State field"));
+    };
 
     let running = state
         .get("Running")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .or_else(|| state.get("running").and_then(|v| v.as_bool()))
+        .unwrap_or_else(|| {
+            state
+                .get("Status")
+                .and_then(|v| v.as_str())
+                .or_else(|| state.get("status").and_then(|v| v.as_str()))
+                .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+        });
     let status = state
         .get("Status")
         .and_then(|v| v.as_str())
+        .or_else(|| state.get("status").and_then(|v| v.as_str()))
         .map(|s| s.to_ascii_lowercase());
     let health = state
         .get("Health")
         .and_then(|health| health.get("Status"))
         .and_then(|status| status.as_str())
+        .or_else(|| {
+            state
+                .get("health")
+                .and_then(|health| health.get("status"))
+                .and_then(|status| status.as_str())
+        })
         .map(|s| s.to_ascii_lowercase());
-    let exit_code = state.get("ExitCode").and_then(|v| v.as_i64());
+    let exit_code = state
+        .get("ExitCode")
+        .and_then(|v| v.as_i64())
+        .or_else(|| state.get("exitCode").and_then(|v| v.as_i64()));
 
     Ok(ServiceState {
         running,
@@ -345,7 +386,7 @@ fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
 
 fn readiness_from_state(state: &ServiceState) -> ServiceReadiness {
     if !state.running {
-        if matches!(state.status.as_deref(), Some("exited" | "dead"))
+        if matches!(state.status.as_deref(), Some("exited" | "dead" | "stopped"))
             || state.exit_code.is_some_and(|code| code != 0)
         {
             return ServiceReadiness::Failed(format!(
@@ -655,6 +696,26 @@ mod tests {
         assert_eq!(state.status.as_deref(), Some("running"));
         assert_eq!(state.health.as_deref(), Some("starting"));
         assert_eq!(state.exit_code, Some(0));
+    }
+
+    #[test]
+    fn parse_service_state_accepts_direct_state_object() {
+        let payload = br#"{"Running":false,"Status":"exited","ExitCode":1}"#;
+        let state = parse_service_state(payload).expect("parse service state");
+
+        assert!(!state.running);
+        assert_eq!(state.status.as_deref(), Some("exited"));
+        assert_eq!(state.exit_code, Some(1));
+    }
+
+    #[test]
+    fn parse_service_state_accepts_container_cli_shape() {
+        let payload = br#"[{"status":"exited","exitCode":1}]"#;
+        let state = parse_service_state(payload).expect("parse service state");
+
+        assert!(!state.running);
+        assert_eq!(state.status.as_deref(), Some("exited"));
+        assert_eq!(state.exit_code, Some(1));
     }
 
     #[test]
