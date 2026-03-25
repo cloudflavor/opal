@@ -131,7 +131,6 @@ impl ServiceRuntime {
         let mut command = service_command(self.engine);
         command
             .arg("-d")
-            .arg("--rm")
             .arg("--name")
             .arg(container_name)
             .arg("--network")
@@ -435,6 +434,7 @@ fn discover_container_ports(image: &str) -> Result<Vec<ServicePort>> {
     let infos: Vec<ContainerImageInspect> = serde_json::from_slice(&output.stdout)?;
     let mut ports = Vec::new();
     let mut seen = HashSet::new();
+    // TODO; jesus on a cracker, what the fuck, for in for in for in for in for.........
     for info in infos {
         for variant in info.variants {
             for entry in variant.config.history {
