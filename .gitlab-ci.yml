@@ -57,7 +57,6 @@ extended-tests:
     - unit-tests
   script:
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - cargo build --release --locked
     - >
       ./scripts/test-pipelines.sh
       needs-branch
@@ -84,7 +83,6 @@ e2e-tests:
     - unit-tests
   script:
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - cargo build --release --locked
     - >
       ./scripts/test-pipelines.sh
       resources-services

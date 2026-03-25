@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-OPAL_BIN="${OPAL_BIN:-target/release/opal}"
+OPAL_BIN="${OPAL_BIN:-opal}"
 OPAL_TEST_COMMAND="${OPAL_TEST_COMMAND:-run}"
 DEFAULT_ARGS="--no-tui --max-parallel-jobs 1"
 read -r -a OPAL_ARGS <<<"${OPAL_TEST_ARGS:-$DEFAULT_ARGS}"
@@ -12,7 +12,7 @@ TEST_RUN_ID="$(date +%s%N)"
 mkdir -p "${LOG_DIR}"
 export OPAL_HOME="${OPAL_HOME:-${REPO_ROOT}/tests-temp/opal-home}"
 
-if [[ "${OPAL_BIN}" != /* ]]; then
+if [[ "${OPAL_BIN}" == */* && "${OPAL_BIN}" != /* ]]; then
   OPAL_BIN="${REPO_ROOT}/${OPAL_BIN}"
 fi
 

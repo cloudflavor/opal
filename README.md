@@ -88,7 +88,7 @@ Run the suite with representative env permutations:
 ./scripts/test-pipelines.sh
 ```
 
-The script writes logs under `tests-temp/test-pipeline-logs/`. You can override defaults with `OPAL_BIN`, `OPAL_TEST_COMMAND`, and `OPAL_TEST_ARGS`.
+The script writes logs under `tests-temp/test-pipeline-logs/`. By default it uses the installed `opal` from `PATH`; you can override that and other defaults with `OPAL_BIN`, `OPAL_TEST_COMMAND`, and `OPAL_TEST_ARGS`.
 
 ## Documentation
 
