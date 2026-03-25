@@ -1516,6 +1516,8 @@ impl Script {
 #[derive(Debug, Deserialize, Default)]
 struct RawArtifacts {
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     paths: Vec<PathBuf>,
     #[serde(default)]
     exclude: StringList,
@@ -1524,6 +1526,8 @@ struct RawArtifacts {
     #[serde(default)]
     when: Option<String>,
     #[serde(default)]
+    expire_in: Option<String>,
+    #[serde(default)]
     reports: RawArtifactReports,
 }
 
@@ -1531,10 +1535,15 @@ impl RawArtifacts {
     fn into_config(self, job_name: &str) -> Result<ArtifactConfig> {
         validate_artifact_excludes(&self.exclude.0, job_name)?;
         Ok(ArtifactConfig {
+            name: self.name,
             paths: self.paths,
             exclude: self.exclude.into_vec(),
             untracked: self.untracked,
             when: parse_artifact_when(self.when.as_deref(), job_name)?,
+            expire_in: parse_optional_timeout(
+                &self.expire_in,
+                &format!("job '{}'.artifacts.expire_in", job_name),
+            )?,
             report_dotenv: self.reports.dotenv,
         })
     }

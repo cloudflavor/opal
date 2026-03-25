@@ -50,10 +50,12 @@ pub struct Job {
 
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactConfig {
+    pub name: Option<String>,
     pub paths: Vec<PathBuf>,
     pub exclude: Vec<String>,
     pub untracked: bool,
     pub when: ArtifactWhen,
+    pub expire_in: Option<Duration>,
     pub report_dotenv: Option<PathBuf>,
 }
 

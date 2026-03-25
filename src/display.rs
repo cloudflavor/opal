@@ -327,8 +327,12 @@ fn emit_plan_job<F>(
         emit_line,
     );
 
-    if let Some(paths) = display.format_paths(&planned.instance.job.artifacts.paths) {
-        emit_line(format!("{} {}", display.bold_cyan("    artifacts:"), paths));
+    if let Some(artifact_line) = format_artifacts_metadata(display, planned) {
+        emit_line(format!(
+            "{} {}",
+            display.bold_cyan("    artifacts:"),
+            artifact_line
+        ));
     }
     emit_section(
         display,
@@ -456,6 +460,31 @@ fn format_environment(planned: &ExecutableJob) -> Option<String> {
         parts.push(extra.join(", "));
     }
     Some(parts.join(" – "))
+}
+
+fn format_artifacts_metadata(
+    display: &DisplayFormatter,
+    planned: &ExecutableJob,
+) -> Option<String> {
+    let artifacts = &planned.instance.job.artifacts;
+    let mut parts = Vec::new();
+    if let Some(name) = &artifacts.name {
+        parts.push(format!("name {name}"));
+    }
+    if let Some(paths) = display.format_paths(&artifacts.paths) {
+        parts.push(paths);
+    }
+    if let Some(expire_in) = artifacts.expire_in {
+        parts.push(format!("expire_in {}", format_duration(expire_in)));
+    }
+    if let Some(dotenv) = &artifacts.report_dotenv {
+        parts.push(format!("reports:dotenv {}", dotenv.display()));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" – "))
+    }
 }
 
 fn plan_dependency_lines(planned: &ExecutableJob) -> Vec<String> {

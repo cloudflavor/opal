@@ -1,11 +1,14 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactSpec {
+    pub name: Option<String>,
     pub paths: Vec<PathBuf>,
     pub exclude: Vec<String>,
     pub untracked: bool,
     pub when: ArtifactWhenSpec,
+    pub expire_in: Option<Duration>,
     pub report_dotenv: Option<PathBuf>,
 }
 
