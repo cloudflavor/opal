@@ -136,6 +136,8 @@ Last updated: 2026-03-26
   - string form
   - mapping form with `name` / `image`
   - `alias`
+    - single alias
+    - comma-separated multiple aliases
   - `entrypoint`
   - `command`
   - `variables`
@@ -219,9 +221,11 @@ These features exist in Opal, but they do not match GitLab completely.
   - string form
   - mapping form with `name` / `image`
   - `alias`
+    - including comma-separated multiple aliases
   - `entrypoint`
   - `command`
   - `variables`
+  Opal now validates aliases explicitly and fails when aliases contain unsupported characters instead of silently rewriting them.
   Unsupported service syntax in Opal today is any service subkey outside the list above.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
   Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script. For engines without healthchecks, Opal requires a brief stable-running confirmation before treating the service as ready. This still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
