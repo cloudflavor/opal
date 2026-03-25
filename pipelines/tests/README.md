@@ -8,11 +8,18 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `rules-playground.gitlab-ci.yml` – Focuses on the `rules:` mini-language: `if`, `changes`, `exists`, `when: manual|delayed`, inline `allow_failure`, schedule-only behavior, and interaction with `workflow:rules`.
 - `includes-and-extends.gitlab-ci.yml` – Exercises local `include:`, hidden/template jobs, `extends`, `inherit: { default: [...] }`, and shared variables (see `job_inherit_flags` in `src/gitlab/parser.rs`).
 - `includes-parity.gitlab-ci.yml` – Exercises local include parity behavior: repository-root `include:local`, wildcard local includes, `include:files`, and parse-time environment expansion in include paths.
-- `includes-project-unsupported.gitlab-ci.yml` – Ensures `include:project` does not get misread as a local include and fails explicitly when GitLab credentials/configuration are not provided.
+- `include-surface.gitlab-ci.yml` – Exercises additional local include forms: bare string include entries and singular `include:file` entries.
+- `include-remote-unsupported.gitlab-ci.yml` / `include-template-unsupported.gitlab-ci.yml` / `include-component-unsupported.gitlab-ci.yml` – Ensure unsupported non-local include types fail explicitly.
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
+- `services-and-tags.gitlab-ci.yml` – Validates service string/mapping forms plus informational runner tags in planner output.
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.
 - `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.
+- `retry-parity.gitlab-ci.yml` – Validates retry reruns for both `retry:when: script_failure` and `retry:exit_codes`, using the mounted Opal session directory so the first attempt fails and the retry succeeds.
+- `control-flow-parity.gitlab-ci.yml` – Validates numeric `parallel`, top-level `image`/`variables`, rule-scoped `variables`, and `when: on_failure` behavior.
+- `rules-compare-to.gitlab-ci.yml` – Validates `rules:changes:compare_to` against a temporary git worktree created by the harness.
+- `needs-surface.gitlab-ci.yml` – Validates `needs:artifacts: false` and matrix-targeted `needs.parallel` planner behavior.
+- `top-level-parity.gitlab-ci.yml` – Validates top-level `only` / `except` pipeline filtering and top-level cache inheritance.
 - `filters.gitlab-ci.yml` – Tests `workflow`, `only`, `except`, tag-only jobs, and `rules:changes`/`rules:if` combos.
 - `environments.gitlab-ci.yml` – Covers `environment` metadata, `on_stop`, manual stop jobs, and `auto_stop_in`.
 - `tag-ambiguity.gitlab-ci.yml` – Ensures Opal fails fast when multiple git tags point to `HEAD` and no explicit `CI_COMMIT_TAG`/`GIT_COMMIT_TAG` is provided.

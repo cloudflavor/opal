@@ -1,0 +1,27 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+
+docs-compare-to:
+  stage: verify
+  rules:
+    - changes:
+        paths:
+          - docs/**/*.md
+        compare_to: refs/heads/main
+    - when: never
+  script:
+    - echo "docs compare_to matched"
+
+src-compare-to:
+  stage: verify
+  rules:
+    - changes:
+        paths:
+          - src/**/*.rs
+        compare_to: refs/heads/main
+    - when: never
+  script:
+    - echo "src compare_to matched"

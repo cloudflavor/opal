@@ -1,0 +1,14 @@
+include:
+  - /pipelines/tests/includes/root-fragment.yml
+  - file: /pipelines/tests/includes/list-one.yml
+
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+include-surface-main:
+  stage: test
+  script:
+    - echo "include surface main"

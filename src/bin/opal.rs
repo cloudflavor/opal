@@ -228,8 +228,8 @@ fn resolve_engine(_: EngineChoice) -> EngineKind {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use super::rule_context_for_workdir;
+    use anyhow::Result;
     use std::fs;
     use tempfile::tempdir;
 

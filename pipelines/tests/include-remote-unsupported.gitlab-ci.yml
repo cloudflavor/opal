@@ -1,0 +1,10 @@
+include:
+  - remote: https://example.com/pipeline.yml
+
+stages:
+  - test
+
+remote-unsupported:
+  stage: test
+  script:
+    - echo "should not parse"

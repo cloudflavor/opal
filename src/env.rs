@@ -312,12 +312,12 @@ fn insert_inferred_env<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
     use crate::git::test_support::init_repo_with_commit_and_tag;
     use crate::model::{
         ArtifactSpec, EnvironmentActionSpec, EnvironmentSpec, JobSpec, RetryPolicySpec,
     };
     use crate::secrets::SecretsStore;
+    use anyhow::Result;
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -365,8 +365,14 @@ mod tests {
             &HashMap::from([("CI_PROJECT_DIR".into(), "/workspace".into())]),
         );
         let map: HashMap<_, _> = env.into_iter().collect();
-        assert_eq!(map.get("CI_PROJECT_DIR").map(String::as_str), Some("/workspace"));
-        assert_eq!(map.get("CARGO_HOME").map(String::as_str), Some("/workspace/.cargo"));
+        assert_eq!(
+            map.get("CI_PROJECT_DIR").map(String::as_str),
+            Some("/workspace")
+        );
+        assert_eq!(
+            map.get("CARGO_HOME").map(String::as_str),
+            Some("/workspace/.cargo")
+        );
     }
 
     #[test]

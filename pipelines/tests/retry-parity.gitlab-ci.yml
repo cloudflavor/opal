@@ -1,0 +1,44 @@
+stages:
+  - test
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+retry-on-script-failure:
+  stage: test
+  retry:
+    max: 1
+    when:
+      - script_failure
+  script:
+    - STATE_ROOT=""
+    - for dir in /opal/*; do if [ "$(basename "$dir")" != "secrets" ] && [ -d "$dir" ]; then STATE_ROOT="$dir"; break; fi; done
+    - test -n "$STATE_ROOT"
+    - MARKER="$STATE_ROOT/retry-script-failure.marker"
+    - if [ ! -f "$MARKER" ]; then echo "first script failure"; touch "$MARKER"; exit 1; fi
+    - echo "retry-script-failure-ok"
+
+retry-on-exit-codes:
+  stage: test
+  retry:
+    max: 1
+    exit_codes:
+      - 137
+  script:
+    - STATE_ROOT=""
+    - for dir in /opal/*; do if [ "$(basename "$dir")" != "secrets" ] && [ -d "$dir" ]; then STATE_ROOT="$dir"; break; fi; done
+    - test -n "$STATE_ROOT"
+    - MARKER="$STATE_ROOT/retry-exit-codes.marker"
+    - if [ ! -f "$MARKER" ]; then echo "first exit 137"; touch "$MARKER"; exit 137; fi
+    - echo "retry-exit-codes-ok"
+
+retry-verifier:
+  stage: verify
+  needs:
+    - retry-on-script-failure
+    - retry-on-exit-codes
+  script:
+    - echo "retry fixture complete"

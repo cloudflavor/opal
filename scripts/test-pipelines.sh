@@ -10,6 +10,7 @@ read -r -a OPAL_ARGS <<<"${OPAL_TEST_ARGS:-$DEFAULT_ARGS}"
 LOG_DIR="${REPO_ROOT}/tests-temp/test-pipeline-logs"
 TEST_RUN_ID="$(date +%s%N)"
 mkdir -p "${LOG_DIR}"
+export OPAL_HOME="${OPAL_HOME:-${REPO_ROOT}/tests-temp/opal-home}"
 
 if [[ "${OPAL_BIN}" != /* ]]; then
   OPAL_BIN="${REPO_ROOT}/${OPAL_BIN}"
@@ -17,21 +18,35 @@ fi
 
 SCENARIOS_JSON='[
   {"name":"needs-branch","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
-  {"name":"needs-optional","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push ENABLE_OPTIONAL=1"},
-  {"name":"needs-tag","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.3 CI_PIPELINE_SOURCE=push"},
   {"name":"tag-ambiguity","pipeline":"pipelines/tests/tag-ambiguity.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push","workdir":"tests-temp/tag-ambiguity-workdir","init_git":"1","git_tags":"v0.1.2 v0.1.3","expect_failure":"multiple tags point at HEAD"},
-  {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1"},
-  {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1"},
-  {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
+  {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1","command":"plan","opal_args":""},
+  {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1","command":"plan","opal_args":""},
+  {"name":"rules-compare-to","pipeline":"pipelines/tests/rules-compare-to.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/compare-to CI_PIPELINE_SOURCE=push","workdir":"tests-temp/compare-to-workdir","repo_setup":"compare_to_docs_change","command":"plan","opal_args":""},
+  {"name":"needs-plan","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=schedule","command":"plan","opal_args":""},
+  {"name":"needs-optional","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push ENABLE_OPTIONAL=1","command":"plan","opal_args":""},
+  {"name":"needs-tag","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.3 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"needs-surface","pipeline":"pipelines/tests/needs-surface.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1","command":"plan","opal_args":""},
+  {"name":"include-surface","pipeline":"pipelines/tests/include-surface.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
+  {"name":"include-remote-unsupported","pipeline":"pipelines/tests/include-remote-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:remote is not supported yet","command":"plan","opal_args":""},
+  {"name":"include-template-unsupported","pipeline":"pipelines/tests/include-template-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:template is not supported yet","command":"plan","opal_args":""},
+  {"name":"include-component-unsupported","pipeline":"pipelines/tests/include-component-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:component is not supported yet","command":"plan","opal_args":""},
   {"name":"includes-parity","pipeline":"pipelines/tests/includes-parity.gitlab-ci.yml","env":"INCLUDE_DYNAMIC_PATH=/pipelines/tests/includes/dynamic.yml","command":"plan","opal_args":""},
-  {"name":"includes-project-unsupported","pipeline":"pipelines/tests/includes-project-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:project requires GitLab credentials/configuration"},
+  {"name":"top-level-branch","pipeline":"pipelines/tests/top-level-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/top-level CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"top-level-release-skip","pipeline":"pipelines/tests/top-level-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=release/1.0 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"resources-plan","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"control-flow-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"job 'intentional-failure' failed"},
   {"name":"services-readiness-failure","pipeline":"pipelines/tests/services-readiness-failure.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_SERVICE_READY_TIMEOUT_SECS=5","expect_failure":"failed readiness check"},
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-key-files","pipeline":"pipelines/tests/cache-key-files.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
-  {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push"},
-  {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push"},
+  {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
+  {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"environment-plan","pipeline":"pipelines/tests/environments.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"environment-stop","pipeline":"pipelines/tests/environments.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"secret-masking","pipeline":"pipelines/tests/secret-masking.gitlab-ci.yml","env":"","workdir":"tests-temp/secret-masking-workdir","secret_name":"API_TOKEN","secret_value":"super-secret-e2e"}
 ]'
@@ -116,6 +131,97 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "seeded default branch cache"
       assert_log_contains "${log_file}" "fallback cache main-seed"
       ;;
+    rules-schedule)
+      assert_log_contains "${log_file}" "scheduled-maintenance"
+      assert_log_contains "${log_file}" "allow failure"
+      assert_log_contains "${log_file}" "delayed-verifier"
+      assert_log_contains "${log_file}" "start after 10s"
+      ;;
+    rules-force-docs)
+      assert_log_contains "${log_file}" "always-visible"
+      assert_log_contains "${log_file}" "docs-or-flag"
+      assert_log_contains "${log_file}" "when manual"
+      assert_log_not_contains "${log_file}" "delayed-verifier"
+      ;;
+    rules-compare-to)
+      assert_log_contains "${log_file}" "docs-compare-to"
+      assert_log_not_contains "${log_file}" "src-compare-to"
+      ;;
+    needs-plan)
+      assert_log_contains "${log_file}" "build-matrix: [linux, debug]"
+      assert_log_contains "${log_file}" "build-matrix: [mac, release]"
+      assert_log_contains "${log_file}" "when delayed"
+      assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local}'
+      ;;
+    needs-optional)
+      assert_log_contains "${log_file}" "optional-smoke"
+      assert_log_contains "${log_file}" "optional: yes"
+      ;;
+    needs-tag)
+      assert_log_contains "${log_file}" "tagged-release"
+      assert_log_contains "${log_file}" "when manual"
+      assert_log_not_contains "${log_file}" "delayed-rollout"
+      ;;
+    needs-surface)
+      assert_log_contains "${log_file}" "consumer-no-artifacts"
+      assert_log_contains "${log_file}" "artifacts requested: no"
+      assert_log_contains "${log_file}" "consumer-targeted-matrix"
+      assert_log_contains "${log_file}" "matrix filters"
+      ;;
+    includes-inherit)
+      assert_log_contains "${log_file}" "lint-job"
+      assert_log_contains "${log_file}" "no-inherit-build"
+      assert_log_contains "${log_file}" "direct-job"
+      ;;
+    include-surface)
+      assert_log_contains "${log_file}" "root-fragment-job"
+      assert_log_contains "${log_file}" "list-one-job"
+      assert_log_contains "${log_file}" "include-surface-main"
+      ;;
+    retry-parity)
+      assert_log_contains "${log_file}" "first script failure"
+      assert_log_contains "${log_file}" "retry-script-failure-ok"
+      assert_log_contains "${log_file}" "first exit 137"
+      assert_log_contains "${log_file}" "retry-exit-codes-ok"
+      assert_log_contains "${log_file}" "retry fixture complete"
+      ;;
+    resources-plan)
+      assert_log_contains "${log_file}" "retries 2"
+      assert_log_contains "${log_file}" "interruptible"
+      assert_log_contains "${log_file}" "timeout: 10m"
+      assert_log_contains "${log_file}" "resource group: prod-lock"
+      assert_log_contains "${log_file}" "environment: review/resources"
+      ;;
+    top-level-branch)
+      assert_log_contains "${log_file}" "top-level-job"
+      assert_log_contains "${log_file}" 'caches: • key $CI_COMMIT_REF_SLUG'
+      ;;
+    top-level-release-skip)
+      assert_log_contains "${log_file}" "pipeline skipped: top-level only/except filters exclude this ref"
+      ;;
+    services-and-tags)
+      assert_log_contains "${log_file}" "services: • docker.io/library/postgres:16"
+      assert_log_contains "${log_file}" "alias cache"
+      assert_log_contains "${log_file}" "entrypoint [redis-server]"
+      assert_log_contains "${log_file}" "command [--save, , --appendonly, no]"
+      assert_log_contains "${log_file}" "variables REDIS_PASSWORD"
+      assert_log_contains "${log_file}" "tags: • local-shell, docker-large"
+      ;;
+    environment-plan)
+      assert_log_contains "${log_file}" "on_stop: stop-review"
+      assert_log_contains "${log_file}" "auto_stop 1day"
+      assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local} – stop'
+      ;;
+    control-flow-plan)
+      assert_log_contains "${log_file}" "parallel-fanout: [1]"
+      assert_log_contains "${log_file}" "parallel-fanout: [2]"
+      assert_log_contains "${log_file}" "when on_failure"
+      ;;
+    control-flow-runtime)
+      assert_log_contains "${log_file}" "rule variable from-rule"
+      assert_log_contains "${log_file}" "intentional failure"
+      assert_log_contains "${log_file}" "on failure top-level-variable"
+      ;;
     includes-parity)
       assert_log_contains "${log_file}" "root-fragment-job"
       assert_log_contains "${log_file}" "glob-alpha-job"
@@ -134,8 +240,32 @@ prepare_scenario_workdir() {
   local secret_value="$3"
   local init_git="$4"
   local git_tags="$5"
+  local repo_setup="$6"
 
   mkdir -p "${workdir}"
+  if [[ -n "${repo_setup}" ]]; then
+    rm -rf "${workdir}"
+    mkdir -p "${workdir}"
+    case "${repo_setup}" in
+      compare_to_docs_change)
+        mkdir -p "${workdir}/docs" "${workdir}/src"
+        git -C "${workdir}" init -b main >/dev/null
+        printf '# Guide\nbase\n' > "${workdir}/docs/guide.md"
+        printf 'fn main() {}\n' > "${workdir}/src/main.rs"
+        git -C "${workdir}" add docs/guide.md src/main.rs
+        git -C "${workdir}" -c user.name='Opal Tests' -c user.email='opal@example.com' commit -m 'base' >/dev/null
+        git -C "${workdir}" checkout -b feature/compare-to >/dev/null
+        printf '# Guide\nchanged\n' > "${workdir}/docs/guide.md"
+        git -C "${workdir}" add docs/guide.md
+        git -C "${workdir}" -c user.name='Opal Tests' -c user.email='opal@example.com' commit -m 'docs change' >/dev/null
+        ;;
+      *)
+        echo "!! unknown repo setup: ${repo_setup}" >&2
+        return 1
+        ;;
+    esac
+    return 0
+  fi
   if [[ "${init_git}" == "1" ]]; then
     git -C "${workdir}" init -b main >/dev/null
     printf 'opal\n' > "${workdir}/README.md"
@@ -165,6 +295,7 @@ run_scenario() {
   local expect_failure="$9"
   local scenario_command="${10}"
   local scenario_opal_args="${11}"
+  local repo_setup="${12}"
   local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
   local log_name="${name//[^A-Za-z0-9._-]/_}"
   local log_file="${LOG_DIR}/${log_name}.log"
@@ -182,7 +313,7 @@ run_scenario() {
     return 1
   fi
 
-  prepare_scenario_workdir "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}"
+  prepare_scenario_workdir "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${repo_setup}"
 
   echo "==> ${name}"
   pushd "${workdir}" >/dev/null
@@ -223,6 +354,10 @@ run_scenario() {
       return 1
     fi
     if ! assert_log_contains "${log_file}" "${expect_failure}"; then
+      echo "    log saved to ${log_file} (verification failed)"
+      return 1
+    fi
+    if ! verify_scenario_log "${name}" "${log_file}"; then
       echo "    log saved to ${log_file} (verification failed)"
       return 1
     fi
@@ -317,6 +452,7 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   secret_value=$(jq -r '.secret_value // ""' <<<"${entry}")
   init_git=$(jq -r '.init_git // "0"' <<<"${entry}")
   git_tags=$(jq -r '.git_tags // ""' <<<"${entry}")
+  repo_setup=$(jq -r '.repo_setup // ""' <<<"${entry}")
   expect_failure=$(jq -r '.expect_failure // ""' <<<"${entry}")
   scenario_command=$(jq -r '.command // ""' <<<"${entry}")
   scenario_opal_args=$(jq -r '.opal_args // "__DEFAULT__"' <<<"${entry}")
@@ -327,7 +463,7 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
     fi
     continue
   fi
-  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${expect_failure}" "${scenario_command}" "${scenario_opal_args}"; then
+  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${expect_failure}" "${scenario_command}" "${scenario_opal_args}" "${repo_setup}"; then
     failures+=("${name}")
   fi
 done

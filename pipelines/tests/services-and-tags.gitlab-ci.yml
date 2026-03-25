@@ -1,0 +1,23 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  services:
+    - docker.io/library/redis:7.2
+
+service-shapes:
+  stage: verify
+  tags:
+    - local-shell
+    - docker-large
+  services:
+    - docker.io/library/postgres:16
+    - name: docker.io/library/redis:7.2
+      alias: cache
+      entrypoint: ["redis-server"]
+      command: ["--save", "", "--appendonly", "no"]
+      variables:
+        REDIS_PASSWORD: secret
+  script:
+    - echo "service shapes"

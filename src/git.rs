@@ -246,9 +246,7 @@ pub(crate) mod test_support {
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
         let sig = Signature::now("Opal Tests", "opal@example.com")?;
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            ?;
+        let oid = repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
         let object = repo.find_object(oid, None)?;
         repo.tag_lightweight(tag, &object, false)?;
 
@@ -268,9 +266,7 @@ pub(crate) mod test_support {
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
         let sig = Signature::now("Opal Tests", "opal@example.com")?;
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            ?;
+        let oid = repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
         let object = repo.find_object(oid, None)?;
         for tag in tags {
             repo.tag_lightweight(tag, &object, false)?;

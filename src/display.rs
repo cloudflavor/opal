@@ -336,6 +336,18 @@ fn emit_plan_job<F>(
         &plan_cache_lines(&planned.instance.job),
         emit_line,
     );
+    emit_section(
+        display,
+        "services",
+        &plan_service_lines(&planned.instance.job),
+        emit_line,
+    );
+    emit_section(
+        display,
+        "tags",
+        &plan_tag_lines(&planned.instance.job),
+        emit_line,
+    );
 
     if let Some(tree_lines) = plan_relationship_tree_lines(plan, planned) {
         emit_line(String::new());
@@ -560,6 +572,38 @@ where
     emit_line(format!("{header} {}", lines[0]));
     for line in lines.iter().skip(1) {
         emit_line(format!("        {line}"));
+    }
+}
+
+fn plan_service_lines(job: &crate::model::JobSpec) -> Vec<String> {
+    job.services
+        .iter()
+        .map(|service| {
+            let mut parts = vec![service.image.clone()];
+            if let Some(alias) = &service.alias {
+                parts.push(format!("alias {alias}"));
+            }
+            if !service.entrypoint.is_empty() {
+                parts.push(format!("entrypoint [{}]", service.entrypoint.join(", ")));
+            }
+            if !service.command.is_empty() {
+                parts.push(format!("command [{}]", service.command.join(", ")));
+            }
+            if !service.variables.is_empty() {
+                let mut vars = service.variables.keys().cloned().collect::<Vec<_>>();
+                vars.sort();
+                parts.push(format!("variables {}", vars.join(", ")));
+            }
+            format!("• {}", parts.join(" – "))
+        })
+        .collect()
+}
+
+fn plan_tag_lines(job: &crate::model::JobSpec) -> Vec<String> {
+    if job.tags.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!("• {}", job.tags.join(", "))]
     }
 }
 

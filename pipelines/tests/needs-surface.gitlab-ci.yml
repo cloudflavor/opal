@@ -1,0 +1,42 @@
+stages:
+  - build
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+
+producer:
+  stage: build
+  script:
+    - echo "producer"
+  artifacts:
+    paths:
+      - tests-temp/producer/
+
+build-matrix:
+  stage: build
+  parallel:
+    matrix:
+      - TARGET: ["linux", "mac"]
+        PROFILE: ["debug", "release"]
+  script:
+    - echo "$TARGET-$PROFILE"
+
+consumer-no-artifacts:
+  stage: verify
+  needs:
+    - job: producer
+      artifacts: false
+  script:
+    - echo "consumer without artifacts"
+
+consumer-targeted-matrix:
+  stage: verify
+  needs:
+    - job: build-matrix
+      parallel:
+        matrix:
+          - TARGET: linux
+            PROFILE: release
+  script:
+    - echo "consumer targeted matrix"

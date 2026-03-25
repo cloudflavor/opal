@@ -1,0 +1,38 @@
+stages:
+  - prep
+  - fail
+  - recover
+
+image: docker.io/library/alpine:3.19
+
+variables:
+  GLOBAL_FLAG: top-level-variable
+
+parallel-fanout:
+  stage: prep
+  parallel: 2
+  script:
+    - echo "fanout ${CI_NODE_INDEX}/${CI_NODE_TOTAL} ${GLOBAL_FLAG}"
+
+rule-variables:
+  stage: prep
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+      variables:
+        RULE_FLAG: from-rule
+  script:
+    - test "${GLOBAL_FLAG}" = "top-level-variable"
+    - test "${RULE_FLAG}" = "from-rule"
+    - echo "rule variable ${RULE_FLAG}"
+
+intentional-failure:
+  stage: fail
+  script:
+    - echo "intentional failure"
+    - exit 1
+
+failure-handler:
+  stage: recover
+  when: on_failure
+  script:
+    - echo "on failure ${GLOBAL_FLAG}"

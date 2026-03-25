@@ -199,8 +199,8 @@ fn is_env_var_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use super::{SECRETS_CONTAINER_DIR, SecretsStore};
+    use anyhow::Result;
     use std::fs;
     use tempfile::tempdir;
 

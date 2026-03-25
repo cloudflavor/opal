@@ -6,7 +6,7 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 - Supported `include:` directives are resolved recursively from the local filesystem. Opal currently handles string paths plus `local:`, `file:`, and `files:` include entries.
   Local include paths are resolved from the repository root, local include wildcards such as `configs/*.yml` are supported, include paths can use parse-time environment expansion, and included files must be `.yml` or `.yaml`. Plain `file:` / `files:` entries are still local-only conveniences rather than full GitLab `include:project` semantics. `include:project` is available as a partial local approximation when `--gitlab-token` is configured, including nested direct local includes inside the fetched project; `remote:`, `template:`, and `component:` still fail explicitly.
-- `default.*` values merge into jobs for the subset Opal models today: `image`, `before_script`, `after_script`, `variables`, `cache`, `services`, `timeout`, `retry`, and `interruptible`.
+- `default.*` values merge into jobs for the subset Opal models today: `image`, `before_script`, `after_script`, `variables`, `cache`, `services`, `timeout`, `retry`, and `interruptible`. For `retry`, Opal models `max`, `when`, and `exit_codes` for local rerun decisions.
 - Hidden/template jobs (names beginning with `.`) may be referenced via `extends`. Cycles are detected and reported.
 - `workflow:rules`, `rules`, `only`, and `except` are partially supported. See `docs/gitlab-parity.md` for the exact supported forms and known divergences.
 
@@ -84,7 +84,7 @@ Run `opal plan` when you want to inspect the DAG without touching containers. Th
 
 - Job order plus dependency list (`depends on` shows implicit stage ordering when no explicit `needs` exist).
 - Manual/delayed gates, retry counts, timeouts, and whether a job may fail without stopping the pipeline.
-- Artifact paths, environments, services, and resource groups.
+- Artifact paths, environments, services, tags, and resource groups.
 
 It is the fastest way to understand why a job is (or is not) scheduled for the current branch/tag, and it surfaces external `needs` so you can adjust credentials/infrastructure before running the pipeline for real.
 

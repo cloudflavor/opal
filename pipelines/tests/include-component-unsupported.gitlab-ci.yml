@@ -1,0 +1,10 @@
+include:
+  - component: gitlab.example.com/group/project/component@1.0.0
+
+stages:
+  - test
+
+component-unsupported:
+  stage: test
+  script:
+    - echo "should not parse"

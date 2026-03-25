@@ -1,0 +1,22 @@
+stages:
+  - verify
+
+only:
+  - branches
+except:
+  - /^release\/.*$/
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - tests-temp/top-level-cache/
+
+image: docker.io/library/alpine:3.19
+
+variables:
+  PIPELINE_FLAG: top-level
+
+top-level-job:
+  stage: verify
+  script:
+    - echo "top level parity"
