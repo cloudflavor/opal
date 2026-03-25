@@ -169,6 +169,14 @@ These features exist in Opal, but they do not match GitLab completely.
   - regex ref filters
   - `branches`
   - `tags`
+  - `merge_requests`
+  - `schedules`
+  - `pushes`
+  - `api`
+  - `web`
+  - `triggers`
+  - `pipelines`
+  - `external_pull_requests`
   Unsupported `only` / `except` forms in Opal today include:
   - variable-based selectors
   - change-based selectors
