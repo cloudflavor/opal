@@ -4,7 +4,7 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 ## Recognized By Opal
 
@@ -377,11 +377,12 @@ The local parity harness currently has two layers:
 - planner coverage via `opal plan`
   - exercises parsing, filters, workflow/rules evaluation, include forms, dependency graph construction, matrix expansion, top-level filters, services/tags metadata, and environment metadata without starting containers
 - runtime coverage via `opal run --no-tui`
-  - exercises artifacts/dependencies, cache restore/save behavior, retry handling, `when: on_failure`, service startup/readiness, secret masking, and environment/manual-job behavior against a real local container engine
+  - exercises artifacts/dependencies, `artifacts:reports:dotenv`, cache restore/save behavior, retry handling, `when: on_failure`, service startup/readiness, secret masking, and environment/manual-job behavior against a real local container engine
 
 Current harness characteristics:
 
 - `scripts/test-pipelines.sh` auto-detects a usable local engine for runtime scenarios and fails fast when no engine is available.
+- the repository's own `.gitlab-ci.yml` now avoids trying to run Opal inside Opal when it is itself executed by an installed `opal run`, so direct local self-hosted pipeline runs can exercise the main package path on a clean checkout.
 - local-only scenarios are broadly covered for the subset Opal claims to support for day-to-day repository pipelines.
 - GitLab-credentialed remote-success paths such as successful `include:project` / `needs:project` still do not have local harness coverage.
 - Full GitLab control-plane behaviors such as redundant-pipeline auto-cancel modes, distributed `resource_group`, and downstream pipeline orchestration remain outside the current local harness scope.
