@@ -92,6 +92,10 @@ pub struct RunArgs {
     #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
     /// Personal access token used when downloading cross-project artifacts
     pub gitlab_token: Option<String>,
+
+    #[structopt(long = "job", value_name = "NAME")]
+    /// Limit execution to selected jobs plus their required upstream dependencies. Repeat to select multiple jobs.
+    pub jobs: Vec<String>,
 }
 
 #[derive(StructOpt)]
@@ -118,6 +122,10 @@ pub struct PlanArgs {
     #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
     /// Personal access token used when resolving cross-project includes
     pub gitlab_token: Option<String>,
+
+    #[structopt(long = "job", value_name = "NAME")]
+    /// Limit planning to selected jobs plus their required upstream dependencies. Repeat to select multiple jobs.
+    pub jobs: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +180,7 @@ pub struct ExecutorConfig {
     pub workdir: PathBuf,
     pub pipeline: PathBuf,
     pub env_includes: Vec<String>,
+    pub selected_jobs: Vec<String>,
     pub max_parallel_jobs: usize,
     pub enable_tui: bool,
     pub engine: EngineKind,

@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
                 no_tui,
                 gitlab_base_url,
                 gitlab_token,
+                jobs,
             } = args;
             let resolved_workdir = workdir.unwrap_or(current_dir);
             let resolved_pipeline =
@@ -72,6 +73,7 @@ async fn main() -> Result<()> {
                 workdir: resolved_workdir,
                 pipeline: resolved_pipeline,
                 env_includes,
+                selected_jobs: jobs,
                 max_parallel_jobs,
                 enable_tui: !no_tui,
                 engine: engine_kind,
@@ -158,9 +160,12 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     fs::create_dir_all(&logs_dir)
         .with_context(|| format!("failed to create plan log dir {}", logs_dir.display()))?;
     let compiled = compile_pipeline(&pipeline_spec, Some(&ctx))?;
-    let plan = build_execution_plan(compiled, |job| {
+    let mut plan = build_execution_plan(compiled, |job| {
         logging::job_log_info(&logs_dir, "plan-preview", job)
     })?;
+    if !args.jobs.is_empty() {
+        plan = plan.select_jobs(&args.jobs)?;
+    }
     let display = DisplayFormatter::new(terminal::should_use_color());
     display::print_pipeline_plan(&display, &plan, display::print_line);
     Ok(())

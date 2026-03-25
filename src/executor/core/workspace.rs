@@ -189,6 +189,7 @@ mod tests {
                 workdir: workdir.clone(),
                 image: None,
                 env_includes: Vec::new(),
+                selected_jobs: Vec::new(),
                 max_parallel_jobs: 1,
                 enable_tui: false,
                 engine: EngineKind::Docker,

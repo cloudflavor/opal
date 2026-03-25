@@ -240,27 +240,19 @@ impl ExecutorCore {
         let ctx = RuleContext::new(&self.config.workdir);
         ctx.ensure_valid_tag_context()?;
         if !pipeline::rules::filters_allow(&self.pipeline.filters, &ctx) {
-            return Ok(ExecutionPlan {
-                ordered: Vec::new(),
-                nodes: HashMap::new(),
-                dependents: HashMap::new(),
-                order_index: HashMap::new(),
-                variants: HashMap::new(),
-            });
+            return Ok(empty_execution_plan());
         }
         if let Some(workflow) = &self.pipeline.workflow
             && !pipeline::rules::evaluate_workflow(&workflow.rules, &ctx)?
         {
-            return Ok(ExecutionPlan {
-                ordered: Vec::new(),
-                nodes: HashMap::new(),
-                dependents: HashMap::new(),
-                order_index: HashMap::new(),
-                variants: HashMap::new(),
-            });
+            return Ok(empty_execution_plan());
         }
         let compiled = compile_pipeline(&self.pipeline, Some(&ctx))?;
-        build_execution_plan(compiled, |job| self.job_log_info(job))
+        let mut plan = build_execution_plan(compiled, |job| self.job_log_info(job))?;
+        if !self.config.selected_jobs.is_empty() {
+            plan = plan.select_jobs(&self.config.selected_jobs)?;
+        }
+        Ok(plan)
     }
 
     fn collect_job_resources(&self, plan: &ExecutionPlan) -> HashMap<String, JobResourceInfo> {
@@ -494,6 +486,16 @@ impl ExecutorCore {
                 (&*self.config.workdir, &*self.container_workdir),
             ],
         )
+    }
+}
+
+fn empty_execution_plan() -> ExecutionPlan {
+    ExecutionPlan {
+        ordered: Vec::new(),
+        nodes: HashMap::new(),
+        dependents: HashMap::new(),
+        order_index: HashMap::new(),
+        variants: HashMap::new(),
     }
 }
 
