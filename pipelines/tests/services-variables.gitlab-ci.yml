@@ -1,0 +1,22 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+variables:
+  GLOBAL_DB: shared
+
+service-variables:
+  stage: test
+  services:
+    - name: docker.io/library/alpine:3.19
+      alias: svc
+      command:
+        - sh
+        - -lc
+        - test "$GLOBAL_DB" = shared && test "$SERVICE_ONLY" = '$GLOBAL_DB-world' && sleep 30
+      variables:
+        SERVICE_ONLY: $GLOBAL_DB-world
+  script:
+    - echo "service variables ok"
