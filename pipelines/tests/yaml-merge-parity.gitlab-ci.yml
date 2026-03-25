@@ -1,0 +1,18 @@
+stages:
+  - test
+
+.base-vars: &base_vars
+  SHARED_FLAG: from-anchor
+  OVERRIDE_ME: old
+
+.job-template: &job_template
+  stage: test
+  script:
+    - echo "merged job ${SHARED_FLAG} ${OVERRIDE_ME} ${EXTRA_FLAG:-none}"
+
+merged-job:
+  <<: *job_template
+  variables:
+    <<: *base_vars
+    OVERRIDE_ME: new
+    EXTRA_FLAG: extra
