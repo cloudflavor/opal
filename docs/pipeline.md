@@ -88,4 +88,6 @@ Run `opal plan` when you want to inspect the DAG without touching containers. Th
 
 It is the fastest way to understand why a job is (or is not) scheduled for the current branch/tag, and it surfaces external `needs` so you can adjust credentials/infrastructure before running the pipeline for real.
 
+Use `--job <name>` (repeatable) with either `opal plan` or `opal run` when you want to focus on one part of the pipeline. Opal keeps the selected jobs and automatically includes the required upstream dependency closure so the resulting subgraph remains runnable.
+
 This model mirrors a useful local subset of GitLab while remaining deterministic and debuggable on a single machine. When in doubt, compare the DAG produced by `opal plan` with GitLab’s pipeline graph and consult `docs/gitlab-parity.md` for known differences.

@@ -23,6 +23,13 @@ Preview the DAG without execution:
 opal plan --workdir . --pipeline .gitlab-ci.yml
 ```
 
+Limit planning or execution to specific jobs plus their required upstream dependencies:
+
+```bash
+opal plan --workdir . --pipeline .gitlab-ci.yml --job package-linux
+opal run --workdir . --pipeline .gitlab-ci.yml --job lint
+```
+
 Open the stored history/log UI from previous runs:
 
 ```bash
