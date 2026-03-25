@@ -139,6 +139,7 @@ Last updated: 2026-03-26
   - `alias`
     - single alias
     - comma-separated multiple aliases
+    - GitLab-style default aliases derived from the image name when no explicit alias is set
   - `entrypoint`
   - `command`
   - `variables`
