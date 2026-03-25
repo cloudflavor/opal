@@ -1,4 +1,6 @@
 /target
+/.cargo
+/.rustup
 notes/
 *.opal*
 .opal/env/
