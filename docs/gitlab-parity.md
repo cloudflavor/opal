@@ -179,8 +179,8 @@ These features exist in Opal, but they do not match GitLab completely.
   - `triggers`
   - `pipelines`
   - `external_pull_requests`
+  - `variables`
   Unsupported `only` / `except` forms in Opal today include:
-  - variable-based selectors
   - change-based selectors
   - Kubernetes-based selectors
   - any other GitLab selector outside the list above
