@@ -56,7 +56,10 @@ extended-tests:
     - lint
     - unit-tests
   script:
+    - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - cargo build --release --locked
+    - export OPAL_BIN=target/release/opal
     - >
       ./scripts/test-pipelines.sh
       needs-branch
@@ -82,7 +85,10 @@ e2e-tests:
     - lint
     - unit-tests
   script:
+    - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - cargo build --release --locked
+    - export OPAL_BIN=target/release/opal
     - >
       ./scripts/test-pipelines.sh
       resources-services

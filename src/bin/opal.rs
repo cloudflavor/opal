@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
                 gitlab_base_url,
                 gitlab_token,
             } = args;
-            let resolved_workdir = workdir.unwrap_or_else(|| current_dir);
+            let resolved_workdir = workdir.unwrap_or(current_dir);
             let resolved_pipeline =
                 pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
             let settings = OpalConfig::load(&resolved_workdir)?;

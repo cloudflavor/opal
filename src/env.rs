@@ -76,6 +76,7 @@ pub fn build_job_env(
     push("CI_PROJECT_DIR", &container_workdir.display().to_string());
     push("CI_BUILDS_DIR", &container_root.display().to_string());
     push("CI_PIPELINE_ID", run_id);
+    push("OPAL_IN_OPAL", "1");
 
     for (key, value) in inferred_ci_env(host_workdir, host_env) {
         push(&key, &value);

@@ -1300,7 +1300,7 @@ fn parse_include_entry(value: Value) -> Result<Vec<IncludeEntry>> {
                 Ok(vec![IncludeEntry::Local(PathBuf::from(local))])
             } else if let Some(Value::String(project)) = map.get(&project_key) {
                 let reference = map
-                    .get(&Value::String("ref".to_string()))
+                    .get(Value::String("ref".to_string()))
                     .map(|value| match value {
                         Value::String(text) => Ok(text.clone()),
                         other => bail!("include:project ref must be a string, got {other:?}"),
