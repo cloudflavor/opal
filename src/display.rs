@@ -445,8 +445,12 @@ fn format_environment(planned: &ExecutableJob) -> Option<String> {
     if let Some(duration) = env.auto_stop_in {
         extra.push(format!("auto_stop {}", format_duration(duration)));
     }
-    if env.action == EnvironmentActionSpec::Stop {
-        extra.push("stop".to_string());
+    match env.action {
+        EnvironmentActionSpec::Start => {}
+        EnvironmentActionSpec::Prepare => extra.push("prepare".to_string()),
+        EnvironmentActionSpec::Stop => extra.push("stop".to_string()),
+        EnvironmentActionSpec::Verify => extra.push("verify".to_string()),
+        EnvironmentActionSpec::Access => extra.push("access".to_string()),
     }
     if !extra.is_empty() {
         parts.push(extra.join(", "));

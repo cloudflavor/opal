@@ -251,6 +251,9 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "on_stop: stop-review"
       assert_log_contains "${log_file}" "auto_stop 1day"
       assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local} – stop'
+      assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local} – prepare'
+      assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local} – verify'
+      assert_log_contains "${log_file}" 'environment: review/${CI_COMMIT_REF_SLUG:-local} – access'
       ;;
     control-flow-plan)
       assert_log_contains "${log_file}" "parallel-fanout: [1]"
