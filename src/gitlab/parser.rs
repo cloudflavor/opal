@@ -59,13 +59,13 @@ impl PipelineGraph {
             None,
             &mut stack,
         )?;
-        let root = resolve_reference_tags(root)?;
+        let root = resolve_yaml_merge_keys(resolve_reference_tags(root)?)?;
         Self::from_mapping(root)
     }
 
     pub fn from_yaml_str(contents: &str) -> Result<Self> {
         let root: Mapping = serde_yaml::from_str(contents)?;
-        let root = resolve_reference_tags(root)?;
+        let root = resolve_yaml_merge_keys(resolve_reference_tags(root)?)?;
         Self::from_mapping(root)
     }
 
@@ -331,6 +331,70 @@ fn validate_include_extension(path: &Path) -> Result<()> {
             path.display()
         ),
     }
+}
+
+fn resolve_yaml_merge_keys(root: Mapping) -> Result<Mapping> {
+    let resolved = resolve_yaml_merge_value(Value::Mapping(root))?;
+    match resolved {
+        Value::Mapping(map) => Ok(map),
+        other => bail!(
+            "pipeline root must be a mapping after resolving YAML merge keys, got {}",
+            value_kind(&other)
+        ),
+    }
+}
+
+fn resolve_yaml_merge_value(value: Value) -> Result<Value> {
+    match value {
+        Value::Mapping(map) => Ok(Value::Mapping(resolve_yaml_merge_mapping(map)?)),
+        Value::Sequence(entries) => Ok(Value::Sequence(
+            entries
+                .into_iter()
+                .map(resolve_yaml_merge_value)
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        other => Ok(other),
+    }
+}
+
+fn resolve_yaml_merge_mapping(map: Mapping) -> Result<Mapping> {
+    let merge_key = Value::String("<<".to_string());
+    let mut merged = Mapping::new();
+
+    if let Some(merge_value) = map.get(&merge_key).cloned() {
+        match resolve_yaml_merge_value(merge_value)? {
+            Value::Mapping(parent) => {
+                for (key, value) in parent {
+                    merged.insert(key, value);
+                }
+            }
+            Value::Sequence(entries) => {
+                for entry in entries {
+                    let Value::Mapping(parent) = resolve_yaml_merge_value(entry)? else {
+                        bail!("YAML merge key expects a mapping or list of mappings");
+                    };
+                    for (key, value) in parent {
+                        merged.insert(key, value);
+                    }
+                }
+            }
+            other => {
+                bail!(
+                    "YAML merge key expects a mapping or list of mappings, got {}",
+                    value_kind(&other)
+                );
+            }
+        }
+    }
+
+    for (key, value) in map {
+        if key == merge_key {
+            continue;
+        }
+        merged.insert(key, resolve_yaml_merge_value(value)?);
+    }
+
+    Ok(merged)
 }
 
 fn resolve_reference_tags(root: Mapping) -> Result<Mapping> {
@@ -2612,6 +2676,84 @@ build:
         assert_eq!(
             job.artifacts.report_dotenv.as_deref(),
             Some(std::path::Path::new("tests-temp/dotenv/build.env"))
+        );
+    }
+
+    #[test]
+    fn yaml_merge_keys_work_in_variables_mapping() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+.base-vars: &base_vars
+  SHARED_FLAG: from-anchor
+  OVERRIDE_ME: old
+
+merged-vars:
+  stage: test
+  variables:
+    <<: *base_vars
+    OVERRIDE_ME: new
+  script:
+    - echo ok
+"#,
+        )
+        .expect("pipeline parses");
+
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "merged-vars")
+            .expect("job present");
+
+        assert_eq!(
+            job.variables.get("SHARED_FLAG").map(String::as_str),
+            Some("from-anchor")
+        );
+        assert_eq!(
+            job.variables.get("OVERRIDE_ME").map(String::as_str),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn yaml_merge_keys_work_in_job_mapping() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+.job-template: &job_template
+  stage: test
+  script:
+    - echo ok
+  variables:
+    INNER_FLAG: inner
+
+merged-job:
+  <<: *job_template
+  variables:
+    <<: { INNER_FLAG: inner, EXTRA_FLAG: extra }
+"#,
+        )
+        .expect("pipeline parses");
+
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "merged-job")
+            .expect("job present");
+
+        assert_eq!(job.stage, "test");
+        assert_eq!(job.commands, vec!["echo ok".to_string()]);
+        assert_eq!(
+            job.variables.get("INNER_FLAG").map(String::as_str),
+            Some("inner")
+        );
+        assert_eq!(
+            job.variables.get("EXTRA_FLAG").map(String::as_str),
+            Some("extra")
         );
     }
 
