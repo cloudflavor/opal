@@ -199,34 +199,36 @@ fn is_env_var_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use super::{SECRETS_CONTAINER_DIR, SecretsStore};
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
-    fn env_pairs_include_value_and_file_reference() {
-        let dir = tempdir().expect("tempdir");
+    fn env_pairs_include_value_and_file_reference() -> Result<()> {
+        let dir = tempdir()?;
         let secrets_dir = dir.path().join(".opal").join("env");
-        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
-        fs::write(secrets_dir.join("QUAY_PASSWORD"), "dummy-token").expect("write secret");
+        fs::create_dir_all(&secrets_dir)?;
+        fs::write(secrets_dir.join("QUAY_PASSWORD"), "dummy-token")?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let pairs = store.env_pairs();
         assert!(pairs.contains(&("QUAY_PASSWORD".to_string(), "dummy-token".to_string())));
         assert!(pairs.iter().any(|(k, v)| {
             k == "QUAY_PASSWORD_FILE" && v == &format!("{SECRETS_CONTAINER_DIR}/QUAY_PASSWORD")
         }));
+        Ok(())
     }
 
     #[test]
-    fn load_supports_legacy_dotopal_secret_files() {
-        let dir = tempdir().expect("tempdir");
+    fn load_supports_legacy_dotopal_secret_files() -> Result<()> {
+        let dir = tempdir()?;
         let dotopal_dir = dir.path().join(".opal");
-        fs::create_dir_all(&dotopal_dir).expect("create .opal dir");
-        fs::write(dotopal_dir.join("QUAY_USERNAME"), "robot-user\n").expect("write secret");
-        fs::write(dotopal_dir.join("config.toml"), "ignored=true").expect("write config");
+        fs::create_dir_all(&dotopal_dir)?;
+        fs::write(dotopal_dir.join("QUAY_USERNAME"), "robot-user\n")?;
+        fs::write(dotopal_dir.join("config.toml"), "ignored=true")?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let pairs = store.env_pairs();
         assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "robot-user".to_string())));
         assert!(!pairs.iter().any(|(k, _)| k == "config.toml"));
@@ -234,18 +236,19 @@ mod tests {
             store.volume_mount().map(|(host, _)| host),
             Some(dotopal_dir.clone())
         );
+        Ok(())
     }
 
     #[test]
-    fn scoped_env_dir_precedence_over_legacy_dotopal() {
-        let dir = tempdir().expect("tempdir");
+    fn scoped_env_dir_precedence_over_legacy_dotopal() -> Result<()> {
+        let dir = tempdir()?;
         let dotopal_dir = dir.path().join(".opal");
         let secrets_dir = dotopal_dir.join("env");
-        fs::create_dir_all(&secrets_dir).expect("create .opal/env dir");
-        fs::write(dotopal_dir.join("QUAY_USERNAME"), "legacy-user").expect("write legacy secret");
-        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user").expect("write scoped secret");
+        fs::create_dir_all(&secrets_dir)?;
+        fs::write(dotopal_dir.join("QUAY_USERNAME"), "legacy-user")?;
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user")?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let pairs = store.env_pairs();
         assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "scoped-user".to_string())));
         assert!(!pairs.contains(&("QUAY_USERNAME".to_string(), "legacy-user".to_string())));
@@ -253,54 +256,57 @@ mod tests {
             store.volume_mount().map(|(host, _)| host),
             Some(secrets_dir)
         );
+        Ok(())
     }
 
     #[test]
-    fn scoped_env_dir_ignores_non_env_file_names() {
-        let dir = tempdir().expect("tempdir");
+    fn scoped_env_dir_ignores_non_env_file_names() -> Result<()> {
+        let dir = tempdir()?;
         let secrets_dir = dir.path().join(".opal").join("env");
-        fs::create_dir_all(&secrets_dir).expect("create .opal/env dir");
-        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user").expect("write scoped secret");
-        fs::write(secrets_dir.join("config.toml"), "ignored=true").expect("write config");
+        fs::create_dir_all(&secrets_dir)?;
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "scoped-user")?;
+        fs::write(secrets_dir.join("config.toml"), "ignored=true")?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let pairs = store.env_pairs();
         assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "scoped-user".to_string())));
         assert!(!pairs.iter().any(|(key, _)| key == "config.toml"));
+        Ok(())
     }
 
     #[test]
-    fn load_supports_dotenv_file_under_dotopal_env() {
-        let dir = tempdir().expect("tempdir");
+    fn load_supports_dotenv_file_under_dotopal_env() -> Result<()> {
+        let dir = tempdir()?;
         let dotopal_dir = dir.path().join(".opal");
-        fs::create_dir_all(&dotopal_dir).expect("create .opal dir");
+        fs::create_dir_all(&dotopal_dir)?;
         fs::write(
             dotopal_dir.join("env"),
             "export QUAY_USERNAME=robot-user\nQUAY_PASSWORD=\"dummy-token\"\n",
-        )
-        .expect("write dotenv file");
+        )?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let pairs = store.env_pairs();
         assert!(pairs.contains(&("QUAY_USERNAME".to_string(), "robot-user".to_string())));
         assert!(pairs.contains(&("QUAY_PASSWORD".to_string(), "dummy-token".to_string())));
         assert!(!pairs.iter().any(|(key, _)| key.ends_with("_FILE")));
         assert!(store.volume_mount().is_none());
+        Ok(())
     }
 
     #[test]
-    fn secret_values_override_existing_env_entries() {
-        let dir = tempdir().expect("tempdir");
+    fn secret_values_override_existing_env_entries() -> Result<()> {
+        let dir = tempdir()?;
         let secrets_dir = dir.path().join(".opal").join("env");
-        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
-        fs::write(secrets_dir.join("QUAY_USERNAME"), "secret-user").expect("write secret");
+        fs::create_dir_all(&secrets_dir)?;
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "secret-user")?;
 
-        let store = SecretsStore::load(dir.path()).expect("load store");
+        let store = SecretsStore::load(dir.path())?;
         let mut env = vec![("QUAY_USERNAME".to_string(), "".to_string())];
         store.extend_env(&mut env);
 
         assert!(env.contains(&("QUAY_USERNAME".to_string(), "secret-user".to_string())));
         let username_count = env.iter().filter(|(k, _)| k == "QUAY_USERNAME").count();
         assert_eq!(username_count, 1);
+        Ok(())
     }
 }
