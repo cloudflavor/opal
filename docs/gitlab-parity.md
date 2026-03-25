@@ -142,6 +142,8 @@ Last updated: 2026-03-26
   - `entrypoint`
   - `command`
   - `variables`
+    - service-only variables are passed only to the service container
+    - service-only variables are not expanded against themselves
 - `environment`
   - `name`
   - `url`
