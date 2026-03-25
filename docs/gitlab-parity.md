@@ -171,7 +171,7 @@ These features exist in Opal, but they do not match GitLab completely.
   - if no files are present, the key falls back to `default` (or `<prefix>-default` when prefix is set)
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
-  Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script, but this still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
+  Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script. For engines without healthchecks, Opal requires a brief stable-running confirmation before treating the service as ready. This still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
 - `interruptible` is partially modeled.
   Opal now applies `interruptible` during local pipeline abort flows by cancelling running jobs marked `interruptible: true` while allowing running non-interruptible jobs to finish.
   This is a local approximation of GitLab's auto-cancel behavior, not a full implementation of GitLab's redundant-pipeline and `workflow:auto_cancel` semantics.
@@ -230,7 +230,7 @@ High-value local-first features:
 
 Lower-value or intentionally out-of-scope local targets:
 
-- remote/project/template/component `include`
+- remote/template/component `include`
   These are useful in GitLab-managed estates, but they depend on remote config resolution rather than a single local checkout.
 - `trigger`, child pipelines, and multi-project pipelines
   These are orchestration features for distributed CI, not core single-repo local execution features.
@@ -246,7 +246,7 @@ Lower-value or intentionally out-of-scope local targets:
 GitLab's official CI/CD YAML surface is broader than the subset above. The main missing areas are:
 
 - advanced `include` sources
-  - project includes
+  - full `include:project` parity
   - remote includes
   - template includes
   - component includes
@@ -265,37 +265,55 @@ GitLab's official CI/CD YAML surface is broader than the subset above. The main 
 This is the practical order for closing the highest-value parity gaps for day-to-day repository pipelines.
 It is ordered by what is most likely to unblock real repository configs and reduce surprising local-vs-GitLab behavior.
 
-### Priority 1: Local composition correctness (highest impact)
-
-- Align local composition semantics more closely with GitLab for repository-local pipelines:
-  - add any remaining high-value local include behavior that GitLab supports, especially where real repos rely on it
-  - keep `extends`, `!reference`, and local include merging behavior predictable and well-tested
-- Add non-local include sources where they materially unblock real-world configs:
-  - project includes
-  - template includes
-  - remote includes
-- Keep non-local resolution deterministic for local use:
-  - cache fetched includes locally
-  - surface explicit errors when remote includes cannot be resolved
-
-### Priority 2: Runtime control-flow fidelity (high impact)
+### Priority 1: Runtime control-flow fidelity (highest impact)
 
 - Keep refining failure classification so GitLab retry conditions map to local runtime errors more precisely.
 - Extend `interruptible` beyond the current abort-flow approximation toward fuller `workflow:auto_cancel` parity where practical.
-- Broaden `environment.action` handling beyond the current `stop` subset where practical for local metadata and UX.
+- Narrow service behavior gaps that matter in local debugging:
+  - readiness detection
+  - engine-specific command handling
+  - runner-like network and lifecycle behavior where feasible
 - Tighten `needs:project` runtime behavior and error reporting so credential/network requirements are explicit and easier to diagnose.
+
+### Priority 2: Local composition correctness (high impact)
+
+- Finish the remaining high-value local composition gaps:
+  - nested wildcard `include:local` inside fetched `include:project` configs
+  - any remaining `extends` / `!reference` / include merge edge cases found in real repositories
+- Keep non-local resolution deterministic for local use:
+  - cache fetched includes locally
+  - surface explicit errors when remote includes cannot be resolved
+- Add more non-local include sources only where they materially unblock real repository configs:
+  - template includes
+  - remote includes
 
 ### Priority 3: Job keyword surface parity (medium impact)
 
 - Extend artifact feature coverage beyond `paths/when/exclude/untracked`.
 - Extend cache feature coverage beyond current key/path/policy/fallback subset.
 - Broaden `only`/`except` support where still narrower than GitLab.
+- Broaden `environment.action` handling beyond the current `stop` subset where practical for local metadata and UX.
 
 ### Priority 4: Runner-environment fidelity (medium impact)
 
-- Narrow execution differences between local engines and GitLab Runner service networking/isolation.
 - Improve local semantics for `resource_group` beyond per-process locking when feasible.
 - Continue improving log fidelity so failure context matches GitLab UI expectations more closely.
+
+## Regression Harness State
+
+The local parity harness currently has two layers:
+
+- planner coverage via `opal plan`
+  - exercises parsing, filters, workflow/rules evaluation, include forms, dependency graph construction, matrix expansion, top-level filters, services/tags metadata, and environment metadata without starting containers
+- runtime coverage via `opal run --no-tui`
+  - exercises artifacts/dependencies, cache restore/save behavior, retry handling, `when: on_failure`, service startup/readiness, secret masking, and environment/manual-job behavior against a real local container engine
+
+Current harness characteristics:
+
+- `scripts/test-pipelines.sh` auto-detects a usable local engine for runtime scenarios and fails fast when no engine is available.
+- local-only scenarios are broadly covered for the subset Opal claims to support for day-to-day repository pipelines.
+- GitLab-credentialed remote-success paths such as successful `include:project` / `needs:project` still do not have local harness coverage.
+- Full GitLab control-plane behaviors such as redundant-pipeline auto-cancel modes, distributed `resource_group`, and downstream pipeline orchestration remain outside the current local harness scope.
 
 ### Priority 5: Distributed CI orchestration (lower local value, large scope)
 
