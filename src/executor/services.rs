@@ -180,17 +180,19 @@ impl ServiceRuntime {
     }
 
     fn aliases_for_service(&mut self, idx: usize, service: &ServiceSpec) -> Result<Vec<String>> {
-        let requested = if service.aliases.is_empty() {
-            vec![default_service_alias(&service.image)]
-        } else {
-            service.aliases.clone()
-        };
-
         let mut accepted = Vec::new();
-        for raw in requested {
-            let alias = validate_service_alias(&raw)?;
-            if self.claimed_aliases.insert(alias.clone()) {
-                accepted.push(alias);
+        if service.aliases.is_empty() {
+            for alias in default_service_aliases(&service.image) {
+                if self.claimed_aliases.insert(alias.clone()) {
+                    accepted.push(alias);
+                }
+            }
+        } else {
+            for raw in service.aliases.clone() {
+                let alias = validate_service_alias(&raw)?;
+                if self.claimed_aliases.insert(alias.clone()) {
+                    accepted.push(alias);
+                }
             }
         }
 
@@ -690,14 +692,21 @@ fn merged_env(
     map.into_iter().collect()
 }
 
-fn default_service_alias(image: &str) -> String {
-    image
-        .split('/')
-        .next_back()
-        .and_then(|part| part.split(':').next())
-        .map(|segment| segment.replace(|c: char| !c.is_ascii_alphanumeric(), ""))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "service".to_string())
+fn default_service_aliases(image: &str) -> Vec<String> {
+    let without_tag = image.split(':').next().unwrap_or(image);
+    let primary = without_tag.replace('/', "__");
+    let secondary = without_tag.replace('/', "-");
+    let mut aliases = Vec::new();
+    if !primary.is_empty() {
+        aliases.push(primary);
+    }
+    if !secondary.is_empty() && !aliases.iter().any(|existing| existing == &secondary) {
+        aliases.push(secondary);
+    }
+    if aliases.is_empty() {
+        aliases.push("service".to_string());
+    }
+    aliases
 }
 
 #[cfg(test)]
@@ -839,6 +848,30 @@ mod tests {
     }
 
     #[test]
+    fn aliases_for_service_uses_gitlab_style_default_aliases() {
+        let mut runtime = ServiceRuntime {
+            engine: EngineKind::Docker,
+            network: "net".into(),
+            containers: Vec::new(),
+            link_env: Vec::new(),
+            claimed_aliases: Default::default(),
+        };
+        let service = ServiceSpec {
+            image: "tutum/wordpress:latest".into(),
+            aliases: Vec::new(),
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        let aliases = runtime
+            .aliases_for_service(0, &service)
+            .expect("aliases resolve");
+
+        assert_eq!(aliases, vec!["tutum__wordpress", "tutum-wordpress"]);
+    }
+
+    #[test]
     fn aliases_for_service_falls_back_when_aliases_conflict() {
         let mut runtime = ServiceRuntime {
             engine: EngineKind::Docker,
@@ -865,6 +898,40 @@ mod tests {
         assert_eq!(
             runtime.aliases_for_service(0, &first).unwrap(),
             vec!["cache"]
+        );
+        assert_eq!(
+            runtime.aliases_for_service(1, &second).unwrap(),
+            vec!["svc-1"]
+        );
+    }
+
+    #[test]
+    fn aliases_for_service_falls_back_after_default_aliases_conflict() {
+        let mut runtime = ServiceRuntime {
+            engine: EngineKind::Docker,
+            network: "net".into(),
+            containers: Vec::new(),
+            link_env: Vec::new(),
+            claimed_aliases: Default::default(),
+        };
+        let first = ServiceSpec {
+            image: "tutum/wordpress:latest".into(),
+            aliases: Vec::new(),
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+        let second = ServiceSpec {
+            image: "tutum/wordpress:latest".into(),
+            aliases: Vec::new(),
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        assert_eq!(
+            runtime.aliases_for_service(0, &first).unwrap(),
+            vec!["tutum__wordpress", "tutum-wordpress"]
         );
         assert_eq!(
             runtime.aliases_for_service(1, &second).unwrap(),
