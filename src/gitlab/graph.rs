@@ -110,6 +110,7 @@ pub struct ServiceConfig {
 pub struct RetryPolicy {
     pub max: u32,
     pub when: Vec<String>,
+    pub exit_codes: Vec<i32>,
 }
 
 #[derive(Debug, Clone)]

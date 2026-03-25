@@ -37,6 +37,7 @@ pub struct JobSpec {
 pub struct RetryPolicySpec {
     pub max: u32,
     pub when: Vec<String>,
+    pub exit_codes: Vec<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

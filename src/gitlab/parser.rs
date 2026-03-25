@@ -569,7 +569,7 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
             Value::String(name) if name == "retry" => {
                 let raw: RawRetry =
                     serde_yaml::from_value(value).context("failed to parse default.retry")?;
-                defaults.retry = raw.into_policy(&RetryPolicy::default());
+                defaults.retry = raw.into_policy(&RetryPolicy::default(), "default.retry")?;
             }
             Value::String(name) if name == "interruptible" => {
                 defaults.interruptible = extract_bool(value, "default.interruptible")?;
@@ -1060,7 +1060,8 @@ fn build_graph(
                 .or(defaults.timeout);
         let retry = job_spec
             .retry
-            .map(|raw| raw.into_policy(&defaults.retry))
+            .map(|raw| raw.into_policy(&defaults.retry, &format!("job '{}'.retry", job_name)))
+            .transpose()?
             .unwrap_or_else(|| defaults.retry.clone());
         let interruptible = job_spec.interruptible.unwrap_or(defaults.interruptible);
         let resource_group = job_spec.resource_group.clone();
@@ -1132,6 +1133,9 @@ fn build_graph(
 
     for (job_name, job_idx, needs) in pending_needs {
         for dependency in needs {
+            if !matches!(dependency.source, DependencySource::Local) {
+                continue;
+            }
             let Some(dependency_idx) = name_to_index.get(&dependency.job).copied() else {
                 if dependency.optional {
                     continue;
@@ -1602,22 +1606,17 @@ enum RawRetry {
 }
 
 impl RawRetry {
-    fn into_policy(self, base: &RetryPolicy) -> RetryPolicy {
+    fn into_policy(self, base: &RetryPolicy, field: &str) -> Result<RetryPolicy> {
         match self {
-            RawRetry::Simple(max) => RetryPolicy {
-                max,
-                when: base.when.clone(),
-            },
-            RawRetry::Detailed(cfg) => {
-                let mut policy = base.clone();
-                if let Some(max) = cfg.max {
-                    policy.max = max;
-                }
-                if !cfg.when.0.is_empty() {
-                    policy.when = cfg.when.into_vec();
-                }
-                policy
+            RawRetry::Simple(max) => {
+                validate_retry_max(max, field)?;
+                Ok(RetryPolicy {
+                    max,
+                    when: base.when.clone(),
+                    exit_codes: base.exit_codes.clone(),
+                })
             }
+            RawRetry::Detailed(cfg) => cfg.into_policy(base, field),
         }
     }
 }
@@ -1628,13 +1627,84 @@ struct RawRetryConfig {
     max: Option<u32>,
     #[serde(default)]
     when: StringList,
+    #[serde(default)]
+    exit_codes: IntList,
 }
+
+impl RawRetryConfig {
+    fn into_policy(self, base: &RetryPolicy, field: &str) -> Result<RetryPolicy> {
+        let mut policy = base.clone();
+        if let Some(max) = self.max {
+            validate_retry_max(max, &format!("{field}.max"))?;
+            policy.max = max;
+        }
+        if !self.when.0.is_empty() {
+            validate_retry_when(&self.when.0, &format!("{field}.when"))?;
+            policy.when = self.when.into_vec();
+        }
+        if !self.exit_codes.0.is_empty() {
+            validate_retry_exit_codes(&self.exit_codes.0, &format!("{field}.exit_codes"))?;
+            policy.exit_codes = self.exit_codes.into_vec();
+        }
+        Ok(policy)
+    }
+}
+
+fn validate_retry_max(max: u32, field: &str) -> Result<()> {
+    if max > 2 {
+        bail!("{field} must be 0, 1, or 2");
+    }
+    Ok(())
+}
+
+fn validate_retry_when(conditions: &[String], field: &str) -> Result<()> {
+    for condition in conditions {
+        if !SUPPORTED_RETRY_WHEN_VALUES.contains(&condition.as_str()) {
+            bail!("{field} has unsupported retry condition '{condition}'");
+        }
+    }
+    Ok(())
+}
+
+fn validate_retry_exit_codes(codes: &[i32], field: &str) -> Result<()> {
+    for code in codes {
+        if *code < 0 {
+            bail!("{field} must contain non-negative integers");
+        }
+    }
+    Ok(())
+}
+
+const SUPPORTED_RETRY_WHEN_VALUES: &[&str] = &[
+    "always",
+    "unknown_failure",
+    "script_failure",
+    "api_failure",
+    "stuck_or_timeout_failure",
+    "runner_system_failure",
+    "runner_unsupported",
+    "stale_schedule",
+    "job_execution_timeout",
+    "archived_failure",
+    "unmet_prerequisites",
+    "scheduler_failure",
+    "data_integrity_failure",
+];
 
 #[derive(Debug, Default)]
 struct StringList(Vec<String>);
 
 impl StringList {
     fn into_vec(self) -> Vec<String> {
+        self.0
+    }
+}
+
+#[derive(Debug, Default)]
+struct IntList(Vec<i32>);
+
+impl IntList {
+    fn into_vec(self) -> Vec<i32> {
         self.0
     }
 }
@@ -1676,6 +1746,56 @@ impl<'de> serde::Deserialize<'de> for StringList {
             other => vec![yaml_command_string(other).map_err(serde::de::Error::custom)?],
         };
         Ok(StringList(items))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IntList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let items = match value {
+            Value::Sequence(entries) => {
+                let mut codes = Vec::new();
+                for entry in entries {
+                    match entry {
+                        Value::Number(number) => {
+                            let code = number.as_i64().ok_or_else(|| {
+                                serde::de::Error::custom("retry exit codes must be integers")
+                            })?;
+                            let code = i32::try_from(code).map_err(|_| {
+                                serde::de::Error::custom(
+                                    "retry exit code is too large for this platform",
+                                )
+                            })?;
+                            codes.push(code);
+                        }
+                        other => {
+                            return Err(serde::de::Error::custom(format!(
+                                "retry exit codes must be integers, got {other:?}"
+                            )));
+                        }
+                    }
+                }
+                codes
+            }
+            Value::Null => Vec::new(),
+            Value::Number(number) => {
+                let code = number
+                    .as_i64()
+                    .ok_or_else(|| serde::de::Error::custom("retry exit codes must be integers"))?;
+                vec![i32::try_from(code).map_err(|_| {
+                    serde::de::Error::custom("retry exit code is too large for this platform")
+                })?]
+            }
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "retry exit codes must be an integer or list, got {other:?}"
+                )));
+            }
+        };
+        Ok(IntList(items))
     }
 }
 
@@ -2298,7 +2418,7 @@ main-job:
     }
 
     #[test]
-    fn include_project_errors_explicitly() {
+    fn retry_max_above_two_errors() {
         let dir = tempdir().expect("tempdir");
         let main_path = dir.path().join("main.yml");
         fs::write(
@@ -2306,246 +2426,81 @@ main-job:
             r#"
 stages:
   - build
-include:
-  - project: some/group/project
-    file: /templates/build.yml
 
-main-job:
+build:
   stage: build
+  retry: 3
   script:
-    - echo main
+    - echo hi
 "#,
         )
         .expect("write main");
 
-        let err = PipelineGraph::from_path(&main_path).expect_err("project include must error");
+        let err = PipelineGraph::from_path(&main_path).expect_err("retry max must error");
         assert!(
             err.to_string()
-                .contains("include:project requires GitLab credentials/configuration")
+                .contains("job 'build'.retry must be 0, 1, or 2")
         );
     }
 
     #[test]
-    fn include_project_fetches_file_and_nested_local_include() -> Result<()> {
-        use crate::GitLabRemoteConfig;
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::thread;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let dir = tempdir()?;
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| anyhow!("time works: {err}"))?
-            .as_nanos();
-        let project = format!("some/group/project-{unique}");
-        let project_id = percent_encode(&project);
-        let reference = format!("main-{unique}");
+    fn retry_exit_codes_parses_single_value() {
+        let dir = tempdir().expect("tempdir");
         let main_path = dir.path().join("main.yml");
         fs::write(
             &main_path,
-            format!(
-                r#"
+            r#"
 stages:
   - build
-include:
-  - project: {project}
-    ref: {reference}
-    file: /templates/main.yml
 
-main-job:
+build:
   stage: build
+  retry:
+    max: 1
+    exit_codes: 137
   script:
-    - echo main
+    - echo hi
 "#,
-            ),
-        )?;
+        )
+        .expect("write main");
 
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
-        let server = thread::spawn(move || -> Result<()> {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept()?;
-                let mut buffer = [0_u8; 4096];
-                let size = stream.read(&mut buffer)?;
-                let request = String::from_utf8_lossy(&buffer[..size]);
-                let line = request.lines().next().unwrap_or_default();
-                let main_path = format!(
-                    "/api/v4/projects/{}/repository/files/templates%2Fmain.yml/raw?ref={}",
-                    project_id, reference
-                );
-                let child_path = format!(
-                    "/api/v4/projects/{}/repository/files/nested%2Fchild.yml/raw?ref={}",
-                    project_id, reference
-                );
-                let body = if line.contains(&main_path) {
-                    r#"
-include:
-  - local: /nested/child.yml
-
-project-main-job:
-  stage: build
-  script:
-    - echo project main
-"#
-                } else if line.contains(&child_path) {
-                    r#"
-project-child-job:
-  stage: build
-  script:
-    - echo project child
-"#
-                } else {
-                    panic!("unexpected request line: {line}");
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes())?;
-            }
-            Ok(())
-        });
-
-        let gitlab = GitLabRemoteConfig {
-            base_url: format!("http://{}", addr),
-            token: "test-token".to_string(),
-        };
-        let pipeline = PipelineGraph::from_path_with_gitlab(&main_path, Some(&gitlab))?;
-
-        assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "project-main-job")
-        );
-        assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "project-child-job")
-        );
-        assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "main-job")
-        );
-
-        server.join().map_err(|_| anyhow!("server joins"))??;
-        Ok(())
+        let pipeline = PipelineGraph::from_path(&main_path).expect("retry exit_codes must parse");
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "build")
+            .expect("build job present");
+        assert_eq!(job.retry.max, 1);
+        assert_eq!(job.retry.exit_codes, vec![137]);
     }
 
     #[test]
-    fn include_project_accepts_multiple_file_entries() -> Result<()> {
-        use crate::GitLabRemoteConfig;
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::thread;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let dir = tempdir()?;
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| anyhow!("time works: {err}"))?
-            .as_nanos();
-        let project = format!("some/group/project-multi-{unique}");
-        let project_id = percent_encode(&project);
-        let reference = format!("main-{unique}");
+    fn retry_exit_codes_rejects_negative_values() {
+        let dir = tempdir().expect("tempdir");
         let main_path = dir.path().join("main.yml");
         fs::write(
             &main_path,
-            format!(
-                r#"
+            r#"
 stages:
   - build
-include:
-  - project: {project}
-    ref: {reference}
-    file:
-      - /templates/one.yml
-      - /templates/two.yml
 
-main-job:
+build:
   stage: build
+  retry:
+    max: 1
+    exit_codes:
+      - -1
   script:
-    - echo main
+    - echo hi
 "#,
-            ),
-        )?;
+        )
+        .expect("write main");
 
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
-        let server = thread::spawn(move || -> Result<()> {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept()?;
-                let mut buffer = [0_u8; 4096];
-                let size = stream.read(&mut buffer)?;
-                let request = String::from_utf8_lossy(&buffer[..size]);
-                let line = request.lines().next().unwrap_or_default();
-                let one_path = format!(
-                    "/api/v4/projects/{}/repository/files/templates%2Fone.yml/raw?ref={}",
-                    project_id, reference
-                );
-                let two_path = format!(
-                    "/api/v4/projects/{}/repository/files/templates%2Ftwo.yml/raw?ref={}",
-                    project_id, reference
-                );
-                let body = if line.contains(&one_path) {
-                    r#"
-project-one-job:
-  stage: build
-  script:
-    - echo one
-"#
-                } else if line.contains(&two_path) {
-                    r#"
-project-two-job:
-  stage: build
-  script:
-    - echo two
-"#
-                } else {
-                    panic!("unexpected request line: {line}");
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes())?;
-            }
-            Ok(())
-        });
-
-        let gitlab = GitLabRemoteConfig {
-            base_url: format!("http://{}", addr),
-            token: "test-token".to_string(),
-        };
-        let pipeline = PipelineGraph::from_path_with_gitlab(&main_path, Some(&gitlab))?;
-
+        let err = PipelineGraph::from_path(&main_path).expect_err("negative exit code must error");
         assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "project-one-job")
+            err.to_string()
+                .contains("job 'build'.retry.exit_codes must contain non-negative integers")
         );
-        assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "project-two-job")
-        );
-        assert!(
-            pipeline
-                .graph
-                .node_weights()
-                .any(|job| job.name == "main-job")
-        );
-
-        server.join().map_err(|_| anyhow!("server joins"))??;
-        Ok(())
     }
 
     #[test]

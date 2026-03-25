@@ -231,6 +231,7 @@ impl From<&RetryPolicy> for RetryPolicySpec {
         Self {
             max: value.max,
             when: value.when.clone(),
+            exit_codes: value.exit_codes.clone(),
         }
     }
 }
@@ -240,6 +241,7 @@ impl From<&RetryPolicySpec> for RetryPolicy {
         Self {
             max: value.max,
             when: value.when.clone(),
+            exit_codes: value.exit_codes.clone(),
         }
     }
 }

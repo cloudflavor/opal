@@ -4,7 +4,7 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Recognized By Opal
 
@@ -90,7 +90,9 @@ Last updated: 2026-03-24
 - `timeout`
 - `retry`
   - `max`
+    - validated to GitLab's documented `0`, `1`, or `2` range
   - `when`
+  - `exit_codes`
 - `interruptible`
 - `resource_group`
 - `tags`
@@ -179,13 +181,22 @@ These features exist in Opal, but they do not match GitLab completely.
 - `include:project` is partial runtime support.
   Opal can resolve project includes when explicit GitLab credentials/configuration are provided, but this is currently a local fetch-and-cache approximation through the GitLab API rather than full GitLab server-side config resolution semantics.
   Nested direct local includes within the fetched project are supported, but wildcard nested local includes are not yet.
-- `retry.when` is partially modeled.
-  Opal now applies `retry.when` at execution time for a useful local subset of failure classes:
+- `retry` is still subset-only.
+  Opal now validates `retry:max` against GitLab's documented `0..=2` range, accepts GitLab's documented `retry:when` condition names, and supports `retry:exit_codes`.
+  Opal classifies a broader local subset of retry failure classes at execution time, including:
+  - `unknown_failure`
   - `script_failure`
-  - `job_execution_timeout`
-  - `runner_system_failure`
+  - `api_failure`
   - `stuck_or_timeout_failure`
-  Other GitLab retry conditions are not yet classified or enforced.
+  - `runner_system_failure`
+  - `runner_unsupported`
+  - `job_execution_timeout`
+  - `unmet_prerequisites`
+  - `scheduler_failure`
+  - `data_integrity_failure`
+  - `stale_schedule`
+  - `archived_failure`
+  GitLab-specific failure sources such as `stale_schedule` and `archived_failure` are rare in Opal's local execution model, but retry matching now recognizes them when those failure states are surfaced.
 - `environment.action` is subset-only.
   Opal explicitly models `stop`; other action values are currently treated like the default start action for local metadata/display purposes.
 - `tags` are informational only.
@@ -268,7 +279,7 @@ It is ordered by what is most likely to unblock real repository configs and redu
 
 ### Priority 2: Runtime control-flow fidelity (high impact)
 
-- Extend `retry.when` coverage beyond the current local subset of classified failure types.
+- Keep refining failure classification so GitLab retry conditions map to local runtime errors more precisely.
 - Model `interruptible` with real local execution consequences during abort/cancel flows instead of treating it as metadata only.
 - Broaden `environment.action` handling beyond the current `stop` subset where practical for local metadata and UX.
 - Tighten `needs:project` runtime behavior and error reporting so credential/network requirements are explicit and easier to diagnose.

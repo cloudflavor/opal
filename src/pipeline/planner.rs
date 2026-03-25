@@ -36,13 +36,22 @@ pub struct JobEvent {
     pub log_hash: String,
     pub result: Result<()>,
     pub failure_kind: Option<JobFailureKind>,
+    pub exit_code: Option<i32>,
     pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobFailureKind {
+    UnknownFailure,
     ScriptFailure,
+    ApiFailure,
     JobExecutionTimeout,
+    RunnerUnsupported,
+    StaleSchedule,
+    ArchivedFailure,
+    UnmetPrerequisites,
+    SchedulerFailure,
+    DataIntegrityFailure,
     RunnerSystemFailure,
     StuckOrTimeoutFailure,
 }

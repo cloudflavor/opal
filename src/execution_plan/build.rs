@@ -71,6 +71,7 @@ mod tests {
                     retry: RetryPolicySpec {
                         max: 2,
                         when: vec!["runner_system_failure".into()],
+                        exit_codes: Vec::new(),
                     },
                     interruptible: true,
                     resource_group: Some("builder".into()),

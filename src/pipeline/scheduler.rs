@@ -44,7 +44,8 @@ pub fn spawn_job(
                     log_path: Some(log_path.clone()),
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("failed to acquire job slot: {err}")),
-                    failure_kind: Some(JobFailureKind::RunnerSystemFailure),
+                    failure_kind: Some(JobFailureKind::SchedulerFailure),
+                    exit_code: None,
                     cancelled: false,
                 });
                 return;
@@ -78,6 +79,7 @@ pub fn spawn_job(
                         log_hash: log_hash.clone(),
                         result: Err(anyhow!("job task panicked: {err}")),
                         failure_kind: Some(JobFailureKind::RunnerSystemFailure),
+                        exit_code: None,
                         cancelled: false,
                     },
                 },
@@ -94,6 +96,7 @@ pub fn spawn_job(
                             humantime::format_duration(limit)
                         )),
                         failure_kind: Some(JobFailureKind::JobExecutionTimeout),
+                        exit_code: None,
                         cancelled: false,
                     }
                 }
@@ -109,6 +112,7 @@ pub fn spawn_job(
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("job task panicked: {err}")),
                     failure_kind: Some(JobFailureKind::RunnerSystemFailure),
+                    exit_code: None,
                     cancelled: false,
                 },
             }

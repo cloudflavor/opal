@@ -469,7 +469,12 @@ pub(crate) async fn execute_plan(
                         let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
                         let retries_used = attempts_so_far.saturating_sub(1);
                         if retries_used < planned.instance.retry.max
-                            && retry_allowed(&planned.instance.retry.when, event.failure_kind)
+                            && retry_allowed(
+                                &planned.instance.retry.when,
+                                &planned.instance.retry.exit_codes,
+                                event.failure_kind,
+                                event.exit_code,
+                            )
                         {
                             release_resource_lock(
                                 planned,
@@ -562,24 +567,38 @@ pub(crate) async fn execute_plan(
     (summaries, result)
 }
 
-fn retry_allowed(conditions: &[String], failure_kind: Option<JobFailureKind>) -> bool {
-    if conditions.is_empty() {
+fn retry_allowed(
+    conditions: &[String],
+    exit_codes: &[i32],
+    failure_kind: Option<JobFailureKind>,
+    exit_code: Option<i32>,
+) -> bool {
+    if conditions.is_empty() && exit_codes.is_empty() {
         return true;
     }
-    let Some(kind) = failure_kind else {
-        return false;
-    };
-    conditions
-        .iter()
-        .any(|condition| retry_condition_matches(condition, kind))
+    let when_matches = failure_kind.is_some_and(|kind| {
+        conditions
+            .iter()
+            .any(|condition| retry_condition_matches(condition, kind))
+    });
+    let exit_code_matches = exit_code.is_some_and(|code| exit_codes.contains(&code));
+    when_matches || exit_code_matches
 }
 
 fn retry_condition_matches(condition: &str, failure_kind: JobFailureKind) -> bool {
     match condition {
         "always" => true,
+        "unknown_failure" => failure_kind == JobFailureKind::UnknownFailure,
         "script_failure" => failure_kind == JobFailureKind::ScriptFailure,
+        "api_failure" => failure_kind == JobFailureKind::ApiFailure,
         "job_execution_timeout" => failure_kind == JobFailureKind::JobExecutionTimeout,
         "runner_system_failure" => failure_kind == JobFailureKind::RunnerSystemFailure,
+        "runner_unsupported" => failure_kind == JobFailureKind::RunnerUnsupported,
+        "stale_schedule" => failure_kind == JobFailureKind::StaleSchedule,
+        "archived_failure" => failure_kind == JobFailureKind::ArchivedFailure,
+        "unmet_prerequisites" => failure_kind == JobFailureKind::UnmetPrerequisites,
+        "scheduler_failure" => failure_kind == JobFailureKind::SchedulerFailure,
+        "data_integrity_failure" => failure_kind == JobFailureKind::DataIntegrityFailure,
         "stuck_or_timeout_failure" => {
             matches!(
                 failure_kind,
@@ -663,6 +682,7 @@ fn update_summaries_from_event(
         log_hash,
         result,
         failure_kind: _,
+        exit_code: _,
         cancelled,
     } = event;
 
@@ -810,18 +830,27 @@ mod tests {
 
     #[test]
     fn retry_allowed_defaults_to_true_without_conditions() {
-        assert!(retry_allowed(&[], Some(JobFailureKind::ScriptFailure)));
+        assert!(retry_allowed(
+            &[],
+            &[],
+            Some(JobFailureKind::ScriptFailure),
+            Some(1)
+        ));
     }
 
     #[test]
     fn retry_allowed_matches_script_failure_condition() {
         assert!(retry_allowed(
             &["script_failure".into()],
-            Some(JobFailureKind::ScriptFailure)
+            &[],
+            Some(JobFailureKind::ScriptFailure),
+            Some(1)
         ));
         assert!(!retry_allowed(
             &["runner_system_failure".into()],
-            Some(JobFailureKind::ScriptFailure)
+            &[],
+            Some(JobFailureKind::ScriptFailure),
+            Some(1)
         ));
     }
 
@@ -829,7 +858,61 @@ mod tests {
     fn retry_allowed_treats_job_timeout_as_stuck_or_timeout_failure() {
         assert!(retry_allowed(
             &["stuck_or_timeout_failure".into()],
-            Some(JobFailureKind::JobExecutionTimeout)
+            &[],
+            Some(JobFailureKind::JobExecutionTimeout),
+            None
+        ));
+    }
+
+    #[test]
+    fn retry_allowed_matches_api_failure_condition() {
+        assert!(retry_allowed(
+            &["api_failure".into()],
+            &[],
+            Some(JobFailureKind::ApiFailure),
+            None
+        ));
+        assert!(!retry_allowed(
+            &["api_failure".into()],
+            &[],
+            Some(JobFailureKind::UnknownFailure),
+            None
+        ));
+    }
+
+    #[test]
+    fn retry_allowed_matches_unmet_prerequisites_condition() {
+        assert!(retry_allowed(
+            &["unmet_prerequisites".into()],
+            &[],
+            Some(JobFailureKind::UnmetPrerequisites),
+            None
+        ));
+    }
+
+    #[test]
+    fn retry_allowed_matches_exit_code_condition() {
+        assert!(retry_allowed(
+            &[],
+            &[137],
+            Some(JobFailureKind::ScriptFailure),
+            Some(137)
+        ));
+        assert!(!retry_allowed(
+            &[],
+            &[137],
+            Some(JobFailureKind::ScriptFailure),
+            Some(1)
+        ));
+    }
+
+    #[test]
+    fn retry_allowed_matches_when_or_exit_code() {
+        assert!(retry_allowed(
+            &["runner_system_failure".into()],
+            &[137],
+            Some(JobFailureKind::ScriptFailure),
+            Some(137)
         ));
     }
 

@@ -88,6 +88,7 @@ pub(crate) fn run_planned_job(
 
     exec.clear_running_container(&job_name);
 
+    let exit_code = extract_exit_code(&final_result, cancelled);
     let failure_kind = classify_failure(&job_name, &final_result, cancelled);
 
     JobEvent {
@@ -98,6 +99,7 @@ pub(crate) fn run_planned_job(
         log_hash,
         result: final_result,
         failure_kind,
+        exit_code,
         cancelled,
     }
 }
@@ -110,33 +112,130 @@ fn completion_result(result: Result<()>, cancelled: bool) -> Result<()> {
     }
 }
 
-fn classify_failure(job_name: &str, result: &Result<()>, cancelled: bool) -> Option<JobFailureKind> {
+fn extract_exit_code(result: &Result<()>, cancelled: bool) -> Option<i32> {
+    if cancelled {
+        return None;
+    }
+    let message = result.as_ref().err()?.to_string();
+    let marker = "container command exited with status Some(";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let end = rest.find(')')?;
+    rest[..end].parse::<i32>().ok()
+}
+
+fn classify_failure(
+    job_name: &str,
+    result: &Result<()>,
+    cancelled: bool,
+) -> Option<JobFailureKind> {
     if cancelled {
         return None;
     }
     let err = result.as_ref().err()?;
     let message = err.to_string();
-    if message.contains("job exceeded timeout") {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("job exceeded timeout") {
         return Some(JobFailureKind::JobExecutionTimeout);
     }
-    if message.contains("failed to start service")
-        || message.contains("failed readiness check")
-        || message.contains("failed to create network")
-        || message.contains("failed to acquire job slot")
-        || message.contains("job task panicked")
-    {
+    if is_api_failure(&normalized) {
+        return Some(JobFailureKind::ApiFailure);
+    }
+    if is_runner_unsupported(&normalized) {
+        return Some(JobFailureKind::RunnerUnsupported);
+    }
+    if is_stale_schedule_failure(&normalized) {
+        return Some(JobFailureKind::StaleSchedule);
+    }
+    if is_archived_failure(&normalized) {
+        return Some(JobFailureKind::ArchivedFailure);
+    }
+    if is_unmet_prerequisites(&normalized) {
+        return Some(JobFailureKind::UnmetPrerequisites);
+    }
+    if is_scheduler_failure(&normalized) {
+        return Some(JobFailureKind::SchedulerFailure);
+    }
+    if is_runner_system_failure(&normalized) {
         return Some(JobFailureKind::RunnerSystemFailure);
     }
-    if message.contains("timed out") {
+    if is_stuck_or_timeout_failure(&normalized) {
         return Some(JobFailureKind::StuckOrTimeoutFailure);
     }
+    if is_data_integrity_failure(&normalized) {
+        return Some(JobFailureKind::DataIntegrityFailure);
+    }
+    if is_script_failure(&normalized) {
+        return Some(JobFailureKind::ScriptFailure);
+    }
     let _ = job_name;
-    Some(JobFailureKind::ScriptFailure)
+    Some(JobFailureKind::UnknownFailure)
+}
+
+fn is_api_failure(message: &str) -> bool {
+    message.contains("failed to invoke curl to download artifacts")
+        || message.contains("curl failed to download artifacts")
+        || message.contains("failed to download artifacts for")
+}
+
+fn is_runner_unsupported(message: &str) -> bool {
+    message.contains("services are only supported when using")
+}
+
+fn is_stale_schedule_failure(message: &str) -> bool {
+    message.contains("stale schedule")
+}
+
+fn is_archived_failure(message: &str) -> bool {
+    message.contains("archived failure")
+        || message.contains("project is archived")
+        || message.contains("repository is archived")
+}
+
+fn is_unmet_prerequisites(message: &str) -> bool {
+    message.contains("has no image")
+        || message.contains("requires artifacts from project")
+        || message.contains("requires artifacts from '")
+        || message.contains("but it did not run")
+        || message.contains("no gitlab token is configured")
+        || message.contains("depends on unknown job")
+}
+
+fn is_scheduler_failure(message: &str) -> bool {
+    message.contains("failed to acquire job slot")
+}
+
+fn is_runner_system_failure(message: &str) -> bool {
+    message.contains("failed to start service")
+        || message.contains("failed readiness check")
+        || message.contains("failed to create network")
+        || message.contains("job task panicked")
+        || message.contains("failed to run docker command")
+        || message.contains("failed to run podman command")
+        || message.contains("failed to run nerdctl command")
+        || message.contains("failed to run containercli command")
+        || message.contains("failed to run orbstack command")
+        || message.contains("missing stdout from container process")
+        || message.contains("missing stderr from container process")
+        || message.contains("failed to create log at")
+        || message.contains("failed to invoke python3 to extract artifacts")
+}
+
+fn is_stuck_or_timeout_failure(message: &str) -> bool {
+    message.contains("timed out")
+}
+
+fn is_data_integrity_failure(message: &str) -> bool {
+    message.contains("unable to extract artifacts archive")
+}
+
+fn is_script_failure(message: &str) -> bool {
+    message.contains("container command exited with status")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_failure, completion_result};
+    use super::{classify_failure, completion_result, extract_exit_code};
     use crate::pipeline::JobFailureKind;
     use anyhow::anyhow;
 
@@ -162,5 +261,71 @@ mod tests {
             classify_failure("job", &result, false),
             Some(JobFailureKind::ScriptFailure)
         );
+    }
+
+    #[test]
+    fn classify_failure_detects_api_failure() {
+        let result = Err(anyhow!(
+            "failed to download artifacts for 'build' from project 'group/project': curl failed to download artifacts from https://gitlab.example/api/v4/projects/group%2Fproject/jobs/artifacts/main/download?job=build (status 404)"
+        ));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::ApiFailure)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_unmet_prerequisites() {
+        let result = Err(anyhow!(
+            "job 'build' has no image (use --base-image or set image in pipeline/job)"
+        ));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::UnmetPrerequisites)
+        );
+    }
+
+    #[test]
+    fn classify_failure_falls_back_to_unknown_failure() {
+        let result = Err(anyhow!("unexpected executor error"));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::UnknownFailure)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_stale_schedule() {
+        let result = Err(anyhow!("stale schedule prevented delayed job execution"));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::StaleSchedule)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_archived_failure() {
+        let result = Err(anyhow!("project is archived"));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::ArchivedFailure)
+        );
+    }
+
+    #[test]
+    fn classify_failure_detects_data_integrity_failure() {
+        let result = Err(anyhow!(
+            "unable to extract artifacts archive /tmp/archive.zip"
+        ));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::DataIntegrityFailure)
+        );
+    }
+
+    #[test]
+    fn extract_exit_code_reads_container_exit_status() {
+        let result = Err(anyhow!("container command exited with status Some(137)"));
+        assert_eq!(extract_exit_code(&result, false), Some(137));
     }
 }
