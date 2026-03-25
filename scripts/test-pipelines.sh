@@ -22,6 +22,7 @@ SCENARIOS_JSON='[
   {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1","command":"plan","opal_args":""},
   {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1","command":"plan","opal_args":""},
   {"name":"rules-compare-to","pipeline":"pipelines/tests/rules-compare-to.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/compare-to CI_PIPELINE_SOURCE=push","workdir":"tests-temp/compare-to-workdir","repo_setup":"compare_to_docs_change","command":"plan","opal_args":""},
+  {"name":"job-select-plan","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":"--job package-linux"},
   {"name":"needs-plan","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=schedule","command":"plan","opal_args":""},
   {"name":"needs-optional","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push ENABLE_OPTIONAL=1","command":"plan","opal_args":""},
   {"name":"needs-tag","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.3 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -42,6 +43,7 @@ SCENARIOS_JSON='[
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"control-flow-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"intentional-failure"},
+  {"name":"job-select-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --job rule-variables"},
   {"name":"services-readiness-failure","pipeline":"pipelines/tests/services-readiness-failure.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_SERVICE_READY_TIMEOUT_SECS=5","expect_failure":"failed readiness check"},
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-key-files","pipeline":"pipelines/tests/cache-key-files.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -207,6 +209,13 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "docs-compare-to"
       assert_log_not_contains "${log_file}" "src-compare-to"
       ;;
+    job-select-plan)
+      assert_log_contains "${log_file}" "package-linux"
+      assert_log_contains "${log_file}" "prepare-artifacts"
+      assert_log_contains "${log_file}" "build-matrix: [linux, release]"
+      assert_log_not_contains "${log_file}" "smoke-tests"
+      assert_log_not_contains "${log_file}" "deploy-summary"
+      ;;
     needs-plan)
       assert_log_contains "${log_file}" "build-matrix: [linux, debug]"
       assert_log_contains "${log_file}" "build-matrix: [mac, release]"
@@ -294,6 +303,11 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "parallel-fanout: [1]"
       assert_log_contains "${log_file}" "parallel-fanout: [2]"
       assert_log_contains "${log_file}" "when on_failure"
+      ;;
+    job-select-runtime)
+      assert_log_contains "${log_file}" "rule variable from-rule"
+      assert_log_not_contains "${log_file}" "parallel-fanout 1/2"
+      assert_log_not_contains "${log_file}" "intentional failure"
       ;;
     control-flow-runtime)
       assert_log_contains "${log_file}" "rule variable from-rule"
