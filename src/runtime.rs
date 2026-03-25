@@ -9,7 +9,13 @@ fn opal_home() -> PathBuf {
     if let Some(path) = env::var_os("OPAL_HOME")
         && !path.is_empty()
     {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return path;
+        }
+        return env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path);
     }
     home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

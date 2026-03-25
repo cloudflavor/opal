@@ -71,6 +71,46 @@ fi
 
 failures=()
 
+detect_runtime_engine() {
+  if docker info >/dev/null 2>&1; then
+    echo docker
+    return 0
+  fi
+  if podman info >/dev/null 2>&1; then
+    echo podman
+    return 0
+  fi
+  if nerdctl info >/dev/null 2>&1; then
+    echo nerdctl
+    return 0
+  fi
+  if container system status >/dev/null 2>&1; then
+    echo container
+    return 0
+  fi
+  return 1
+}
+
+opal_args_include_engine() {
+  local arg
+  for arg in "${OPAL_ARGS[@]}"; do
+    if [[ "${arg}" == "--engine" || "${arg}" == --engine=* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ "${OPAL_TEST_COMMAND}" == "run" ]] && ! opal_args_include_engine; then
+  if detected_engine="$(detect_runtime_engine)"; then
+    OPAL_ARGS+=("--engine" "${detected_engine}")
+  else
+    echo "!! No usable container runtime found for opal run e2e tests." >&2
+    echo "   Tried: docker, podman, nerdctl, container (with system service running)." >&2
+    exit 1
+  fi
+fi
+
 assert_log_contains() {
   local log_file="$1"
   local needle="$2"
