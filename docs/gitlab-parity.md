@@ -121,6 +121,8 @@ Last updated: 2026-03-25
   - `when`
   - `exclude`
   - `untracked`
+  - `reports`
+    - `dotenv`
 - `cache`
   - `key` (string form)
   - `key:files`
@@ -178,13 +180,14 @@ These features exist in Opal, but they do not match GitLab completely.
   - `when`
   - `exclude`
   - `untracked`
+  - `reports:dotenv`
   Unsupported artifact keys in Opal today are:
   - `name`
   - `expose_as`
   - `expire_in`
   - `public`
   - `access`
-  - `reports`
+  - artifact reports other than `reports:dotenv`
 - `cache` is subset-only.
   Opal models only:
   - `key`
@@ -265,7 +268,7 @@ High-value local candidates:
 
 - `artifacts:name`
 - `artifacts:expire_in` (if we want local retention metadata or cleanup behavior)
-- limited `artifacts:reports`, especially `reports:dotenv`
+- additional `artifacts:reports` coverage beyond `reports:dotenv`
 - broader `only` / `except` selectors when real repository pipelines rely on them
 - service lifecycle and readiness fidelity
 
