@@ -1,5 +1,4 @@
 use crate::EngineKind;
-use crate::env::expand_env_list;
 use crate::model::ServiceSpec;
 use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow, bail};
@@ -126,7 +125,7 @@ impl ServiceRuntime {
         service: &ServiceSpec,
         aliases: &[String],
         base_env: &[(String, String)],
-        shared_env: &HashMap<String, String>,
+        _shared_env: &HashMap<String, String>,
     ) -> Result<()> {
         let mut command = service_command(self.engine);
         command
@@ -141,8 +140,7 @@ impl ServiceRuntime {
             }
         }
 
-        let mut merged = merged_env(base_env, &service.variables);
-        expand_env_list(&mut merged[..], shared_env);
+        let merged = merged_env(base_env, &service.variables);
         for (key, value) in merged {
             command.arg("--env").arg(format!("{key}={value}"));
         }
@@ -680,7 +678,12 @@ fn merged_env(
     base: &[(String, String)],
     overrides: &HashMap<String, String>,
 ) -> Vec<(String, String)> {
-    let mut map: HashMap<String, String> = base.iter().cloned().collect();
+    let lookup: HashMap<String, String> = base.iter().cloned().collect();
+    let mut env = base.to_vec();
+    for (_, value) in &mut env {
+        *value = crate::env::expand_value(value, &lookup);
+    }
+    let mut map: HashMap<String, String> = env.into_iter().collect();
     for (key, value) in overrides {
         map.insert(key.clone(), value.clone());
     }
@@ -890,5 +893,23 @@ mod tests {
             .aliases_for_service(0, &service)
             .expect_err("alias must error");
         assert!(err.to_string().contains("unsupported characters"));
+    }
+
+    #[test]
+    fn merged_env_does_not_expand_service_only_variables() {
+        let merged = super::merged_env(
+            &[("BASE".into(), "hello".into())],
+            &HashMap::from([
+                ("BASE".into(), "override".into()),
+                ("SERVICE_ONLY".into(), "$BASE-world".into()),
+            ]),
+        );
+        let merged_map: HashMap<_, _> = merged.into_iter().collect();
+
+        assert_eq!(merged_map.get("BASE").map(String::as_str), Some("override"));
+        assert_eq!(
+            merged_map.get("SERVICE_ONLY").map(String::as_str),
+            Some("$BASE-world")
+        );
     }
 }
