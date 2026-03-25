@@ -30,6 +30,7 @@ Last updated: 2026-03-26
 ### Reuse and composition
 
 - hidden/template jobs (`.job-name`)
+- YAML merge keys (`<<`)
 - `extends`
 - `!reference`
 - `inherit:default`
