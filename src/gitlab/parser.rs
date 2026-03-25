@@ -942,9 +942,40 @@ fn parse_filter_list(value: Value, field: &str) -> Result<Vec<String>> {
                 other => bail!("{field} entries must be strings, got {other:?}"),
             })
             .collect(),
+        Value::Mapping(mut map) => {
+            let variables_key = Value::String("variables".to_string());
+            if let Some(variables) = map.remove(&variables_key) {
+                if !map.is_empty() {
+                    bail!("{field} mapping supports only 'variables'");
+                }
+                parse_variable_filter_list(variables, field)
+            } else {
+                bail!("{field} mapping supports only 'variables'");
+            }
+        }
         Value::Null => Ok(Vec::new()),
         other => bail!("{field} must be a string or list, got {other:?}"),
     }
+}
+
+fn parse_variable_filter_list(value: Value, field: &str) -> Result<Vec<String>> {
+    let expressions = match value {
+        Value::String(text) => vec![text],
+        Value::Sequence(entries) => entries
+            .into_iter()
+            .map(|entry| match entry {
+                Value::String(text) => Ok(text),
+                other => bail!("{field}.variables entries must be strings, got {other:?}"),
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Value::Null => Vec::new(),
+        other => bail!("{field}.variables must be a string or list, got {other:?}"),
+    };
+
+    Ok(expressions
+        .into_iter()
+        .map(|expr| format!("__opal_variables__:{expr}"))
+        .collect())
 }
 
 fn parse_timeout_value(value: Value, field: &str) -> Result<Option<Duration>> {

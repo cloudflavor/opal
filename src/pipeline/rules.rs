@@ -899,6 +899,9 @@ pub fn filters_allow(filters: &impl RuleFilters, ctx: &RuleContext) -> bool {
 }
 
 fn filter_matches(filter: &str, ctx: &RuleContext) -> bool {
+    if let Some(expr) = filter.strip_prefix("__opal_variables__:") {
+        return eval_if_expr(expr, ctx).unwrap_or(false);
+    }
     match filter {
         "branches" => ctx
             .env_value("CI_COMMIT_BRANCH")
