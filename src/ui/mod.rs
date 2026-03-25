@@ -29,7 +29,7 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
         workdir,
         rx,
         cmd_tx,
-    );
+    )?;
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }
@@ -57,7 +57,7 @@ pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
         workdir,
         rx,
         cmd_tx,
-    );
+    )?;
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }

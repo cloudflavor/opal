@@ -32,7 +32,7 @@ impl UiHandle {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let thread_tx = tx.clone();
         let handle = thread::spawn(move || {
-            if let Err(err) = UiRunner::new(
+            match UiRunner::new(
                 jobs,
                 history,
                 current_run_id,
@@ -41,10 +41,15 @@ impl UiHandle {
                 workdir,
                 rx,
                 cmd_tx,
-            )
-            .run()
-            {
-                eprintln!("ui error: {err:?}");
+            ) {
+                Ok(runner) => {
+                    if let Err(err) = runner.run() {
+                        eprintln!("ui error: {err:?}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("ui error: {err:?}");
+                }
             }
         });
         Ok(Self {

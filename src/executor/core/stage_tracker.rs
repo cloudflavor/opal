@@ -24,7 +24,10 @@ impl StageTracker {
     }
 
     pub(super) fn start(&self, stage_name: &str) -> bool {
-        let mut states = self.states.lock().expect("stage tracker mutex poisoned");
+        let mut states = match self.states.lock() {
+            Ok(states) => states,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let state = states
             .entry(stage_name.to_string())
             .or_insert_with(|| StageState::new(0));
@@ -38,7 +41,10 @@ impl StageTracker {
     }
 
     pub(super) fn complete_job(&self, stage_name: &str) -> Option<f32> {
-        let mut states = self.states.lock().expect("stage tracker mutex poisoned");
+        let mut states = match self.states.lock() {
+            Ok(states) => states,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let state = states.get_mut(stage_name)?;
         state.completed += 1;
         if state.completed == state.total {

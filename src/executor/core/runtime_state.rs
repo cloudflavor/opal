@@ -12,10 +12,10 @@ pub(super) struct RuntimeState {
 
 impl RuntimeState {
     pub(super) fn next_attempt(&self, job_name: &str) -> usize {
-        let mut attempts = self
-            .job_attempts
-            .lock()
-            .expect("job attempt tracker mutex poisoned");
+        let mut attempts = match self.job_attempts.lock() {
+            Ok(attempts) => attempts,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let entry = attempts.entry(job_name.to_string()).or_insert(0);
         *entry += 1;
         *entry

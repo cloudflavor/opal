@@ -251,11 +251,13 @@ fn add_dependency_mounts(
         let container = collector.container_path(&relative);
         let must_stage = mounts.len() > 1 || mounts.iter().any(|mount| !mount.exclude.is_empty());
         if !must_stage {
-            collector.push(
-                mounts.into_iter().next().expect("single mount").host,
-                container,
-                true,
-            );
+            let Some(mount) = mounts.into_iter().next() else {
+                return Err(anyhow!(
+                    "internal error: no dependency mounts available for {}",
+                    relative.display()
+                ));
+            };
+            collector.push(mount.host, container, true);
             continue;
         }
 

@@ -46,11 +46,11 @@ impl UiRunner {
         workdir: PathBuf,
         rx: UnboundedReceiver<UiEvent>,
         commands: UnboundedSender<UiCommand>,
-    ) -> Self {
+    ) -> Result<Self> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend).expect("failed to create terminal");
-        Self {
+        let terminal = Terminal::new(backend).context("failed to create terminal")?;
+        Ok(Self {
             rx,
             commands,
             terminal,
@@ -65,7 +65,7 @@ impl UiRunner {
             pipeline_finished: false,
             exit_requested: false,
             abort_sent: false,
-        }
+        })
     }
 
     pub(super) fn run(mut self) -> Result<()> {
