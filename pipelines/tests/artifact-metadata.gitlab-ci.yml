@@ -1,0 +1,32 @@
+stages:
+  - build
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+build-artifacts:
+  stage: build
+  script:
+    - mkdir -p tests-temp/meta
+    - echo "artifact-data" > tests-temp/meta/output.txt
+    - echo "ARTIFACT_VERSION=v2.0.0" > tests-temp/meta/build.env
+  artifacts:
+    name: "$CI_COMMIT_REF_NAME-artifacts"
+    expire_in: 2 hrs
+    paths:
+      - tests-temp/meta/
+    reports:
+      dotenv: tests-temp/meta/build.env
+
+consume-artifacts:
+  stage: test
+  needs:
+    - build-artifacts
+  script:
+    - test -f tests-temp/meta/output.txt
+    - test "$(cat tests-temp/meta/output.txt)" = "artifact-data"
+    - test "${ARTIFACT_VERSION}" = "v2.0.0"
+    - echo "artifact metadata consumed ${ARTIFACT_VERSION}"

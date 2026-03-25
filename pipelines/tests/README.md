@@ -15,6 +15,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.
 - `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.
+- `artifact-metadata.gitlab-ci.yml` – Validates `artifacts:name`, `artifacts:expire_in`, and dotenv report metadata in both planner output and downstream runtime behavior.
 - `retry-parity.gitlab-ci.yml` – Validates retry reruns for both `retry:when: script_failure` and `retry:exit_codes`, using the mounted Opal session directory so the first attempt fails and the retry succeeds.
 - `dotenv-reports.gitlab-ci.yml` – Validates `artifacts:reports:dotenv` propagation through both `needs` and `dependencies`, and verifies that `needs:artifacts: false` plus `dependencies: []` block those variables.
 - `control-flow-parity.gitlab-ci.yml` – Validates numeric `parallel`, top-level `image`/`variables`, rule-scoped `variables`, and `when: on_failure` behavior.
