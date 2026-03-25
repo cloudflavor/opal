@@ -1,5 +1,6 @@
 use super::ExecutorCore;
 use crate::execution_plan::ExecutionPlan;
+use crate::model::DependencySourceSpec;
 use crate::model::{JobSpec, PipelineDefaultsSpec, ServiceSpec};
 use crate::pipeline::{VolumeMount, mounts};
 use crate::secrets::SecretsStore;
@@ -59,6 +60,10 @@ pub(super) fn prepare_job_run(
         &exec.secrets,
     );
     mounts.extend(workspace.mounts.clone());
+    merge_dotenv_env(
+        &mut env_vars,
+        collect_dotenv_env(exec, plan, job, &completed_jobs)?,
+    );
 
     let job_image = exec.resolve_job_image_with_env(job, Some(&cache_env))?;
     let script_commands = expanded_commands(&exec.pipeline.defaults, job);
@@ -78,6 +83,85 @@ pub(super) fn prepare_job_run(
         job_image,
         script_path,
     })
+}
+
+fn collect_dotenv_env(
+    exec: &ExecutorCore,
+    plan: &ExecutionPlan,
+    job: &JobSpec,
+    completed_jobs: &HashMap<String, crate::model::ArtifactSourceOutcome>,
+) -> Result<Vec<(String, String)>> {
+    let mut vars = Vec::new();
+
+    for dependency in &job.needs {
+        if !dependency.needs_artifacts {
+            continue;
+        }
+        match &dependency.source {
+            DependencySourceSpec::Local => {
+                let dep_job = exec.pipeline.jobs.get(&dependency.job);
+                let Some(dep_job) = dep_job else {
+                    continue;
+                };
+                for variant in plan.variants_for_dependency(dependency) {
+                    let Some(planned) = plan.nodes.get(&variant) else {
+                        continue;
+                    };
+                    if !planned
+                        .instance
+                        .job
+                        .artifacts
+                        .when
+                        .includes(completed_jobs.get(&variant).copied())
+                    {
+                        continue;
+                    }
+                    if let Some(report) = &dep_job.artifacts.report_dotenv {
+                        let path = exec.artifacts.job_artifact_host_path(&variant, report);
+                        merge_dotenv_env(&mut vars, crate::secrets::load_dotenv_env_pairs(&path)?);
+                    }
+                }
+            }
+            DependencySourceSpec::External(_) => {}
+        }
+    }
+
+    for dep_name in &job.dependencies {
+        let dep_job = exec.pipeline.jobs.get(dep_name).or_else(|| {
+            plan.nodes
+                .get(dep_name)
+                .map(|planned| &planned.instance.job)
+        });
+        let Some(dep_job) = dep_job else {
+            continue;
+        };
+        if !dep_job
+            .artifacts
+            .when
+            .includes(completed_jobs.get(dep_name).copied())
+        {
+            continue;
+        }
+        if let Some(report) = &dep_job.artifacts.report_dotenv {
+            let path = exec.artifacts.job_artifact_host_path(&dep_job.name, report);
+            merge_dotenv_env(&mut vars, crate::secrets::load_dotenv_env_pairs(&path)?);
+        }
+    }
+
+    Ok(vars)
+}
+
+fn merge_dotenv_env(env: &mut Vec<(String, String)>, extra: Vec<(String, String)>) {
+    for (key, value) in extra {
+        if let Some((_, existing)) = env
+            .iter_mut()
+            .find(|(existing_key, _)| existing_key == &key)
+        {
+            *existing = value;
+        } else {
+            env.push((key, value));
+        }
+    }
 }
 
 fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<String> {

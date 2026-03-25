@@ -1523,6 +1523,8 @@ struct RawArtifacts {
     untracked: bool,
     #[serde(default)]
     when: Option<String>,
+    #[serde(default)]
+    reports: RawArtifactReports,
 }
 
 impl RawArtifacts {
@@ -1533,8 +1535,15 @@ impl RawArtifacts {
             exclude: self.exclude.into_vec(),
             untracked: self.untracked,
             when: parse_artifact_when(self.when.as_deref(), job_name)?,
+            report_dotenv: self.reports.dotenv,
         })
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawArtifactReports {
+    #[serde(default)]
+    dotenv: Option<PathBuf>,
 }
 
 fn validate_artifact_excludes(patterns: &[String], job_name: &str) -> Result<()> {
@@ -2503,6 +2512,40 @@ build:
         assert!(
             err.to_string()
                 .contains("job 'build'.retry.exit_codes must contain non-negative integers")
+        );
+    }
+
+    #[test]
+    fn parses_artifacts_reports_dotenv() {
+        let dir = tempdir().expect("tempdir");
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+
+build:
+  stage: build
+  script:
+    - echo hi
+  artifacts:
+    reports:
+      dotenv: tests-temp/dotenv/build.env
+"#,
+        )
+        .expect("write main");
+
+        let pipeline = PipelineGraph::from_path(&main_path).expect("pipeline parses");
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "build")
+            .expect("build job present");
+
+        assert_eq!(
+            job.artifacts.report_dotenv.as_deref(),
+            Some(std::path::Path::new("tests-temp/dotenv/build.env"))
         );
     }
 

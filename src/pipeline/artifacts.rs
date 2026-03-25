@@ -21,7 +21,10 @@ impl ArtifactManager {
     }
 
     pub fn prepare_targets(&self, job: &JobSpec) -> Result<()> {
-        if job.artifacts.paths.is_empty() && !job.artifacts.untracked {
+        if job.artifacts.paths.is_empty()
+            && !job.artifacts.untracked
+            && job.artifacts.report_dotenv.is_none()
+        {
             return Ok(());
         }
         let root = self.job_artifacts_root(&job.name);
@@ -43,6 +46,18 @@ impl ArtifactManager {
                         })?;
                     }
                 }
+            }
+        }
+
+        if let Some(relative) = &job.artifacts.report_dotenv {
+            let host = self.job_artifact_host_path(&job.name, relative);
+            if let Some(parent) = host.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "failed to prepare dotenv artifact parent {}",
+                        parent.display()
+                    )
+                })?;
             }
         }
 
@@ -116,6 +131,24 @@ impl ArtifactManager {
     pub fn job_artifact_host_path(&self, job_name: &str, artifact: &Path) -> PathBuf {
         self.job_artifacts_root(job_name)
             .join(artifact_relative_path(artifact))
+    }
+
+    pub fn collect_dotenv_report(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+        let Some(relative) = &job.artifacts.report_dotenv else {
+            return Ok(());
+        };
+        let src = workspace.join(relative);
+        if !src.exists() {
+            return Ok(());
+        }
+        let dest = self.job_artifact_host_path(&job.name, relative);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::copy(&src, &dest)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+        Ok(())
     }
 
     pub fn job_artifacts_root(&self, job_name: &str) -> PathBuf {
@@ -664,6 +697,7 @@ mod tests {
                 exclude,
                 untracked,
                 when,
+                report_dotenv: None,
             },
             cache: Vec::new(),
             image: None,

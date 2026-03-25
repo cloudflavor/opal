@@ -161,6 +161,13 @@ fn load_dotenv_file_entries(path: &Path) -> Result<Vec<SecretEntry>> {
     Ok(entries)
 }
 
+pub fn load_dotenv_env_pairs(path: &Path) -> Result<Vec<(String, String)>> {
+    Ok(load_dotenv_file_entries(path)?
+        .into_iter()
+        .filter_map(|entry| entry.value.map(|value| (entry.name, value)))
+        .collect())
+}
+
 fn trim_secret_value(value: &str) -> String {
     value.trim_end_matches(&['\r', '\n'][..]).to_string()
 }

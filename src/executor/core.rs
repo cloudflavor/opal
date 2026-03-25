@@ -383,6 +383,10 @@ impl ExecutorCore {
         self.artifacts.collect_untracked(job, workspace)
     }
 
+    pub(crate) fn collect_dotenv_artifacts(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+        self.artifacts.collect_dotenv_report(job, workspace)
+    }
+
     pub(crate) fn clear_running_container(&self, job_name: &str) {
         self.runtime_state.clear_running_container(job_name);
     }

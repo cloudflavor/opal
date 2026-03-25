@@ -430,6 +430,7 @@ pub(crate) async fn execute_plan(
                 };
                 match event.result {
                     Ok(_) => {
+                        exec.record_completed_job(&event.name, ArtifactSourceOutcome::Success);
                         release_resource_lock(
                             planned,
                             &mut ready,
@@ -463,6 +464,7 @@ pub(crate) async fn execute_plan(
                     }
                     Err(err) => {
                         if event.cancelled {
+                            exec.record_completed_job(&event.name, ArtifactSourceOutcome::Skipped);
                             release_resource_lock(
                                 planned,
                                 &mut ready,
@@ -502,6 +504,7 @@ pub(crate) async fn execute_plan(
                             ready.push_back(event.name.clone());
                             continue;
                         }
+                        exec.record_completed_job(&event.name, ArtifactSourceOutcome::Failed);
                         release_resource_lock(
                             planned,
                             &mut ready,

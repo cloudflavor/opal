@@ -6,6 +6,7 @@ pub struct ArtifactSpec {
     pub exclude: Vec<String>,
     pub untracked: bool,
     pub when: ArtifactWhenSpec,
+    pub report_dotenv: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
