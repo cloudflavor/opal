@@ -212,7 +212,7 @@ impl From<&ServiceConfig> for ServiceSpec {
     fn from(value: &ServiceConfig) -> Self {
         Self {
             image: value.image.clone(),
-            alias: value.alias.clone(),
+            aliases: value.aliases.clone(),
             entrypoint: value.entrypoint.clone(),
             command: value.command.clone(),
             variables: value.variables.clone(),
@@ -224,7 +224,7 @@ impl From<&ServiceSpec> for ServiceConfig {
     fn from(value: &ServiceSpec) -> Self {
         Self {
             image: value.image.clone(),
-            alias: value.alias.clone(),
+            aliases: value.aliases.clone(),
             entrypoint: value.entrypoint.clone(),
             command: value.command.clone(),
             variables: value.variables.clone(),

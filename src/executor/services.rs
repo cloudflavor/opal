@@ -2,7 +2,7 @@ use crate::EngineKind;
 use crate::env::expand_env_list;
 use crate::model::ServiceSpec;
 use crate::naming::job_name_slug;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -24,6 +24,7 @@ pub struct ServiceRuntime {
     network: String,
     containers: Vec<String>,
     link_env: Vec<(String, String)>,
+    claimed_aliases: HashSet<String>,
 }
 
 impl ServiceRuntime {
@@ -53,14 +54,11 @@ impl ServiceRuntime {
             network: network.clone(),
             containers: Vec::new(),
             link_env: Vec::new(),
+            claimed_aliases: HashSet::new(),
         };
 
         for (idx, service) in services.iter().enumerate() {
-            let raw_alias = service
-                .alias
-                .clone()
-                .unwrap_or_else(|| default_service_alias(&service.image));
-            let alias = normalize_alias(&raw_alias);
+            let aliases = runtime.aliases_for_service(idx, service)?;
             let container_name = clamp_name(&format!(
                 "opal-svc-{}-{}-{:02}",
                 clean_run_id,
@@ -82,7 +80,7 @@ impl ServiceRuntime {
                 Vec::new()
             };
             if let Err(err) =
-                runtime.start_service(&container_name, service, &alias, base_env, shared_env)
+                runtime.start_service(&container_name, service, &aliases, base_env, shared_env)
             {
                 runtime.cleanup();
                 return Err(err);
@@ -92,9 +90,11 @@ impl ServiceRuntime {
                 return Err(err);
             }
             if matches!(engine, EngineKind::ContainerCli) && !ports.is_empty() {
-                runtime
-                    .link_env
-                    .extend(build_service_env(&alias, &container_name, &ports));
+                for alias in &aliases {
+                    runtime
+                        .link_env
+                        .extend(build_service_env(alias, &container_name, &ports));
+                }
             }
         }
 
@@ -124,7 +124,7 @@ impl ServiceRuntime {
         &mut self,
         container_name: &str,
         service: &ServiceSpec,
-        alias: &str,
+        aliases: &[String],
         base_env: &[(String, String)],
         shared_env: &HashMap<String, String>,
     ) -> Result<()> {
@@ -136,7 +136,9 @@ impl ServiceRuntime {
             .arg("--network")
             .arg(&self.network);
         if !matches!(self.engine, EngineKind::ContainerCli) {
-            command.arg("--network-alias").arg(alias);
+            for alias in aliases {
+                command.arg("--network-alias").arg(alias);
+            }
         }
 
         let mut merged = merged_env(base_env, &service.variables);
@@ -177,6 +179,30 @@ impl ServiceRuntime {
         })?;
         self.containers.push(container_name.to_string());
         Ok(())
+    }
+
+    fn aliases_for_service(&mut self, idx: usize, service: &ServiceSpec) -> Result<Vec<String>> {
+        let requested = if service.aliases.is_empty() {
+            vec![default_service_alias(&service.image)]
+        } else {
+            service.aliases.clone()
+        };
+
+        let mut accepted = Vec::new();
+        for raw in requested {
+            let alias = validate_service_alias(&raw)?;
+            if self.claimed_aliases.insert(alias.clone()) {
+                accepted.push(alias);
+            }
+        }
+
+        if accepted.is_empty() {
+            let fallback = validate_service_alias(&format!("svc-{idx}"))?;
+            self.claimed_aliases.insert(fallback.clone());
+            accepted.push(fallback);
+        }
+
+        Ok(accepted)
     }
 
     fn wait_for_service_readiness(
@@ -440,20 +466,24 @@ fn clamp_name(base: &str) -> String {
     format!("{prefix}-{suffix}")
 }
 
-fn normalize_alias(alias: &str) -> String {
-    let mut normalized = String::new();
-    for ch in alias.chars() {
-        if ch.is_ascii_alphanumeric() {
-            normalized.push(ch.to_ascii_lowercase());
-        } else if ch == '-' || ch == '_' {
-            normalized.push('-');
-        }
-    }
+fn validate_service_alias(alias: &str) -> Result<String> {
+    let normalized = alias.trim().to_ascii_lowercase();
     if normalized.is_empty() {
-        "service".to_string()
-    } else {
-        normalized
+        bail!("service alias must not be empty");
     }
+    if normalized.starts_with('-') || normalized.ends_with('-') {
+        bail!("service alias '{}' must not start or end with '-'", alias);
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        bail!(
+            "service alias '{}' contains unsupported characters; use lowercase letters, digits, or '-'",
+            alias
+        );
+    }
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone)]
@@ -670,9 +700,12 @@ fn default_service_alias(image: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceReadiness, ServiceState, parse_service_state, readiness_from_state,
+        ServiceReadiness, ServiceRuntime, ServiceState, parse_service_state, readiness_from_state,
         should_retry_container_network_error,
     };
+    use crate::EngineKind;
+    use crate::model::ServiceSpec;
+    use std::collections::HashMap;
 
     #[test]
     fn retries_container_network_xpc_timeouts() {
@@ -776,5 +809,86 @@ mod tests {
             ServiceReadiness::Failed(detail) => assert!(detail.contains("unhealthy")),
             other => panic!("expected failed readiness, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn aliases_for_service_preserves_multiple_unique_aliases() {
+        let mut runtime = ServiceRuntime {
+            engine: EngineKind::Docker,
+            network: "net".into(),
+            containers: Vec::new(),
+            link_env: Vec::new(),
+            claimed_aliases: Default::default(),
+        };
+        let service = ServiceSpec {
+            image: "redis:7".into(),
+            aliases: vec!["cache".into(), "redis".into()],
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        let aliases = runtime
+            .aliases_for_service(0, &service)
+            .expect("aliases resolve");
+
+        assert_eq!(aliases, vec!["cache", "redis"]);
+    }
+
+    #[test]
+    fn aliases_for_service_falls_back_when_aliases_conflict() {
+        let mut runtime = ServiceRuntime {
+            engine: EngineKind::Docker,
+            network: "net".into(),
+            containers: Vec::new(),
+            link_env: Vec::new(),
+            claimed_aliases: Default::default(),
+        };
+        let first = ServiceSpec {
+            image: "redis:7".into(),
+            aliases: vec!["cache".into()],
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+        let second = ServiceSpec {
+            image: "postgres:16".into(),
+            aliases: vec!["cache".into()],
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        assert_eq!(
+            runtime.aliases_for_service(0, &first).unwrap(),
+            vec!["cache"]
+        );
+        assert_eq!(
+            runtime.aliases_for_service(1, &second).unwrap(),
+            vec!["svc-1"]
+        );
+    }
+
+    #[test]
+    fn aliases_for_service_rejects_invalid_aliases() {
+        let mut runtime = ServiceRuntime {
+            engine: EngineKind::Docker,
+            network: "net".into(),
+            containers: Vec::new(),
+            link_env: Vec::new(),
+            claimed_aliases: Default::default(),
+        };
+        let service = ServiceSpec {
+            image: "redis:7".into(),
+            aliases: vec!["bad_alias".into()],
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        let err = runtime
+            .aliases_for_service(0, &service)
+            .expect_err("alias must error");
+        assert!(err.to_string().contains("unsupported characters"));
     }
 }

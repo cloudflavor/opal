@@ -103,7 +103,7 @@ pub struct ExternalDependency {
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     pub image: String,
-    pub alias: Option<String>,
+    pub aliases: Vec<String>,
     pub entrypoint: Vec<String>,
     pub command: Vec<String>,
     pub variables: HashMap<String, String>,

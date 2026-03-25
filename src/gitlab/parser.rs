@@ -851,7 +851,7 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
         let config = match raw {
             RawService::Simple(image) => ServiceConfig {
                 image,
-                alias: None,
+                aliases: Vec::new(),
                 entrypoint: Vec::new(),
                 command: Vec::new(),
                 variables: HashMap::new(),
@@ -1642,11 +1642,37 @@ impl RawServiceConfig {
             .ok_or_else(|| anyhow!("service entry must specify an image (name)"))?;
         Ok(ServiceConfig {
             image,
-            alias: self.alias,
+            aliases: parse_service_aliases(self.alias),
             entrypoint: self.entrypoint.into_vec(),
             command: self.command.into_vec(),
             variables: self.variables,
         })
+    }
+}
+
+fn parse_service_aliases(alias: Option<String>) -> Vec<String> {
+    alias
+        .into_iter()
+        .flat_map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod service_alias_tests {
+    use super::parse_service_aliases;
+
+    #[test]
+    fn parse_service_aliases_splits_comma_separated_values() {
+        assert_eq!(
+            parse_service_aliases(Some("db,postgres,pg".into())),
+            vec!["db", "postgres", "pg"]
+        );
     }
 }
 

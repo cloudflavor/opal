@@ -613,8 +613,8 @@ fn plan_service_lines(job: &crate::model::JobSpec) -> Vec<String> {
         .iter()
         .map(|service| {
             let mut parts = vec![service.image.clone()];
-            if let Some(alias) = &service.alias {
-                parts.push(format!("alias {alias}"));
+            if !service.aliases.is_empty() {
+                parts.push(format!("alias {}", service.aliases.join(",")));
             }
             if !service.entrypoint.is_empty() {
                 parts.push(format!("entrypoint [{}]", service.entrypoint.join(", ")));

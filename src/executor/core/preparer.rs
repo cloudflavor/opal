@@ -400,7 +400,7 @@ mod tests {
     fn service(image: &str, alias: Option<&str>) -> ServiceSpec {
         ServiceSpec {
             image: image.into(),
-            alias: alias.map(str::to_string),
+            aliases: alias.into_iter().map(str::to_string).collect(),
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
