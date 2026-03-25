@@ -246,6 +246,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selected_jobs_include_upstream_dependencies() {
+        let pipeline = PipelineSpec::from_path(Path::new(
+            "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
+        ))
+        .expect("pipeline loads");
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+            ]),
+            false,
+        );
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
+        let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
+            .expect("execution plan builds")
+            .select_jobs(&["package-linux".into()])
+            .expect("selection succeeds");
+
+        assert!(plan.nodes.contains_key("package-linux"));
+        assert!(plan.nodes.contains_key("prepare-artifacts"));
+        assert!(plan.nodes.contains_key("build-matrix: [linux, release]"));
+        assert!(!plan.nodes.contains_key("smoke-tests"));
+    }
+
+    #[test]
+    fn selecting_base_name_includes_all_variants() {
+        let pipeline = PipelineSpec::from_path(Path::new(
+            "pipelines/tests/control-flow-parity.gitlab-ci.yml",
+        ))
+        .expect("pipeline loads");
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+            ]),
+            false,
+        );
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
+        let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
+            .expect("execution plan builds")
+            .select_jobs(&["parallel-fanout".into()])
+            .expect("selection succeeds");
+
+        assert!(plan.nodes.contains_key("parallel-fanout: [1]"));
+        assert!(plan.nodes.contains_key("parallel-fanout: [2]"));
+        assert_eq!(plan.nodes.len(), 2);
+    }
+
     fn job(name: &str) -> JobSpec {
         JobSpec {
             name: name.into(),
