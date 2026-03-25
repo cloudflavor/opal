@@ -34,6 +34,9 @@ SCENARIOS_JSON='[
   {"name":"includes-parity","pipeline":"pipelines/tests/includes-parity.gitlab-ci.yml","env":"INCLUDE_DYNAMIC_PATH=/pipelines/tests/includes/dynamic.yml","command":"plan","opal_args":""},
   {"name":"top-level-branch","pipeline":"pipelines/tests/top-level-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/top-level CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"top-level-release-skip","pipeline":"pipelines/tests/top-level-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=release/1.0 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"only-except-schedule","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule","command":"plan","opal_args":""},
+  {"name":"only-except-mr","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=merge_request_event","command":"plan","opal_args":""},
+  {"name":"only-except-api","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=api","command":"plan","opal_args":""},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"resources-plan","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -245,6 +248,21 @@ verify_scenario_log() {
       ;;
     top-level-release-skip)
       assert_log_contains "${log_file}" "pipeline skipped: top-level only/except filters exclude this ref"
+      ;;
+    only-except-schedule)
+      assert_log_contains "${log_file}" "schedule-only"
+      assert_log_not_contains "${log_file}" "except-schedules"
+      assert_log_not_contains "${log_file}" "push-only"
+      ;;
+    only-except-mr)
+      assert_log_contains "${log_file}" "mr-only"
+      assert_log_contains "${log_file}" "except-schedules"
+      assert_log_not_contains "${log_file}" "schedule-only"
+      ;;
+    only-except-api)
+      assert_log_contains "${log_file}" "api-only"
+      assert_log_contains "${log_file}" "except-schedules"
+      assert_log_not_contains "${log_file}" "mr-only"
       ;;
     services-and-tags)
       assert_log_contains "${log_file}" "services: • docker.io/library/postgres:16"

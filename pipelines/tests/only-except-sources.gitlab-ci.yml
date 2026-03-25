@@ -1,0 +1,54 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+
+schedule-only:
+  stage: verify
+  only:
+    - schedules
+  script:
+    - echo "schedule only"
+
+mr-only:
+  stage: verify
+  only:
+    - merge_requests
+  script:
+    - echo "mr only"
+
+push-only:
+  stage: verify
+  only:
+    - pushes
+  script:
+    - echo "push only"
+
+api-only:
+  stage: verify
+  only:
+    - api
+  script:
+    - echo "api only"
+
+trigger-only:
+  stage: verify
+  only:
+    - triggers
+  script:
+    - echo "trigger only"
+
+pipeline-only:
+  stage: verify
+  only:
+    - pipelines
+  script:
+    - echo "pipeline only"
+
+except-schedules:
+  stage: verify
+  except:
+    - schedules
+  script:
+    - echo "not schedule"

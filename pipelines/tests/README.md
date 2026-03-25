@@ -21,6 +21,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `rules-compare-to.gitlab-ci.yml` – Validates `rules:changes:compare_to` against a temporary git worktree created by the harness.
 - `needs-surface.gitlab-ci.yml` – Validates `needs:artifacts: false` and matrix-targeted `needs.parallel` planner behavior.
 - `top-level-parity.gitlab-ci.yml` – Validates top-level `only` / `except` pipeline filtering and top-level cache inheritance.
+- `only-except-sources.gitlab-ci.yml` – Validates legacy `only` / `except` pipeline-source selectors such as `schedules`, `merge_requests`, `pushes`, `api`, `triggers`, and `pipelines`.
 - `filters.gitlab-ci.yml` – Tests `workflow`, `only`, `except`, tag-only jobs, and `rules:changes`/`rules:if` combos.
 - `environments.gitlab-ci.yml` – Covers `environment` metadata, `on_stop`, manual stop jobs, `auto_stop_in`, and `action` values `stop`, `prepare`, `verify`, and `access`.
 - `tag-ambiguity.gitlab-ci.yml` – Ensures Opal fails fast when multiple git tags point to `HEAD` and no explicit `CI_COMMIT_TAG`/`GIT_COMMIT_TAG` is provided.
