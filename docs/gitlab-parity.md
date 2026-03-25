@@ -159,17 +159,54 @@ These features exist in Opal, but they do not match GitLab completely.
 - `inherit:default` is subset-only.
   Opal only models inheritance for `before_script` and `after_script`.
 - `only` / `except` are narrower than GitLab.
-  Opal matches branch names, tag names, exact refs, and regexes. GitLab supports a broader filter language.
+  Opal accepts only string/list filter values and matches only:
+  - exact ref names
+  - regex ref filters
+  - `branches`
+  - `tags`
+  Unsupported `only` / `except` forms in Opal today include:
+  - variable-based selectors
+  - change-based selectors
+  - Kubernetes-based selectors
+  - any other GitLab selector outside the list above
 - `artifacts` is subset-only.
-  Opal models `paths`, `when`, `exclude`, and `untracked`, but not the broader artifacts feature set from GitLab.
+  Opal models only:
+  - `paths`
+  - `when`
+  - `exclude`
+  - `untracked`
+  Unsupported artifact keys in Opal today are:
+  - `name`
+  - `expose_as`
+  - `expire_in`
+  - `public`
+  - `access`
+  - `reports`
 - `cache` is subset-only.
-  Opal models string keys and `key:files` + optional `prefix`, plus `paths`, `policy`, and `fallback_keys`, but not the full GitLab cache surface.
+  Opal models only:
+  - `key`
+  - `key:files`
+  - `key:prefix`
+  - `paths`
+  - `policy`
+  - `fallback_keys`
+  Unsupported cache keys in Opal today are:
+  - `unprotect`
+  - any other cache subkey outside the list above
   Current behavior follows GitLab's practical shape for local runs:
   - up to two `key:files` entries
   - wildcard file patterns
   - non-existent files are ignored
   - if no files are present, the key falls back to `default` (or `<prefix>-default` when prefix is set)
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
+  Opal supports only:
+  - string form
+  - mapping form with `name` / `image`
+  - `alias`
+  - `entrypoint`
+  - `command`
+  - `variables`
+  Unsupported service syntax in Opal today is any service subkey outside the list above.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
   Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script. For engines without healthchecks, Opal requires a brief stable-running confirmation before treating the service as ready. This still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
 - `interruptible` is partially modeled.
@@ -200,6 +237,11 @@ These features exist in Opal, but they do not match GitLab completely.
   GitLab-specific failure sources such as `stale_schedule` and `archived_failure` are rare in Opal's local execution model, but retry matching now recognizes them when those failure states are surfaced.
 - `environment.action` is subset-only.
   Opal explicitly models `stop`; other action values are currently treated like the default start action for local metadata/display purposes.
+  Unsupported environment behavior in Opal today includes:
+  - `action: prepare`
+  - `action: verify`
+  - `action: access`
+  - `environment:kubernetes`
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `workflow` support is limited to `workflow:rules`.
@@ -210,6 +252,32 @@ These features exist in Opal, but they do not match GitLab completely.
 ## Best Fit For Local Development
 
 GitLab's YAML surface is much broader than what is worth mirroring locally. The best local-development targets are the features that change which jobs run, what data they see, and whether those jobs are fast and trustworthy on one machine.
+
+## Which Gaps Matter Locally
+
+Some unsupported GitLab features are good local-dev candidates because they change what runs, what data jobs see, or whether a local failure is trustworthy. Others are mostly GitLab control-plane or UI behavior and have low value in a single-checkout local runner.
+
+High-value local candidates:
+
+- `artifacts:name`
+- `artifacts:expire_in` (if we want local retention metadata or cleanup behavior)
+- limited `artifacts:reports`, especially `reports:dotenv`
+- broader `only` / `except` selectors when real repository pipelines rely on them
+- `environment.action` values beyond `stop`:
+  - `prepare`
+  - `verify`
+  - `access`
+- service lifecycle and readiness fidelity
+
+Mostly GitLab control-plane or UI behavior:
+
+- `artifacts:expose_as`
+- `artifacts:public`
+- `artifacts:access`
+- most `artifacts:reports` behavior that exists to feed GitLab UI/reporting features
+- `cache:unprotect`
+- runner `tags` scheduling semantics
+- `environment:kubernetes`
 
 High-value local-first features:
 
