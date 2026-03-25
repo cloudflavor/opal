@@ -117,8 +117,10 @@ Last updated: 2026-03-26
 ### Job data and runtime metadata
 
 - `artifacts`
+  - `name`
   - `paths`
   - `when`
+  - `expire_in`
   - `exclude`
   - `untracked`
   - `reports`
@@ -184,15 +186,15 @@ These features exist in Opal, but they do not match GitLab completely.
   - any other GitLab selector outside the list above
 - `artifacts` is subset-only.
   Opal models only:
+  - `name`
   - `paths`
   - `when`
+  - `expire_in`
   - `exclude`
   - `untracked`
   - `reports:dotenv`
   Unsupported artifact keys in Opal today are:
-  - `name`
   - `expose_as`
-  - `expire_in`
   - `public`
   - `access`
   - artifact reports other than `reports:dotenv`
@@ -274,8 +276,6 @@ Some unsupported GitLab features are good local-dev candidates because they chan
 
 High-value local candidates:
 
-- `artifacts:name`
-- `artifacts:expire_in` (if we want local retention metadata or cleanup behavior)
 - additional `artifacts:reports` coverage beyond `reports:dotenv`
 - broader `only` / `except` selectors when real repository pipelines rely on them
 - service lifecycle and readiness fidelity
