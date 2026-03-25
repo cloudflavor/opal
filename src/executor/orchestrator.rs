@@ -11,6 +11,21 @@ use tokio::{
     task, time as tokio_time,
 };
 
+fn interruptible_running_jobs(plan: &ExecutionPlan, running: &HashSet<String>) -> Vec<String> {
+    let mut names = running
+        .iter()
+        .filter(|name| {
+            plan.nodes
+                .get(*name)
+                .map(|planned| planned.instance.interruptible)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| plan.order_index.get(name).copied().unwrap_or(usize::MAX));
+    names
+}
+
 pub(crate) async fn execute_plan(
     exec: &ExecutorCore,
     plan: Arc<ExecutionPlan>,
@@ -376,7 +391,9 @@ pub(crate) async fn execute_plan(
                     if halt_error.is_none() {
                         halt_error = Some(anyhow!("pipeline aborted by user"));
                     }
-                    exec.cancel_all_running_jobs();
+                    for name in interruptible_running_jobs(plan.as_ref(), &running) {
+                        exec.cancel_running_job(&name);
+                    }
                     ready.clear();
                     waiting_on_failure.clear();
                     delayed_pending.clear();
@@ -781,12 +798,12 @@ fn release_resource_lock(
 
 #[cfg(test)]
 mod tests {
-    use super::{release_resource_lock, retry_allowed};
+    use super::{interruptible_running_jobs, release_resource_lock, retry_allowed};
     use crate::compiler::JobInstance;
-    use crate::execution_plan::ExecutableJob;
+    use crate::execution_plan::{ExecutableJob, ExecutionPlan};
     use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
     use crate::pipeline::{JobFailureKind, RuleEvaluation, RuleWhen};
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::path::PathBuf;
 
     #[test]
@@ -914,6 +931,65 @@ mod tests {
             Some(JobFailureKind::ScriptFailure),
             Some(137)
         ));
+    }
+
+    #[test]
+    fn interruptible_running_jobs_selects_only_interruptible_nodes() {
+        let plan = ExecutionPlan {
+            ordered: vec!["build".into(), "deploy".into()],
+            nodes: HashMap::from([
+                ("build".into(), executable_job("build", true, "build", 0)),
+                (
+                    "deploy".into(),
+                    executable_job("deploy", false, "deploy", 1),
+                ),
+            ]),
+            dependents: HashMap::new(),
+            order_index: HashMap::from([("build".into(), 0), ("deploy".into(), 1)]),
+            variants: HashMap::new(),
+        };
+        let running = HashSet::from(["build".to_string(), "deploy".to_string()]);
+
+        assert_eq!(interruptible_running_jobs(&plan, &running), vec!["build"]);
+    }
+
+    #[test]
+    fn interruptible_running_jobs_respects_plan_order() {
+        let plan = ExecutionPlan {
+            ordered: vec!["test".into(), "build".into()],
+            nodes: HashMap::from([
+                ("build".into(), executable_job("build", true, "build", 1)),
+                ("test".into(), executable_job("test", true, "test", 0)),
+            ]),
+            dependents: HashMap::new(),
+            order_index: HashMap::from([("test".into(), 0), ("build".into(), 1)]),
+            variants: HashMap::new(),
+        };
+        let running = HashSet::from(["build".to_string(), "test".to_string()]);
+
+        assert_eq!(
+            interruptible_running_jobs(&plan, &running),
+            vec!["test", "build"]
+        );
+    }
+
+    fn executable_job(name: &str, interruptible: bool, stage: &str, order: usize) -> ExecutableJob {
+        let mut job = job(name);
+        job.interruptible = interruptible;
+        ExecutableJob {
+            instance: JobInstance {
+                job,
+                stage_name: stage.into(),
+                dependencies: Vec::new(),
+                rule: RuleEvaluation::default(),
+                timeout: None,
+                retry: RetryPolicySpec::default(),
+                interruptible,
+                resource_group: None,
+            },
+            log_path: PathBuf::from(format!("/tmp/{name}-{order}.log")),
+            log_hash: format!("hash-{name}-{order}"),
+        }
     }
 
     fn job(name: &str) -> JobSpec {

@@ -410,13 +410,6 @@ impl ExecutorCore {
         }
     }
 
-    pub(crate) fn cancel_all_running_jobs(&self) {
-        for (job, container) in self.runtime_state.running_containers() {
-            self.runtime_state.mark_job_cancelled(&job);
-            self.kill_container(&job, &container);
-        }
-    }
-
     pub(crate) fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
         process::execute(self, ctx)
     }
@@ -493,8 +486,8 @@ impl ExecutorCore {
         paths::to_container_path(
             host_path,
             &[
-                (&*self.config.workdir, &*self.container_workdir),
                 (&*self.session_dir, &*self.container_session_dir),
+                (&*self.config.workdir, &*self.container_workdir),
             ],
         )
     }

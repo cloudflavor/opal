@@ -172,8 +172,9 @@ These features exist in Opal, but they do not match GitLab completely.
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
   Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script, but this still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
-- `interruptible` is parsed, but not modeled with GitLab's execution semantics.
-  Opal records the flag on jobs, but pipeline abort/cancel behavior does not currently distinguish interruptible from non-interruptible jobs the way GitLab Runner and GitLab orchestration do.
+- `interruptible` is partially modeled.
+  Opal now applies `interruptible` during local pipeline abort flows by cancelling running jobs marked `interruptible: true` while allowing running non-interruptible jobs to finish.
+  This is a local approximation of GitLab's auto-cancel behavior, not a full implementation of GitLab's redundant-pipeline and `workflow:auto_cancel` semantics.
 - `resource_group` is local-only.
   Opal serializes matching jobs within a single local run, but this is a process-local lock rather than GitLab's distributed coordination across runners and pipelines.
 - `needs:project` is partial runtime support.
@@ -280,7 +281,7 @@ It is ordered by what is most likely to unblock real repository configs and redu
 ### Priority 2: Runtime control-flow fidelity (high impact)
 
 - Keep refining failure classification so GitLab retry conditions map to local runtime errors more precisely.
-- Model `interruptible` with real local execution consequences during abort/cancel flows instead of treating it as metadata only.
+- Extend `interruptible` beyond the current abort-flow approximation toward fuller `workflow:auto_cancel` parity where practical.
 - Broaden `environment.action` handling beyond the current `stop` subset where practical for local metadata and UX.
 - Tighten `needs:project` runtime behavior and error reporting so credential/network requirements are explicit and easier to diagnose.
 

@@ -38,13 +38,6 @@ impl RuntimeState {
         map.get(job_name).cloned()
     }
 
-    pub(super) fn running_containers(&self) -> Vec<(String, String)> {
-        match self.running_containers.lock() {
-            Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
     pub(super) fn mark_job_cancelled(&self, job_name: &str) {
         if let Ok(mut cancelled) = self.cancelled_jobs.lock() {
             cancelled.insert(job_name.to_string());
