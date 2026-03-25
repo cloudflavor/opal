@@ -43,6 +43,7 @@ SCENARIOS_JSON='[
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-key-files","pipeline":"pipelines/tests/cache-key-files.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
+  {"name":"dotenv-reports","pipeline":"pipelines/tests/dotenv-reports.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -170,6 +171,12 @@ verify_scenario_log() {
     cache-fallback)
       assert_log_contains "${log_file}" "seeded default branch cache"
       assert_log_contains "${log_file}" "fallback cache main-seed"
+      ;;
+    dotenv-reports)
+      assert_log_contains "${log_file}" "needs dotenv v1.2.3"
+      assert_log_contains "${log_file}" "dependencies dotenv v1.2.3"
+      assert_log_contains "${log_file}" "dotenv blocked by needs artifacts false"
+      assert_log_contains "${log_file}" "dotenv blocked by empty dependencies"
       ;;
     rules-schedule)
       assert_log_contains "${log_file}" "scheduled-maintenance"

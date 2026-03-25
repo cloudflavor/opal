@@ -16,6 +16,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.
 - `retry-parity.gitlab-ci.yml` – Validates retry reruns for both `retry:when: script_failure` and `retry:exit_codes`, using the mounted Opal session directory so the first attempt fails and the retry succeeds.
+- `dotenv-reports.gitlab-ci.yml` – Validates `artifacts:reports:dotenv` propagation through both `needs` and `dependencies`, and verifies that `needs:artifacts: false` plus `dependencies: []` block those variables.
 - `control-flow-parity.gitlab-ci.yml` – Validates numeric `parallel`, top-level `image`/`variables`, rule-scoped `variables`, and `when: on_failure` behavior.
 - `rules-compare-to.gitlab-ci.yml` – Validates `rules:changes:compare_to` against a temporary git worktree created by the harness.
 - `needs-surface.gitlab-ci.yml` – Validates `needs:artifacts: false` and matrix-targeted `needs.parallel` planner behavior.

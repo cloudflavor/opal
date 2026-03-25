@@ -1,0 +1,50 @@
+stages:
+  - build
+  - test
+  - deploy
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+build-vars:
+  stage: build
+  script:
+    - mkdir -p tests-temp/dotenv
+    - echo "BUILD_VERSION=v1.2.3" > tests-temp/dotenv/build.env
+  artifacts:
+    reports:
+      dotenv: tests-temp/dotenv/build.env
+
+needs-dotenv:
+  stage: test
+  needs:
+    - build-vars
+  script:
+    - test "${BUILD_VERSION}" = "v1.2.3"
+    - echo "needs dotenv ${BUILD_VERSION}"
+
+dependencies-dotenv:
+  stage: test
+  dependencies:
+    - build-vars
+  script:
+    - test "${BUILD_VERSION}" = "v1.2.3"
+    - echo "dependencies dotenv ${BUILD_VERSION}"
+
+blocked-needs-dotenv:
+  stage: deploy
+  needs:
+    - job: build-vars
+      artifacts: false
+  script:
+    - test -z "${BUILD_VERSION:-}"
+    - echo "dotenv blocked by needs artifacts false"
+
+blocked-dependencies-dotenv:
+  stage: deploy
+  dependencies: []
+  script:
+    - test -z "${BUILD_VERSION:-}"
+    - echo "dotenv blocked by empty dependencies"

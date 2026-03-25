@@ -95,6 +95,7 @@ e2e-tests:
       services-readiness-failure
       cache-policies
       cache-fallback
+      dotenv-reports
       secret-masking
   artifacts:
     when: always
