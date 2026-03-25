@@ -42,6 +42,7 @@ SCENARIOS_JSON='[
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"resources-plan","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
+  {"name":"services-invalid-alias","pipeline":"pipelines/tests/services-invalid-alias.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"unsupported characters"},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"control-flow-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"intentional-failure"},
   {"name":"job-select-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --job rule-variables"},
@@ -291,7 +292,7 @@ verify_scenario_log() {
       ;;
     services-and-tags)
       assert_log_contains "${log_file}" "services: • docker.io/library/postgres:16"
-      assert_log_contains "${log_file}" "alias cache"
+      assert_log_contains "${log_file}" "alias cache,redis"
       assert_log_contains "${log_file}" "entrypoint [redis-server]"
       assert_log_contains "${log_file}" "command [--save, , --appendonly, no]"
       assert_log_contains "${log_file}" "variables REDIS_PASSWORD"

@@ -11,7 +11,8 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `include-surface.gitlab-ci.yml` – Exercises additional local include forms: bare string include entries and singular `include:file` entries.
 - `include-remote-unsupported.gitlab-ci.yml` / `include-template-unsupported.gitlab-ci.yml` / `include-component-unsupported.gitlab-ci.yml` – Ensure unsupported non-local include types fail explicitly.
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
-- `services-and-tags.gitlab-ci.yml` – Validates service string/mapping forms plus informational runner tags in planner output.
+- `services-and-tags.gitlab-ci.yml` – Validates service string/mapping forms, multiple aliases, and informational runner tags in planner output.
+- `services-invalid-alias.gitlab-ci.yml` – Ensures invalid service aliases fail explicitly instead of being silently normalized.
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.
 - `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.

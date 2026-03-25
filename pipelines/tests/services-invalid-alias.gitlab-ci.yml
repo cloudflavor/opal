@@ -1,0 +1,13 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+invalid-service-alias:
+  stage: test
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: bad_alias
+  script:
+    - echo "should not run"
