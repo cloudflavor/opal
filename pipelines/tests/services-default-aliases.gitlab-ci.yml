@@ -1,0 +1,14 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+
+default-service-aliases:
+  stage: verify
+  services:
+    - library/redis:7.2
+  script:
+    - test -n "${LIBRARY__REDIS_PORT_6379_TCP_ADDR:-}"
+    - test -n "${LIBRARY_REDIS_PORT_6379_TCP_ADDR:-}"
+    - echo "default aliases ok"
