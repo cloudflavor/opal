@@ -66,8 +66,10 @@ struct JobResourceInfo {
 }
 
 impl ExecutorCore {
+    // TODO: this shit does way too much, hard to test if you add fs::create inside of it
     pub fn new(config: ExecutorConfig) -> Result<Self> {
-        let pipeline = PipelineSpec::from_path(&config.pipeline)?;
+        let pipeline =
+            PipelineSpec::from_path_with_gitlab(&config.pipeline, config.gitlab.as_ref())?;
         let run_id = generate_run_id(&config);
         let runs_root = runtime::runs_root();
         fs::create_dir_all(&runs_root)
@@ -265,6 +267,7 @@ impl ExecutorCore {
         plan.nodes
             .values()
             .map(|planned| {
+                // TODO: 50 lines of code inside a map, when this explodes, what happens - refactor
                 let artifact_dir = if planned.instance.job.artifacts.paths.is_empty() {
                     None
                 } else {

@@ -1,0 +1,4 @@
+root-fragment-job:
+  stage: test
+  script:
+    - echo "include root fragment"

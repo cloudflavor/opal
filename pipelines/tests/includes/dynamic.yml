@@ -1,0 +1,4 @@
+dynamic-include-job:
+  stage: test
+  script:
+    - echo "include dynamic env"

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::str::FromStr;
-
 use structopt::StructOpt;
 
 pub mod compiler;
@@ -111,6 +110,14 @@ pub struct PlanArgs {
     #[structopt(short, long)]
     /// Context directory (defaults to current working directory)
     pub workdir: Option<PathBuf>,
+
+    #[structopt(long = "gitlab-base-url", env = "OPAL_GITLAB_BASE_URL")]
+    /// Base URL for GitLab API (default: https://gitlab.com)
+    pub gitlab_base_url: Option<String>,
+
+    #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
+    /// Personal access token used when resolving cross-project includes
+    pub gitlab_token: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -8,6 +8,17 @@ use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 
+pub fn build_include_lookup(
+    workdir: &Path,
+    host_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut lookup = host_env.clone();
+    for (key, value) in inferred_ci_env(workdir, host_env) {
+        lookup.entry(key).or_insert(value);
+    }
+    lookup
+}
+
 pub fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
     if patterns.is_empty() {
         return Ok(Vec::new());
@@ -301,6 +312,7 @@ fn insert_inferred_env<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
     use crate::git::test_support::init_repo_with_commit_and_tag;
     use crate::model::{
         ArtifactSpec, EnvironmentActionSpec, EnvironmentSpec, JobSpec, RetryPolicySpec,
@@ -353,8 +365,8 @@ mod tests {
             &HashMap::from([("CI_PROJECT_DIR".into(), "/workspace".into())]),
         );
         let map: HashMap<_, _> = env.into_iter().collect();
-        assert_eq!(map.get("CI_PROJECT_DIR").unwrap(), "/workspace");
-        assert_eq!(map.get("CARGO_HOME").unwrap(), "/workspace/.cargo");
+        assert_eq!(map.get("CI_PROJECT_DIR").map(String::as_str), Some("/workspace"));
+        assert_eq!(map.get("CARGO_HOME").map(String::as_str), Some("/workspace/.cargo"));
     }
 
     #[test]
@@ -407,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn infers_tagged_ref_vars_for_job_environment() {
-        let dir = init_repo_with_commit_and_tag("v1.2.3");
+    fn infers_tagged_ref_vars_for_job_environment() -> Result<()> {
+        let dir = init_repo_with_commit_and_tag("v1.2.3")?;
 
         let job = JobSpec {
             name: "release-artifacts".into(),
@@ -456,11 +468,12 @@ mod tests {
             map.get("CI_COMMIT_REF_NAME").map(String::as_str),
             Some("v1.2.3")
         );
+        Ok(())
     }
 
     #[test]
-    fn tagged_job_environment_does_not_infer_branch() {
-        let dir = init_repo_with_commit_and_tag("v1.2.3");
+    fn tagged_job_environment_does_not_infer_branch() -> Result<()> {
+        let dir = init_repo_with_commit_and_tag("v1.2.3")?;
 
         let job = JobSpec {
             name: "release-artifacts".into(),
@@ -508,15 +521,16 @@ mod tests {
         let map: HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get("CI_COMMIT_TAG").map(String::as_str), Some("v1.2.3"));
         assert!(!map.contains_key("CI_COMMIT_BRANCH"));
+        Ok(())
     }
 
     #[test]
-    fn secret_file_env_uses_absolute_container_path() {
+    fn secret_file_env_uses_absolute_container_path() -> Result<()> {
         let temp_root = temp_path("env-secret-file");
         let secrets_root = temp_root.join(".opal").join("env");
-        fs::create_dir_all(&secrets_root).expect("create secrets dir");
-        fs::write(secrets_root.join("API_TOKEN"), "super-secret").expect("write secret");
-        let secrets = SecretsStore::load(&temp_root).expect("load secrets");
+        fs::create_dir_all(&secrets_root)?;
+        fs::write(secrets_root.join("API_TOKEN"), "super-secret")?;
+        let secrets = SecretsStore::load(&temp_root)?;
         let job = JobSpec {
             name: "lint".into(),
             stage: "test".into(),
@@ -564,6 +578,7 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+        Ok(())
     }
 
     #[test]
@@ -622,12 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn build_job_env_includes_legacy_dotopal_secrets() {
+    fn build_job_env_includes_legacy_dotopal_secrets() -> Result<()> {
         let temp_root = temp_path("env-legacy-secret-file");
         let dotopal = temp_root.join(".opal");
-        fs::create_dir_all(&dotopal).expect("create .opal dir");
-        fs::write(dotopal.join("QUAY_USERNAME"), "robot-user").expect("write secret");
-        let secrets = SecretsStore::load(&temp_root).expect("load secrets");
+        fs::create_dir_all(&dotopal)?;
+        fs::write(dotopal.join("QUAY_USERNAME"), "robot-user")?;
+        let secrets = SecretsStore::load(&temp_root)?;
         let job = JobSpec {
             name: "container-release".into(),
             stage: "publish".into(),
@@ -675,6 +690,7 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+        Ok(())
     }
 
     fn temp_path(prefix: &str) -> PathBuf {

@@ -1,0 +1,4 @@
+glob-alpha-job:
+  stage: test
+  script:
+    - echo "include glob alpha"

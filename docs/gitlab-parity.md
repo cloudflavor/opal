@@ -4,7 +4,7 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
-Last updated: 2026-03-21
+Last updated: 2026-03-24
 
 ## Recognized By Opal
 
@@ -21,6 +21,7 @@ Last updated: 2026-03-21
   - `timeout`
   - `retry`
   - `interruptible`
+- top-level `cache`
 - top-level `variables`
 - top-level `image`
 - top-level `workflow:rules`
@@ -39,7 +40,18 @@ Last updated: 2026-03-21
     - `local:`
     - `file:`
     - `files:`
+    - `project:`
+      - requires GitLab credentials/configuration
   - all supported include forms are resolved from the local filesystem
+  - local include paths are resolved from the repository root
+  - local include wildcard paths such as `configs/*.yml`
+  - parse-time variable expansion in local include paths
+  - included local files must be `.yml` or `.yaml`
+  - nested direct `include:local` inside fetched `include:project` files follows the included project context
+  - unsupported non-local include forms fail explicitly:
+    - `remote:`
+    - `template:`
+    - `component:`
 
 ### Job execution and filtering
 
@@ -48,6 +60,11 @@ Last updated: 2026-03-21
 - `after_script`
 - `when`
   - `manual`
+  - `delayed`
+  - `never`
+  - `always`
+  - `on_failure`
+  - `on_success`
 - `rules`
   - `if`
   - `changes`
@@ -87,6 +104,7 @@ Last updated: 2026-03-21
   - `artifacts: true|false`
   - `optional: true`
   - `needs:project` with `ref`
+    - requires GitLab credentials at runtime for cross-project artifact download
   - matrix-targeted needs
   - inline matrix variant references such as `build: [linux, release]`
 - `dependencies`
@@ -120,6 +138,7 @@ Last updated: 2026-03-21
   - `url`
   - `on_stop`
   - `action`
+    - currently `stop` is modeled explicitly; other values behave like the default start action
   - `auto_stop_in`
 
 ## Partial Or Divergent Support
@@ -127,7 +146,12 @@ Last updated: 2026-03-21
 These features exist in Opal, but they do not match GitLab completely.
 
 - `include` is local-only in practice.
-  GitLab supports many include sources; Opal only resolves local paths and local file lists.
+  GitLab supports many include sources; Opal fully resolves local paths and now has partial `include:project` support.
+  Opal accepts standalone plain `file:` / `files:` include entries as local filesystem conveniences when no non-local include type is present; this does not mirror GitLab's `include:project` semantics.
+  Opal expands include paths using environment available at parse time, which is useful locally and broadly matches GitLab's "include is evaluated before jobs" model, but it does not fully reproduce GitLab's exact server-side variable-availability rules.
+  `include:project` currently depends on explicit GitLab credentials/configuration, resolves files through the GitLab API into a local cache, and supports nested direct `include:local` resolution within the fetched project context.
+  Wildcard local includes inside fetched `include:project` configs are not yet supported.
+  Opal does not yet support other non-local include sources.
 - `default` is subset-only.
   Unknown default keys are ignored.
 - `inherit:default` is subset-only.
@@ -145,8 +169,25 @@ These features exist in Opal, but they do not match GitLab completely.
   - if no files are present, the key falls back to `default` (or `<prefix>-default` when prefix is set)
 - `services` are approximated through local container engines rather than matching GitLab Runner exactly.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
-  Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script, but this still does not reproduce all GitLab Runner wait-probe semantics.
-- `retry.when` is parsed, but execution behavior is not modeled with GitLab's full retry policy semantics.
+  Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script, but this still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
+- `interruptible` is parsed, but not modeled with GitLab's execution semantics.
+  Opal records the flag on jobs, but pipeline abort/cancel behavior does not currently distinguish interruptible from non-interruptible jobs the way GitLab Runner and GitLab orchestration do.
+- `resource_group` is local-only.
+  Opal serializes matching jobs within a single local run, but this is a process-local lock rather than GitLab's distributed coordination across runners and pipelines.
+- `needs:project` is partial runtime support.
+  Parsing and artifact mounting are implemented, but cross-project artifact download requires explicit GitLab credentials/configuration (`--gitlab-token`, optionally `--gitlab-base-url`) and network access to the GitLab API. Opal models artifact download only; it does not reproduce GitLab's server-side orchestration model.
+- `include:project` is partial runtime support.
+  Opal can resolve project includes when explicit GitLab credentials/configuration are provided, but this is currently a local fetch-and-cache approximation through the GitLab API rather than full GitLab server-side config resolution semantics.
+  Nested direct local includes within the fetched project are supported, but wildcard nested local includes are not yet.
+- `retry.when` is partially modeled.
+  Opal now applies `retry.when` at execution time for a useful local subset of failure classes:
+  - `script_failure`
+  - `job_execution_timeout`
+  - `runner_system_failure`
+  - `stuck_or_timeout_failure`
+  Other GitLab retry conditions are not yet classified or enforced.
+- `environment.action` is subset-only.
+  Opal explicitly models `stop`; other action values are currently treated like the default start action for local metadata/display purposes.
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `workflow` support is limited to `workflow:rules`.
@@ -172,7 +213,7 @@ High-value local-first features:
   Cache fidelity directly affects local feedback time for ecosystems such as Rust, Node, Python, and Java.
 - `services`
   Local databases, message brokers, and Docker sidecars are common reasons to reproduce CI jobs before pushing.
-- `environment`, `timeout`, `retry`, `interruptible`, and `resource_group`
+- `environment`, `timeout`, `retry`, and `resource_group`
   These affect local control flow and developer-visible behavior even without GitLab's remote orchestration layer.
 
 Lower-value or intentionally out-of-scope local targets:
@@ -210,26 +251,29 @@ GitLab's official CI/CD YAML surface is broader than the subset above. The main 
 ## Prioritized Parity Roadmap
 
 This is the practical order for closing the highest-value parity gaps for day-to-day repository pipelines.
+It is ordered by what is most likely to unblock real repository configs and reduce surprising local-vs-GitLab behavior.
 
-### Priority 1: CI composition parity (high impact)
+### Priority 1: Local composition correctness (highest impact)
 
-- Add non-local include sources where possible:
+- Align local composition semantics more closely with GitLab for repository-local pipelines:
+  - add any remaining high-value local include behavior that GitLab supports, especially where real repos rely on it
+  - keep `extends`, `!reference`, and local include merging behavior predictable and well-tested
+- Add non-local include sources where they materially unblock real-world configs:
   - project includes
-  - remote includes
   - template includes
-- Keep local-first behavior deterministic:
+  - remote includes
+- Keep non-local resolution deterministic for local use:
   - cache fetched includes locally
   - surface explicit errors when remote includes cannot be resolved
 
-### Priority 2: Control-flow parity (high impact)
+### Priority 2: Runtime control-flow fidelity (high impact)
 
-- Expand pipeline orchestration semantics:
-  - `trigger`
-  - child pipelines
-  - multi-project downstream pipelines
-- Improve retry behavior to more closely follow GitLab semantics for `retry.when` at execution time.
+- Extend `retry.when` coverage beyond the current local subset of classified failure types.
+- Model `interruptible` with real local execution consequences during abort/cancel flows instead of treating it as metadata only.
+- Broaden `environment.action` handling beyond the current `stop` subset where practical for local metadata and UX.
+- Tighten `needs:project` runtime behavior and error reporting so credential/network requirements are explicit and easier to diagnose.
 
-### Priority 3: Job keyword surface (medium impact)
+### Priority 3: Job keyword surface parity (medium impact)
 
 - Extend artifact feature coverage beyond `paths/when/exclude/untracked`.
 - Extend cache feature coverage beyond current key/path/policy/fallback subset.
@@ -238,7 +282,16 @@ This is the practical order for closing the highest-value parity gaps for day-to
 ### Priority 4: Runner-environment fidelity (medium impact)
 
 - Narrow execution differences between local engines and GitLab Runner service networking/isolation.
+- Improve local semantics for `resource_group` beyond per-process locking when feasible.
 - Continue improving log fidelity so failure context matches GitLab UI expectations more closely.
+
+### Priority 5: Distributed CI orchestration (lower local value, large scope)
+
+- Expand pipeline orchestration semantics:
+  - `trigger`
+  - child pipelines
+  - multi-project downstream pipelines
+- Treat these as later work unless a concrete local-debugging workflow requires them, because they add significant complexity and have lower single-checkout local-runner value than the priorities above.
 
 ## Practical Conclusion
 

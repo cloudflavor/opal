@@ -1,10 +1,10 @@
 # opal
 
-Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, and docs.
+Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, and docs.
 
 ## Features
 
-- `opal run` executes a pipeline (with `rules`, `workflow:rules`, `needs`, `dependencies`, artifacts, cache, services, and matrix jobs).
+- `opal run` executes a local-runner subset of GitLab pipelines (including `rules`, `workflow:rules`, `needs`, `dependencies`, artifacts, cache, services, and matrix jobs).
 - `opal plan` prints a dry-run execution plan without starting containers.
 - `opal view` opens the history/log browser for previous runs.
 - Ratatui UI with help overlays, embedded Markdown docs, and pager integration for plans/logs/files.
@@ -36,7 +36,7 @@ Useful `run` flags:
 - `-E, --env <GLOB>` (repeatable, for host env passthrough)
 - `--trace-scripts` (enables shell `set -x`)
 - `--no-tui`
-- `--gitlab-token` and `--gitlab-base-url` (for cross-project artifact downloads)
+- `--gitlab-token` and `--gitlab-base-url` (for cross-project `needs:project` artifact downloads; requires network access)
 
 Engine auto-selection behavior currently is:
 
@@ -73,11 +73,14 @@ Current fixture files:
 - `rules-playground.gitlab-ci.yml`
 - `includes-and-extends.gitlab-ci.yml`
 - `resources-and-services.gitlab-ci.yml`
+- `services-readiness-failure.gitlab-ci.yml`
 - `cache-policies.gitlab-ci.yml`
+- `cache-key-files.gitlab-ci.yml`
 - `cache-fallback.gitlab-ci.yml`
 - `filters.gitlab-ci.yml`
 - `environments.gitlab-ci.yml`
 - `secret-masking.gitlab-ci.yml`
+- `tag-ambiguity.gitlab-ci.yml`
 
 Run the suite with representative env permutations:
 
@@ -96,6 +99,8 @@ See `docs/` for deeper references:
 - `docs/plan.md`
 - `docs/pipeline.md`
 - `docs/gitlab-parity.md`
+
+Use `docs/gitlab-parity.md` for the exact supported surface and known divergences from GitLab Runner/GitLab CI.
 
 The `docs/` directory is embedded into the TUI help viewer at build time.
 

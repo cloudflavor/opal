@@ -1,11 +1,22 @@
 use anyhow::{Context, Result, anyhow};
 use git2::{DiffOptions, Repository, Status, StatusOptions};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn open_repository(workdir: &Path) -> Result<Repository> {
     Repository::discover(workdir)
         .with_context(|| format!("failed to open git repository from {}", workdir.display()))
+}
+
+pub fn repository_root(workdir: &Path) -> Result<PathBuf> {
+    let repo = open_repository(workdir)?;
+    if let Some(root) = repo.workdir() {
+        return Ok(root.to_path_buf());
+    }
+    repo.path()
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("repository has no working directory"))
 }
 
 fn resolve_commit<'repo>(repo: &'repo Repository, spec: &str) -> Result<git2::Commit<'repo>> {
@@ -218,110 +229,102 @@ fn path_to_string(path: &Path) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use anyhow::Result;
     use git2::{RepositoryInitOptions, Signature};
     use tempfile::{TempDir, tempdir};
 
-    pub(crate) fn init_repo_with_commit_and_tag(tag: &str) -> TempDir {
-        let dir = tempdir().expect("tempdir");
+    pub(crate) fn init_repo_with_commit_and_tag(tag: &str) -> Result<TempDir> {
+        let dir = tempdir()?;
         let mut init = RepositoryInitOptions::new();
         init.initial_head("main");
-        let repo = Repository::init_opts(dir.path(), &init).expect("init repository");
+        let repo = Repository::init_opts(dir.path(), &init)?;
 
-        std::fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
+        std::fs::write(dir.path().join("README.md"), "opal\n")?;
 
-        let mut index = repo.index().expect("open index");
-        index
-            .add_path(Path::new("README.md"))
-            .expect("add README to index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = Signature::now("Opal Tests", "opal@example.com").expect("signature");
+        let mut index = repo.index()?;
+        index.add_path(Path::new("README.md"))?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("Opal Tests", "opal@example.com")?;
         let oid = repo
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .expect("create commit");
-        let object = repo.find_object(oid, None).expect("find commit object");
-        repo.tag_lightweight(tag, &object, false)
-            .expect("create lightweight tag");
+            ?;
+        let object = repo.find_object(oid, None)?;
+        repo.tag_lightweight(tag, &object, false)?;
 
-        dir
+        Ok(dir)
     }
 
-    pub(crate) fn init_repo_with_commit_and_tags(tags: &[&str]) -> TempDir {
-        let dir = tempdir().expect("tempdir");
+    pub(crate) fn init_repo_with_commit_and_tags(tags: &[&str]) -> Result<TempDir> {
+        let dir = tempdir()?;
         let mut init = RepositoryInitOptions::new();
         init.initial_head("main");
-        let repo = Repository::init_opts(dir.path(), &init).expect("init repository");
+        let repo = Repository::init_opts(dir.path(), &init)?;
 
-        std::fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
+        std::fs::write(dir.path().join("README.md"), "opal\n")?;
 
-        let mut index = repo.index().expect("open index");
-        index
-            .add_path(Path::new("README.md"))
-            .expect("add README to index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = Signature::now("Opal Tests", "opal@example.com").expect("signature");
+        let mut index = repo.index()?;
+        index.add_path(Path::new("README.md"))?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("Opal Tests", "opal@example.com")?;
         let oid = repo
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .expect("create commit");
-        let object = repo.find_object(oid, None).expect("find commit object");
+            ?;
+        let object = repo.find_object(oid, None)?;
         for tag in tags {
-            repo.tag_lightweight(tag, &object, false)
-                .expect("create lightweight tag");
+            repo.tag_lightweight(tag, &object, false)?;
         }
 
-        dir
+        Ok(dir)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{current_tag, test_support::init_repo_with_commit_and_tags, untracked_files};
+    use anyhow::Result;
     use git2::{RepositoryInitOptions, Signature};
     use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
-    fn untracked_files_include_ignored_paths() {
-        let dir = tempdir().expect("tempdir");
+    fn untracked_files_include_ignored_paths() -> Result<()> {
+        let dir = tempdir()?;
         let mut init = RepositoryInitOptions::new();
         init.initial_head("main");
-        let repo = git2::Repository::init_opts(dir.path(), &init).expect("init repository");
+        let repo = git2::Repository::init_opts(dir.path(), &init)?;
 
-        std::fs::write(dir.path().join("README.md"), "opal\n").expect("write README");
-        std::fs::write(dir.path().join(".gitignore"), "tests-temp/\n").expect("write ignore");
+        std::fs::write(dir.path().join("README.md"), "opal\n")?;
+        std::fs::write(dir.path().join(".gitignore"), "tests-temp/\n")?;
 
-        let mut index = repo.index().expect("open index");
-        index
-            .add_path(Path::new("README.md"))
-            .expect("add README to index");
-        index
-            .add_path(Path::new(".gitignore"))
-            .expect("add ignore to index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = Signature::now("Opal Tests", "opal@example.com").expect("signature");
-        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .expect("create commit");
+        let mut index = repo.index()?;
+        index.add_path(Path::new("README.md"))?;
+        index.add_path(Path::new(".gitignore"))?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("Opal Tests", "opal@example.com")?;
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
 
-        std::fs::create_dir_all(dir.path().join("tests-temp")).expect("create ignored dir");
-        std::fs::write(dir.path().join("tests-temp").join("generated.txt"), "hi")
-            .expect("write ignored artifact");
-        std::fs::write(dir.path().join("scratch.txt"), "hello").expect("write untracked file");
+        std::fs::create_dir_all(dir.path().join("tests-temp"))?;
+        std::fs::write(dir.path().join("tests-temp").join("generated.txt"), "hi")?;
+        std::fs::write(dir.path().join("scratch.txt"), "hello")?;
 
-        let files = untracked_files(dir.path()).expect("list untracked files");
+        let files = untracked_files(dir.path())?;
 
         assert!(files.iter().any(|path| path == "scratch.txt"));
         assert!(files.iter().any(|path| path == "tests-temp/generated.txt"));
+        Ok(())
     }
 
     #[test]
-    fn current_tag_errors_when_multiple_tags_point_to_head() {
-        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+    fn current_tag_errors_when_multiple_tags_point_to_head() -> Result<()> {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
         let err = current_tag(dir.path()).expect_err("multiple tags should be ambiguous");
         assert!(
             err.to_string().contains("multiple tags point at HEAD"),
             "unexpected error: {err:#}"
         );
+        Ok(())
     }
 }

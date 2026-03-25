@@ -1,7 +1,7 @@
 use super::{core::ExecutorCore, job_runner};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::model::ArtifactSourceOutcome;
-use crate::pipeline::{self, HaltKind, JobEvent, JobStatus, JobSummary, RuleWhen};
+use crate::pipeline::{self, HaltKind, JobEvent, JobFailureKind, JobStatus, JobSummary, RuleWhen};
 use crate::ui::{UiBridge, UiCommand, UiJobStatus};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -17,6 +17,8 @@ pub(crate) async fn execute_plan(
     ui: Option<Arc<UiBridge>>,
     mut commands: Option<&mut mpsc::UnboundedReceiver<UiCommand>>,
 ) -> (Vec<JobSummary>, Result<()>) {
+    //TODO: too complicated function, does semaphores, expects signals over channels, fucking no
+    //refactor this trash and structure properly
     let total = plan.ordered.len();
     if total == 0 {
         return (Vec::new(), Ok(()));
@@ -384,10 +386,31 @@ pub(crate) async fn execute_plan(
             },
             SchedulerEvent::Job(event) => {
                 running.remove(&event.name);
-                let planned = plan
-                    .nodes
-                    .get(&event.name)
-                    .expect("completed job must exist in plan");
+                let Some(planned) = plan.nodes.get(&event.name) else {
+                    let message = format!(
+                        "completed job '{}' was not found in execution plan",
+                        event.name
+                    );
+                    if !pipeline_failed {
+                        pipeline_failed = true;
+                        halt_kind = HaltKind::JobFailure;
+                        if halt_error.is_none() {
+                            halt_error = Some(anyhow!(message.clone()));
+                        }
+                    }
+                    summaries.push(JobSummary {
+                        name: event.name.clone(),
+                        stage_name: event.stage_name.clone(),
+                        duration: event.duration,
+                        status: JobStatus::Failed(message),
+                        log_path: event.log_path.clone(),
+                        log_hash: event.log_hash.clone(),
+                        allow_failure: false,
+                        environment: None,
+                    });
+                    completed += 1;
+                    continue;
+                };
                 match event.result {
                     Ok(_) => {
                         release_resource_lock(
@@ -445,7 +468,9 @@ pub(crate) async fn execute_plan(
                         let err_msg = err.to_string();
                         let attempts_so_far = attempts.get(&event.name).copied().unwrap_or(1);
                         let retries_used = attempts_so_far.saturating_sub(1);
-                        if retries_used < planned.instance.retry.max {
+                        if retries_used < planned.instance.retry.max
+                            && retry_allowed(&planned.instance.retry.when, event.failure_kind)
+                        {
                             release_resource_lock(
                                 planned,
                                 &mut ready,
@@ -537,6 +562,34 @@ pub(crate) async fn execute_plan(
     (summaries, result)
 }
 
+fn retry_allowed(conditions: &[String], failure_kind: Option<JobFailureKind>) -> bool {
+    if conditions.is_empty() {
+        return true;
+    }
+    let Some(kind) = failure_kind else {
+        return false;
+    };
+    conditions
+        .iter()
+        .any(|condition| retry_condition_matches(condition, kind))
+}
+
+fn retry_condition_matches(condition: &str, failure_kind: JobFailureKind) -> bool {
+    match condition {
+        "always" => true,
+        "script_failure" => failure_kind == JobFailureKind::ScriptFailure,
+        "job_execution_timeout" => failure_kind == JobFailureKind::JobExecutionTimeout,
+        "runner_system_failure" => failure_kind == JobFailureKind::RunnerSystemFailure,
+        "stuck_or_timeout_failure" => {
+            matches!(
+                failure_kind,
+                JobFailureKind::StuckOrTimeoutFailure | JobFailureKind::JobExecutionTimeout
+            )
+        }
+        _ => false,
+    }
+}
+
 pub(crate) async fn handle_restart_commands(
     exec: &ExecutorCore,
     plan: Arc<ExecutionPlan>,
@@ -609,6 +662,7 @@ fn update_summaries_from_event(
         log_path,
         log_hash,
         result,
+        failure_kind: _,
         cancelled,
     } = event;
 
@@ -707,11 +761,11 @@ fn release_resource_lock(
 
 #[cfg(test)]
 mod tests {
-    use super::release_resource_lock;
+    use super::{release_resource_lock, retry_allowed};
     use crate::compiler::JobInstance;
     use crate::execution_plan::ExecutableJob;
     use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
-    use crate::pipeline::{RuleEvaluation, RuleWhen};
+    use crate::pipeline::{JobFailureKind, RuleEvaluation, RuleWhen};
     use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
 
@@ -752,6 +806,31 @@ mod tests {
         assert_eq!(ready, VecDeque::from(["package".to_string()]));
         assert_eq!(resource_locks.get("builder"), Some(&false));
         assert!(resource_waiting["builder"].is_empty());
+    }
+
+    #[test]
+    fn retry_allowed_defaults_to_true_without_conditions() {
+        assert!(retry_allowed(&[], Some(JobFailureKind::ScriptFailure)));
+    }
+
+    #[test]
+    fn retry_allowed_matches_script_failure_condition() {
+        assert!(retry_allowed(
+            &["script_failure".into()],
+            Some(JobFailureKind::ScriptFailure)
+        ));
+        assert!(!retry_allowed(
+            &["runner_system_failure".into()],
+            Some(JobFailureKind::ScriptFailure)
+        ));
+    }
+
+    #[test]
+    fn retry_allowed_treats_job_timeout_as_stuck_or_timeout_failure() {
+        assert!(retry_allowed(
+            &["stuck_or_timeout_failure".into()],
+            Some(JobFailureKind::JobExecutionTimeout)
+        ));
     }
 
     fn job(name: &str) -> JobSpec {

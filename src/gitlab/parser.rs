@@ -1,3 +1,7 @@
+// TODO: looks like there's a buttload of crap going on here - one there's a pipeline graph - great
+// - bad there's also a parses with sparse parsing function, wtf
+
+use crate::{GitLabRemoteConfig, env, git, runtime};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fs;
@@ -23,11 +27,38 @@ use super::rules::JobRule;
 
 impl PipelineGraph {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_path_with_gitlab(path, None)
+    }
+
+    pub fn from_path_with_gitlab(
+        path: impl AsRef<Path>,
+        gitlab: Option<&GitLabRemoteConfig>,
+    ) -> Result<Self> {
+        Self::from_path_with_env(path, std::env::vars().collect(), gitlab)
+    }
+
+    fn from_path_with_env(
+        path: impl AsRef<Path>,
+        host_env: HashMap<String, String>,
+        gitlab: Option<&GitLabRemoteConfig>,
+    ) -> Result<Self> {
         let path = path.as_ref();
+        // TODO: why's there a random file system operation in the middle of some function?
+        // move this to it's own thing such that this function accepts path as a param.
         let canonical =
             fs::canonicalize(path).with_context(|| format!("failed to resolve {:?}", path))?;
+        let include_root = git::repository_root(&canonical)
+            .unwrap_or_else(|_| canonical.parent().unwrap_or(Path::new(".")).to_path_buf());
+        let include_env = env::build_include_lookup(&canonical, &host_env);
         let mut stack = Vec::new();
-        let root = load_pipeline_file(&canonical, &mut stack)?;
+        let root = load_pipeline_file(
+            &canonical,
+            &include_root,
+            &include_env,
+            gitlab,
+            None,
+            &mut stack,
+        )?;
         let root = resolve_reference_tags(root)?;
         Self::from_mapping(root)
     }
@@ -112,7 +143,14 @@ impl std::str::FromStr for PipelineGraph {
     }
 }
 
-fn load_pipeline_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Mapping> {
+fn load_pipeline_file(
+    path: &Path,
+    include_root: &Path,
+    include_env: &HashMap<String, String>,
+    gitlab: Option<&GitLabRemoteConfig>,
+    project_context: Option<&ProjectIncludeContext>,
+    stack: &mut Vec<PathBuf>,
+) -> Result<Mapping> {
     if stack.iter().any(|p| p == path) {
         bail!("include cycle detected involving {:?}", path);
     }
@@ -123,24 +161,176 @@ fn load_pipeline_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Mapping> 
     let include_key = Value::String("include".to_string());
     let mut combined = Mapping::new();
 
+    // TODO: this does too much - refactor and split accordingly
     if let Some(include_value) = root.remove(&include_key) {
         let includes = parse_include_entries(include_value)?;
         for include in includes {
-            let resolved = if include.is_absolute() {
-                include
-            } else {
-                path.parent().unwrap_or(Path::new(".")).join(include)
-            };
-            let canonical = fs::canonicalize(&resolved)
-                .with_context(|| format!("failed to resolve include {:?}", resolved))?;
-            let included = load_pipeline_file(&canonical, stack)?;
-            combined = merge_mappings(combined, included);
+            match include {
+                IncludeEntry::Local(path) => {
+                    let include = expand_include_path(&path, include_env);
+                    for resolved in
+                        resolve_include_paths(include_root, &include, project_context, include_env)?
+                    {
+                        validate_include_extension(&resolved)?;
+                        let canonical = fs::canonicalize(&resolved)
+                            .with_context(|| format!("failed to resolve include {:?}", resolved))?;
+                        let included = load_pipeline_file(
+                            &canonical,
+                            include_root,
+                            include_env,
+                            gitlab,
+                            project_context,
+                            stack,
+                        )?;
+                        combined = merge_mappings(combined, included);
+                    }
+                }
+                IncludeEntry::Project {
+                    project,
+                    reference,
+                    files,
+                } => {
+                    let gitlab = gitlab.ok_or_else(|| {
+                        anyhow!(
+                            "include:project requires GitLab credentials/configuration (use --gitlab-token and optionally --gitlab-base-url)"
+                        )
+                    })?;
+                    let resolved_ref = reference.unwrap_or_else(|| "HEAD".to_string());
+                    let project_root =
+                        project_include_root(&runtime::cache_root(), &project, &resolved_ref);
+                    let project_context = ProjectIncludeContext {
+                        gitlab: gitlab.clone(),
+                        project: project.clone(),
+                        reference: resolved_ref.clone(),
+                    };
+                    for file in files {
+                        let fetched = fetch_project_include_file(
+                            gitlab,
+                            &project_root,
+                            &project,
+                            &resolved_ref,
+                            &file,
+                            include_env,
+                        )?;
+                        let included = load_pipeline_file(
+                            &fetched,
+                            &project_root,
+                            include_env,
+                            Some(gitlab),
+                            Some(&project_context),
+                            stack,
+                        )?;
+                        combined = merge_mappings(combined, included);
+                    }
+                }
+            }
         }
     }
 
     combined = merge_mappings(combined, root);
     stack.pop();
     Ok(combined)
+}
+
+fn resolve_include_path(include_root: &Path, include: &Path) -> PathBuf {
+    if let Ok(stripped) = include.strip_prefix(Path::new("/")) {
+        include_root.join(stripped)
+    } else if include.is_absolute() {
+        include.to_path_buf()
+    } else {
+        include_root.join(include)
+    }
+}
+
+fn expand_include_path(include: &Path, include_env: &HashMap<String, String>) -> PathBuf {
+    let expanded = env::expand_value(&include.to_string_lossy(), include_env);
+    PathBuf::from(expanded)
+}
+
+#[derive(Debug, Clone)]
+struct ProjectIncludeContext {
+    gitlab: GitLabRemoteConfig,
+    project: String,
+    reference: String,
+}
+
+fn resolve_include_paths(
+    include_root: &Path,
+    include: &Path,
+    project_context: Option<&ProjectIncludeContext>,
+    include_env: &HashMap<String, String>,
+) -> Result<Vec<PathBuf>> {
+    if !include_has_glob(include) {
+        let resolved = resolve_include_path(include_root, include);
+        if resolved.exists() || project_context.is_none() {
+            return Ok(vec![resolved]);
+        }
+        let Some(project_context) = project_context else {
+            return Ok(vec![resolved]);
+        };
+        let fetched = fetch_project_include_file(
+            &project_context.gitlab,
+            include_root,
+            &project_context.project,
+            &project_context.reference,
+            include,
+            include_env,
+        )?;
+        return Ok(vec![fetched]);
+    }
+
+    let pattern = include_glob_pattern(include);
+    let matcher = Glob::new(&pattern)
+        .with_context(|| format!("invalid include glob '{pattern}'"))?
+        .compile_matcher();
+    let mut matches = Vec::new();
+    for entry in walkdir::WalkDir::new(include_root).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(include_root)
+            .unwrap_or(entry.path());
+        if matcher.is_match(rel) {
+            matches.push(entry.path().to_path_buf());
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    if matches.is_empty() && project_context.is_some() {
+        bail!("wildcard local includes inside include:project are not supported yet");
+    }
+    if matches.is_empty() {
+        bail!("include glob '{pattern}' matched no files");
+    }
+    Ok(matches)
+}
+
+fn include_has_glob(include: &Path) -> bool {
+    include
+        .to_string_lossy()
+        .chars()
+        .any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+fn include_glob_pattern(include: &Path) -> String {
+    include
+        .strip_prefix(Path::new("/"))
+        .unwrap_or(include)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn validate_include_extension(path: &Path) -> Result<()> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("yml") | Some("yaml") => Ok(()),
+        _ => bail!(
+            "include path '{}' must reference a .yml or .yaml file",
+            path.display()
+        ),
+    }
 }
 
 fn resolve_reference_tags(root: Mapping) -> Result<Mapping> {
@@ -548,7 +738,10 @@ fn mapping_command_string(map: Mapping) -> Result<String, String> {
             "mapping entries must contain exactly one command, got {map:?}"
         ));
     }
-    let (key, value) = map.into_iter().next().expect("checked length");
+    let (key, value) = map
+        .into_iter()
+        .next()
+        .ok_or_else(|| "mapping entries must contain exactly one command".to_string())?;
     let key_text = match key {
         Value::String(text) => text,
         other => return Err(format!("mapping keys must be strings, got {other:?}")),
@@ -781,6 +974,8 @@ fn extract_bool(value: Value, field: &str) -> Result<bool> {
     }
 }
 
+// TODO: just no, this does too many things, also it should probably be part of the PipelinGraph,
+// since it's... building the pipeline graph.
 fn build_graph(
     defaults: PipelineDefaults,
     workflow: Option<WorkflowConfig>,
@@ -927,12 +1122,13 @@ fn build_graph(
         name_to_index.insert(job_name.clone(), node);
         pending_needs.push((job_name, node, needs));
 
-        stages
+        let stage = stages
             .get_mut(stage_index)
-            .expect("stage index must exist")
-            .jobs
-            .push(node);
+            .ok_or_else(|| anyhow!("internal error: stage index {} missing", stage_index))?;
+        stage.jobs.push(node);
     }
+
+    // TODO; for for for for fuck off - refactor
 
     for (job_name, job_idx, needs) in pending_needs {
         for dependency in needs {
@@ -1050,9 +1246,9 @@ fn merge_mappings(mut base: Mapping, addition: Mapping) -> Mapping {
     base
 }
 
-fn parse_include_entries(value: Value) -> Result<Vec<PathBuf>> {
+fn parse_include_entries(value: Value) -> Result<Vec<IncludeEntry>> {
     match value {
-        Value::String(path) => Ok(vec![PathBuf::from(path)]),
+        Value::String(path) => Ok(vec![IncludeEntry::Local(PathBuf::from(path))]),
         Value::Sequence(entries) => {
             let mut paths = Vec::new();
             for entry in entries {
@@ -1065,22 +1261,60 @@ fn parse_include_entries(value: Value) -> Result<Vec<PathBuf>> {
     }
 }
 
-fn parse_include_entry(value: Value) -> Result<Vec<PathBuf>> {
+#[derive(Debug, Clone)]
+enum IncludeEntry {
+    Local(PathBuf),
+    Project {
+        project: String,
+        reference: Option<String>,
+        files: Vec<PathBuf>,
+    },
+}
+
+// TODO - refactor, does way too much - garbage
+fn parse_include_entry(value: Value) -> Result<Vec<IncludeEntry>> {
     match value {
-        Value::String(path) => Ok(vec![PathBuf::from(path)]),
+        Value::String(path) => Ok(vec![IncludeEntry::Local(PathBuf::from(path))]),
         Value::Mapping(map) => {
             let local_key = Value::String("local".to_string());
             let file_key = Value::String("file".to_string());
             let files_key = Value::String("files".to_string());
+            let project_key = Value::String("project".to_string());
+            let remote_key = Value::String("remote".to_string());
+            let template_key = Value::String("template".to_string());
+            let component_key = Value::String("component".to_string());
+            if map.contains_key(&remote_key) {
+                bail!("include:remote is not supported yet");
+            }
+            if map.contains_key(&template_key) {
+                bail!("include:template is not supported yet");
+            }
+            if map.contains_key(&component_key) {
+                bail!("include:component is not supported yet");
+            }
             if let Some(Value::String(local)) = map.get(&local_key) {
-                Ok(vec![PathBuf::from(local)])
+                Ok(vec![IncludeEntry::Local(PathBuf::from(local))])
+            } else if let Some(Value::String(project)) = map.get(&project_key) {
+                let reference = map
+                    .get(&Value::String("ref".to_string()))
+                    .map(|value| match value {
+                        Value::String(text) => Ok(text.clone()),
+                        other => bail!("include:project ref must be a string, got {other:?}"),
+                    })
+                    .transpose()?;
+                let files = parse_project_include_files(map.get(&file_key), map.get(&files_key))?;
+                Ok(vec![IncludeEntry::Project {
+                    project: project.clone(),
+                    reference,
+                    files,
+                }])
             } else if let Some(Value::String(file)) = map.get(&file_key) {
-                Ok(vec![PathBuf::from(file)])
+                Ok(vec![IncludeEntry::Local(PathBuf::from(file))])
             } else if let Some(Value::Sequence(files)) = map.get(&files_key) {
                 let mut paths = Vec::new();
                 for entry in files {
                     match entry {
-                        Value::String(path) => paths.push(PathBuf::from(path)),
+                        Value::String(path) => paths.push(IncludeEntry::Local(PathBuf::from(path))),
                         other => bail!("include 'files' entries must be strings, got {other:?}"),
                     }
                 }
@@ -1091,6 +1325,113 @@ fn parse_include_entry(value: Value) -> Result<Vec<PathBuf>> {
         }
         other => bail!("unsupported include entry {other:?}"),
     }
+}
+
+fn parse_project_include_files(
+    file_value: Option<&Value>,
+    files_value: Option<&Value>,
+) -> Result<Vec<PathBuf>> {
+    if files_value.is_some() {
+        bail!("include:project must use 'file', not 'files'");
+    }
+    let Some(value) = file_value else {
+        bail!("include:project requires a 'file' entry");
+    };
+    match value {
+        Value::String(path) => Ok(vec![PathBuf::from(path)]),
+        Value::Sequence(entries) => entries
+            .iter()
+            .map(|entry| match entry {
+                Value::String(path) => Ok(PathBuf::from(path)),
+                other => bail!("include:project file entries must be strings, got {other:?}"),
+            })
+            .collect(),
+        other => bail!("include:project file must be a string or list, got {other:?}"),
+    }
+}
+
+fn project_include_root(cache_root: &Path, project: &str, reference: &str) -> PathBuf {
+    cache_root
+        .join("includes")
+        .join(percent_encode(project))
+        .join(sanitize_reference(reference))
+}
+
+// TODO: this does so much, it creates new paths, expands, formats hardcoded shit from the API. awful
+fn fetch_project_include_file(
+    gitlab: &GitLabRemoteConfig,
+    project_root: &Path,
+    project: &str,
+    reference: &str,
+    file: &Path,
+    include_env: &HashMap<String, String>,
+) -> Result<PathBuf> {
+    let expanded = expand_include_path(file, include_env);
+    validate_include_extension(&expanded)?;
+    let relative = expanded.strip_prefix(Path::new("/")).unwrap_or(&expanded);
+    let target = project_root.join(relative);
+    if target.exists() {
+        return Ok(target);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let base = gitlab.base_url.trim_end_matches('/');
+    let project_id = percent_encode(project);
+    let file_id = percent_encode(&relative.to_string_lossy());
+    let ref_id = percent_encode(reference);
+    let url =
+        format!("{base}/api/v4/projects/{project_id}/repository/files/{file_id}/raw?ref={ref_id}");
+    let status = std::process::Command::new("curl")
+        .arg("--fail")
+        .arg("-sS")
+        .arg("-L")
+        .arg("-H")
+        .arg(format!("PRIVATE-TOKEN: {}", gitlab.token))
+        .arg("-o")
+        .arg(&target)
+        .arg(&url)
+        .status()
+        .with_context(|| "failed to invoke curl to resolve include:project")?;
+    if !status.success() {
+        return Err(anyhow!(
+            "curl failed to resolve include:project from {} (status {})",
+            url,
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(target)
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    encoded
+}
+
+fn sanitize_reference(reference: &str) -> String {
+    let mut slug = String::new();
+    for ch in reference.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '-' | '_' | '.') {
+            slug.push(ch);
+        } else {
+            slug.push('-');
+        }
+    }
+    if slug.is_empty() {
+        slug.push_str("ref");
+    }
+    slug
 }
 
 fn ensure_stage(stages: &mut Vec<StageGroup>, stage_name: &str) -> usize {
@@ -1490,6 +1831,7 @@ struct NeedParallelRaw {
 }
 
 impl NeedParallelRaw {
+    // TODO: this function has nested for loops - you're going to get the quadratic award
     fn into_filters(self, owner: &str, dependency: &str) -> Result<Vec<HashMap<String, String>>> {
         let mut filters = Vec::new();
         for entry in self.matrix {
@@ -1532,11 +1874,12 @@ fn default_artifacts_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, anyhow};
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
-    fn parses_stage_and_job_order() {
+    fn parses_stage_and_job_order() -> Result<()> {
         let yaml = r#"
     stages:
       - build
@@ -1557,7 +1900,7 @@ mod tests {
         - echo test
     "#;
 
-        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml)?;
         assert_eq!(pipeline.stages.len(), 2);
         assert_eq!(pipeline.stages[0].name, "build");
         assert_eq!(pipeline.stages[1].name, "test");
@@ -1578,10 +1921,11 @@ mod tests {
             .collect();
         assert_eq!(test_jobs.len(), 1);
         assert_eq!(test_jobs[0].name, "test-job");
+        Ok(())
     }
 
     #[test]
-    fn resolves_reference_tags() {
+    fn resolves_reference_tags() -> Result<()> {
         let yaml = r#"
     stages: [build]
 
@@ -1598,7 +1942,7 @@ mod tests {
         COPIED: !reference [.shared, variables, SHARED_VAR]
     "#;
 
-        let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_yaml_str(yaml)?;
         assert_eq!(pipeline.stages.len(), 1);
         let build_stage = &pipeline.stages[0];
         assert_eq!(build_stage.jobs.len(), 1);
@@ -1608,11 +1952,12 @@ mod tests {
             job.variables.get("COPIED").map(|value| value.as_str()),
             Some("shared-value")
         );
+        Ok(())
     }
 
     #[test]
-    fn includes_local_fragment() {
-        let dir = tempdir().expect("tempdir");
+    fn includes_local_fragment() -> Result<()> {
+        let dir = tempdir()?;
         let fragment_path = dir.path().join("fragment.yml");
         fs::write(
             &fragment_path,
@@ -1622,8 +1967,7 @@ fragment-job:
   script:
     - echo fragment
 "#,
-        )
-        .expect("write fragment");
+        )?;
 
         let main_path = dir.path().join("main.yml");
         fs::write(
@@ -1639,10 +1983,9 @@ main-job:
   script:
     - echo main
 "#,
-        )
-        .expect("write main");
+        )?;
 
-        let pipeline = PipelineGraph::from_path(&main_path).expect("pipeline parses");
+        let pipeline = PipelineGraph::from_path(&main_path)?;
         assert_eq!(pipeline.stages.len(), 1);
         assert_eq!(pipeline.stages[0].jobs.len(), 2);
         assert!(
@@ -1657,11 +2000,557 @@ main-job:
                 .node_weights()
                 .any(|job| job.name == "main-job")
         );
+        Ok(())
     }
 
     #[test]
-    fn include_cycle_errors() {
+    fn includes_local_paths_from_repo_root() -> Result<()> {
+        let dir = tempdir()?;
+        git2::Repository::init(dir.path())?;
+
+        let fragment_path = dir.path().join("fragment.yml");
+        fs::write(
+            &fragment_path,
+            r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+        )?;
+
+        let ci_dir = dir.path().join("ci");
+        fs::create_dir_all(&ci_dir)?;
+        let main_path = ci_dir.join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - local: fragment.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )?;
+
+        let pipeline = PipelineGraph::from_path(&main_path)?;
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "fragment-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_local_glob_from_repo_root() -> Result<()> {
+        let dir = tempdir()?;
+        git2::Repository::init(dir.path())?;
+
+        let configs_dir = dir.path().join("configs");
+        fs::create_dir_all(&configs_dir)?;
+        fs::write(
+            configs_dir.join("a.yml"),
+            r#"
+job-a:
+  stage: build
+  script:
+    - echo a
+"#,
+        )?;
+        fs::write(
+            configs_dir.join("b.yml"),
+            r#"
+job-b:
+  stage: build
+  script:
+    - echo b
+"#,
+        )?;
+
+        let ci_dir = dir.path().join("ci");
+        fs::create_dir_all(&ci_dir)?;
+        let main_path = ci_dir.join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - local: configs/*.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )?;
+
+        let pipeline = PipelineGraph::from_path(&main_path)?;
+        assert!(pipeline.graph.node_weights().any(|job| job.name == "job-a"));
+        assert!(pipeline.graph.node_weights().any(|job| job.name == "job-b"));
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_local_paths_expand_environment_variables() -> Result<()> {
+        let dir = tempdir()?;
+        git2::Repository::init(dir.path())?;
+
+        fs::write(
+            dir.path().join("fragment.yml"),
+            r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+        )?;
+
+        let ci_dir = dir.path().join("ci");
+        fs::create_dir_all(&ci_dir)?;
+        let main_path = ci_dir.join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - local: $INCLUDE_FILE
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )?;
+
+        let pipeline = PipelineGraph::from_path_with_env(
+            &main_path,
+            HashMap::from([("INCLUDE_FILE".to_string(), "fragment.yml".to_string())]),
+            None,
+        )?;
+
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "fragment-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_local_files_list_from_repo_root() -> Result<()> {
+        let dir = tempdir()?;
+        git2::Repository::init(dir.path())?;
+
+        let parts_dir = dir.path().join("parts");
+        fs::create_dir_all(&parts_dir)?;
+        fs::write(
+            parts_dir.join("a.yml"),
+            r#"
+job-a:
+  stage: build
+  script:
+    - echo a
+"#,
+        )?;
+        fs::write(
+            parts_dir.join("b.yml"),
+            r#"
+job-b:
+  stage: build
+  script:
+    - echo b
+"#,
+        )?;
+
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  files:
+    - /parts/a.yml
+    - /parts/b.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )?;
+
+        let pipeline = PipelineGraph::from_path(&main_path)?;
+        assert!(pipeline.graph.node_weights().any(|job| job.name == "job-a"));
+        assert!(pipeline.graph.node_weights().any(|job| job.name == "job-b"));
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_local_non_yaml_file_errors() {
         let dir = tempdir().expect("tempdir");
+        git2::Repository::init(dir.path()).expect("init repo");
+
+        fs::write(dir.path().join("fragment.txt"), "not yaml").expect("write fragment");
+
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - local: /fragment.txt
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )
+        .expect("write main");
+
+        let err = PipelineGraph::from_path(&main_path).expect_err("non-yaml include must error");
+        assert!(
+            err.to_string()
+                .contains("must reference a .yml or .yaml file")
+        );
+    }
+
+    #[test]
+    fn includes_file_alias_as_local_path() -> Result<()> {
+        let dir = tempdir()?;
+        git2::Repository::init(dir.path())?;
+
+        fs::write(
+            dir.path().join("fragment.yml"),
+            r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+        )?;
+
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - file: /fragment.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )?;
+
+        let pipeline = PipelineGraph::from_path(&main_path)?;
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "fragment-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn include_project_errors_explicitly() {
+        let dir = tempdir().expect("tempdir");
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            r#"
+stages:
+  - build
+include:
+  - project: some/group/project
+    file: /templates/build.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+        )
+        .expect("write main");
+
+        let err = PipelineGraph::from_path(&main_path).expect_err("project include must error");
+        assert!(
+            err.to_string()
+                .contains("include:project requires GitLab credentials/configuration")
+        );
+    }
+
+    #[test]
+    fn include_project_fetches_file_and_nested_local_include() -> Result<()> {
+        use crate::GitLabRemoteConfig;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let dir = tempdir()?;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| anyhow!("time works: {err}"))?
+            .as_nanos();
+        let project = format!("some/group/project-{unique}");
+        let project_id = percent_encode(&project);
+        let reference = format!("main-{unique}");
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            format!(
+                r#"
+stages:
+  - build
+include:
+  - project: {project}
+    ref: {reference}
+    file: /templates/main.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+            ),
+        )?;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let server = thread::spawn(move || -> Result<()> {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept()?;
+                let mut buffer = [0_u8; 4096];
+                let size = stream.read(&mut buffer)?;
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                let line = request.lines().next().unwrap_or_default();
+                let main_path = format!(
+                    "/api/v4/projects/{}/repository/files/templates%2Fmain.yml/raw?ref={}",
+                    project_id, reference
+                );
+                let child_path = format!(
+                    "/api/v4/projects/{}/repository/files/nested%2Fchild.yml/raw?ref={}",
+                    project_id, reference
+                );
+                let body = if line.contains(&main_path) {
+                    r#"
+include:
+  - local: /nested/child.yml
+
+project-main-job:
+  stage: build
+  script:
+    - echo project main
+"#
+                } else if line.contains(&child_path) {
+                    r#"
+project-child-job:
+  stage: build
+  script:
+    - echo project child
+"#
+                } else {
+                    panic!("unexpected request line: {line}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes())?;
+            }
+            Ok(())
+        });
+
+        let gitlab = GitLabRemoteConfig {
+            base_url: format!("http://{}", addr),
+            token: "test-token".to_string(),
+        };
+        let pipeline = PipelineGraph::from_path_with_gitlab(&main_path, Some(&gitlab))?;
+
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "project-main-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "project-child-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+
+        server.join().map_err(|_| anyhow!("server joins"))??;
+        Ok(())
+    }
+
+    #[test]
+    fn include_project_accepts_multiple_file_entries() -> Result<()> {
+        use crate::GitLabRemoteConfig;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let dir = tempdir()?;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| anyhow!("time works: {err}"))?
+            .as_nanos();
+        let project = format!("some/group/project-multi-{unique}");
+        let project_id = percent_encode(&project);
+        let reference = format!("main-{unique}");
+        let main_path = dir.path().join("main.yml");
+        fs::write(
+            &main_path,
+            format!(
+                r#"
+stages:
+  - build
+include:
+  - project: {project}
+    ref: {reference}
+    file:
+      - /templates/one.yml
+      - /templates/two.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+            ),
+        )?;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let server = thread::spawn(move || -> Result<()> {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept()?;
+                let mut buffer = [0_u8; 4096];
+                let size = stream.read(&mut buffer)?;
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                let line = request.lines().next().unwrap_or_default();
+                let one_path = format!(
+                    "/api/v4/projects/{}/repository/files/templates%2Fone.yml/raw?ref={}",
+                    project_id, reference
+                );
+                let two_path = format!(
+                    "/api/v4/projects/{}/repository/files/templates%2Ftwo.yml/raw?ref={}",
+                    project_id, reference
+                );
+                let body = if line.contains(&one_path) {
+                    r#"
+project-one-job:
+  stage: build
+  script:
+    - echo one
+"#
+                } else if line.contains(&two_path) {
+                    r#"
+project-two-job:
+  stage: build
+  script:
+    - echo two
+"#
+                } else {
+                    panic!("unexpected request line: {line}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes())?;
+            }
+            Ok(())
+        });
+
+        let gitlab = GitLabRemoteConfig {
+            base_url: format!("http://{}", addr),
+            token: "test-token".to_string(),
+        };
+        let pipeline = PipelineGraph::from_path_with_gitlab(&main_path, Some(&gitlab))?;
+
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "project-one-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "project-two-job")
+        );
+        assert!(
+            pipeline
+                .graph
+                .node_weights()
+                .any(|job| job.name == "main-job")
+        );
+
+        server.join().map_err(|_| anyhow!("server joins"))??;
+        Ok(())
+    }
+
+    #[test]
+    fn include_cycle_errors() -> Result<()> {
+        let dir = tempdir()?;
         let a_path = dir.path().join("a.yml");
         let b_path = dir.path().join("b.yml");
         fs::write(
@@ -1674,10 +2563,12 @@ job-a:
   stage: build
   script: echo a
 ",
-                b_path.file_name().unwrap().to_string_lossy()
+                b_path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("missing b.yml filename"))?
+                    .to_string_lossy()
             ),
-        )
-        .expect("write a");
+        )?;
         fs::write(
             &b_path,
             format!(
@@ -1688,13 +2579,16 @@ job-b:
   stage: build
   script: echo b
 ",
-                a_path.file_name().unwrap().to_string_lossy()
+                a_path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("missing a.yml filename"))?
+                    .to_string_lossy()
             ),
-        )
-        .expect("write b");
+        )?;
 
         let err = PipelineGraph::from_path(&a_path).expect_err("cycle must error");
         assert!(err.to_string().contains("include cycle"));
+        Ok(())
     }
 
     #[test]

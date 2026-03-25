@@ -1,0 +1,18 @@
+include:
+  - local: /pipelines/tests/includes/root-fragment.yml
+  - local: /pipelines/tests/includes/glob/*.yml
+  - files:
+      - /pipelines/tests/includes/list-one.yml
+      - /pipelines/tests/includes/list-two.yml
+  - local: $INCLUDE_DYNAMIC_PATH
+
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+main-include-job:
+  stage: test
+  script:
+    - echo "include main job"

@@ -23,6 +23,8 @@ SCENARIOS_JSON='[
   {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1"},
   {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1"},
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1"},
+  {"name":"includes-parity","pipeline":"pipelines/tests/includes-parity.gitlab-ci.yml","env":"INCLUDE_DYNAMIC_PATH=/pipelines/tests/includes/dynamic.yml","command":"plan","opal_args":""},
+  {"name":"includes-project-unsupported","pipeline":"pipelines/tests/includes-project-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:project requires GitLab credentials/configuration"},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-readiness-failure","pipeline":"pipelines/tests/services-readiness-failure.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_SERVICE_READY_TIMEOUT_SECS=5","expect_failure":"failed readiness check"},
   {"name":"cache-policies","pipeline":"pipelines/tests/cache-policies.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -42,7 +44,10 @@ else
   FILTERED_SCENARIOS="${SCENARIOS_JSON}"
 fi
 
-mapfile -t ACTIVE_SCENARIOS < <(jq -c '.[]' <<<"${FILTERED_SCENARIOS}")
+ACTIVE_SCENARIOS=()
+while IFS= read -r line; do
+  ACTIVE_SCENARIOS+=("${line}")
+done < <(jq -c '.[]' <<<"${FILTERED_SCENARIOS}")
 
 if (( ${#ACTIVE_SCENARIOS[@]} == 0 )); then
   echo "!! No matching scenarios found." >&2
@@ -111,6 +116,15 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "seeded default branch cache"
       assert_log_contains "${log_file}" "fallback cache main-seed"
       ;;
+    includes-parity)
+      assert_log_contains "${log_file}" "root-fragment-job"
+      assert_log_contains "${log_file}" "glob-alpha-job"
+      assert_log_contains "${log_file}" "glob-bravo-job"
+      assert_log_contains "${log_file}" "list-one-job"
+      assert_log_contains "${log_file}" "list-two-job"
+      assert_log_contains "${log_file}" "dynamic-include-job"
+      assert_log_contains "${log_file}" "main-include-job"
+      ;;
   esac
 }
 
@@ -149,6 +163,8 @@ run_scenario() {
   local init_git="$7"
   local git_tags="$8"
   local expect_failure="$9"
+  local scenario_command="${10}"
+  local scenario_opal_args="${11}"
   local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
   local log_name="${name//[^A-Za-z0-9._-]/_}"
   local log_file="${LOG_DIR}/${log_name}.log"
@@ -171,9 +187,22 @@ run_scenario() {
   echo "==> ${name}"
   pushd "${workdir}" >/dev/null
 
-  local cmd=("${OPAL_BIN}" "${OPAL_TEST_COMMAND}")
-  if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
-    cmd+=("${OPAL_ARGS[@]}")
+  local effective_command="${OPAL_TEST_COMMAND}"
+  if [[ -n "${scenario_command}" ]]; then
+    effective_command="${scenario_command}"
+  fi
+
+  local cmd=("${OPAL_BIN}" "${effective_command}")
+  if [[ "${scenario_opal_args}" == "__DEFAULT__" ]]; then
+    if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
+      cmd+=("${OPAL_ARGS[@]}")
+    fi
+  elif [[ -n "${scenario_opal_args}" ]]; then
+    local scenario_args=()
+    read -r -a scenario_args <<<"${scenario_opal_args}"
+    if [[ ${#scenario_args[@]} -gt 0 ]]; then
+      cmd+=("${scenario_args[@]}")
+    fi
   fi
   cmd+=("--workdir" "${workdir}")
   cmd+=("--pipeline" "${pipeline_path}")
@@ -289,6 +318,8 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   init_git=$(jq -r '.init_git // "0"' <<<"${entry}")
   git_tags=$(jq -r '.git_tags // ""' <<<"${entry}")
   expect_failure=$(jq -r '.expect_failure // ""' <<<"${entry}")
+  scenario_command=$(jq -r '.command // ""' <<<"${entry}")
+  scenario_opal_args=$(jq -r '.opal_args // "__DEFAULT__"' <<<"${entry}")
   if [[ "${name}" == "cache-fallback" ]]; then
     echo "==> ${name}"
     if ! run_cache_fallback_scenario "${pipeline}"; then
@@ -296,7 +327,7 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
     fi
     continue
   fi
-  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${expect_failure}"; then
+  if ! run_scenario "${name}" "${pipeline}" "${envs}" "${workdir}" "${secret_name}" "${secret_value}" "${init_git}" "${git_tags}" "${expect_failure}" "${scenario_command}" "${scenario_opal_args}"; then
     failures+=("${name}")
   fi
 done

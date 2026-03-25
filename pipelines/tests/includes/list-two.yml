@@ -1,0 +1,4 @@
+list-two-job:
+  stage: test
+  script:
+    - echo "include list two"

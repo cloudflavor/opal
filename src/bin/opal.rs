@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stdout)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
+    let current_dir = env::current_dir()?;
 
     match opts.commands {
         Commands::Run(args) => {
@@ -54,8 +55,7 @@ async fn main() -> Result<()> {
                 gitlab_base_url,
                 gitlab_token,
             } = args;
-            let resolved_workdir = workdir
-                .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+            let resolved_workdir = workdir.unwrap_or_else(|| current_dir);
             let resolved_pipeline =
                 pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
             let settings = OpalConfig::load(&resolved_workdir)?;
@@ -116,24 +116,34 @@ async fn main() -> Result<()> {
 }
 
 fn run_view(args: ViewArgs) -> Result<()> {
-    let workdir = args
-        .workdir
-        .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+    let workdir = match args.workdir {
+        Some(path) => path,
+        None => env::current_dir().with_context(|| "failed to determine current dir")?,
+    };
     ui::view_pipeline_logs(&workdir)
 }
 
 fn run_plan(args: PlanArgs) -> Result<()> {
-    let workdir = args
-        .workdir
-        .unwrap_or_else(|| env::current_dir().expect("failed to determine current dir"));
+    let workdir = match args.workdir {
+        Some(path) => path,
+        None => env::current_dir().with_context(|| "failed to determine current dir")?,
+    };
     let pipeline = args
         .pipeline
         .unwrap_or_else(|| workdir.join(".gitlab-ci.yml"));
-    let pipeline_spec = PipelineSpec::from_path(&pipeline)
+    let gitlab = args.gitlab_token.map(|token| GitLabRemoteConfig {
+        base_url: args
+            .gitlab_base_url
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| "https://gitlab.com".to_string()),
+        token,
+    });
+    let pipeline_spec = PipelineSpec::from_path_with_gitlab(&pipeline, gitlab.as_ref())
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
     let ctx = rule_context_for_workdir(&workdir);
     ctx.ensure_valid_tag_context()?;
     if !pipeline::rules::filters_allow(&pipeline_spec.filters, &ctx) {
+        // TODO: should be a warn! from tracing
         println!("pipeline skipped: top-level only/except filters exclude this ref");
         return Ok(());
     }
@@ -218,18 +228,20 @@ fn resolve_engine(_: EngineChoice) -> EngineKind {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use super::rule_context_for_workdir;
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
-    fn rule_context_includes_opal_env_values() {
-        let dir = tempdir().expect("tempdir");
+    fn rule_context_includes_opal_env_values() -> Result<()> {
+        let dir = tempdir()?;
         let secrets_dir = dir.path().join(".opal").join("env");
-        fs::create_dir_all(&secrets_dir).expect("create secrets dir");
-        fs::write(secrets_dir.join("QUAY_USERNAME"), "robot-user").expect("write secret");
+        fs::create_dir_all(&secrets_dir)?;
+        fs::write(secrets_dir.join("QUAY_USERNAME"), "robot-user")?;
 
         let ctx = rule_context_for_workdir(dir.path());
         assert_eq!(ctx.env_value("QUAY_USERNAME"), Some("robot-user"));
+        Ok(())
     }
 }

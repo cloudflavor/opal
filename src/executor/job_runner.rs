@@ -1,6 +1,6 @@
 use super::core::ExecutorCore;
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
-use crate::pipeline::{JobEvent, JobRunInfo};
+use crate::pipeline::{JobEvent, JobFailureKind, JobRunInfo};
 use crate::runner::ExecuteContext;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::{Result, anyhow};
@@ -25,6 +25,8 @@ pub(crate) fn run_planned_job(
     let job_start = Instant::now();
     let ui_ref = ui.as_deref();
 
+    // TODO: what the fuck is this, why is this a function here?
+    // the logic needs to be simplified, garbage
     let result = (|| -> Result<()> {
         let mut prepared = exec.prepare_job_run(plan.as_ref(), &job)?;
         let container_name = run_info.container_name.clone();
@@ -86,6 +88,8 @@ pub(crate) fn run_planned_job(
 
     exec.clear_running_container(&job_name);
 
+    let failure_kind = classify_failure(&job_name, &final_result, cancelled);
+
     JobEvent {
         name: job_name,
         stage_name,
@@ -93,6 +97,7 @@ pub(crate) fn run_planned_job(
         log_path: Some(log_path.clone()),
         log_hash,
         result: final_result,
+        failure_kind,
         cancelled,
     }
 }
@@ -105,13 +110,57 @@ fn completion_result(result: Result<()>, cancelled: bool) -> Result<()> {
     }
 }
 
+fn classify_failure(job_name: &str, result: &Result<()>, cancelled: bool) -> Option<JobFailureKind> {
+    if cancelled {
+        return None;
+    }
+    let err = result.as_ref().err()?;
+    let message = err.to_string();
+    if message.contains("job exceeded timeout") {
+        return Some(JobFailureKind::JobExecutionTimeout);
+    }
+    if message.contains("failed to start service")
+        || message.contains("failed readiness check")
+        || message.contains("failed to create network")
+        || message.contains("failed to acquire job slot")
+        || message.contains("job task panicked")
+    {
+        return Some(JobFailureKind::RunnerSystemFailure);
+    }
+    if message.contains("timed out") {
+        return Some(JobFailureKind::StuckOrTimeoutFailure);
+    }
+    let _ = job_name;
+    Some(JobFailureKind::ScriptFailure)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::completion_result;
+    use super::{classify_failure, completion_result};
+    use crate::pipeline::JobFailureKind;
+    use anyhow::anyhow;
 
     #[test]
     fn completion_result_prefers_cancelled_state() {
         let result = completion_result(Ok(()), true).expect_err("cancelled job should fail");
         assert_eq!(result.to_string(), "job cancelled by user");
+    }
+
+    #[test]
+    fn classify_failure_distinguishes_timeout() {
+        let result = Err(anyhow!("job exceeded timeout of 5m"));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::JobExecutionTimeout)
+        );
+    }
+
+    #[test]
+    fn classify_failure_defaults_to_script_failure() {
+        let result = Err(anyhow!("container command exited with status Some(1)"));
+        assert_eq!(
+            classify_failure("job", &result, false),
+            Some(JobFailureKind::ScriptFailure)
+        );
     }
 }

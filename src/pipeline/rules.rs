@@ -1,3 +1,5 @@
+// TODO: This should be a rules engine that can evaluate rules, but is split without any logic
+// between structs and free floating functions.
 use crate::git;
 use crate::gitlab::rules::{JobRule, RuleChangesRaw, RuleExistsRaw};
 use crate::gitlab::{Job, PipelineFilters};
@@ -501,17 +503,19 @@ fn eval_if_expr(expr: &str, ctx: &RuleContext) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::git::test_support::{init_repo_with_commit_and_tag, init_repo_with_commit_and_tags};
+    use anyhow::Result;
     use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]
-    fn infers_commit_tag_from_repo_when_env_is_missing() {
-        let dir = init_repo_with_commit_and_tag("v1.2.3");
+    fn infers_commit_tag_from_repo_when_env_is_missing() -> Result<()> {
+        let dir = init_repo_with_commit_and_tag("v1.2.3")?;
 
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
         assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v1.2.3"));
         assert_eq!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
+        Ok(())
     }
 
     #[test]
@@ -536,8 +540,8 @@ mod tests {
     }
 
     #[test]
-    fn captures_error_for_ambiguous_git_tag_context() {
-        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+    fn captures_error_for_ambiguous_git_tag_context() -> Result<()> {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
         assert!(ctx.env_value("CI_COMMIT_TAG").is_none());
@@ -545,11 +549,12 @@ mod tests {
             ctx.tag_resolution_error()
                 .is_some_and(|err| err.contains("multiple tags point at HEAD"))
         );
+        Ok(())
     }
 
     #[test]
-    fn explicit_tag_overrides_ambiguous_git_tag_context() {
-        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+    fn explicit_tag_overrides_ambiguous_git_tag_context() -> Result<()> {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
         let ctx = RuleContext::from_env(
             dir.path(),
             HashMap::from([("GIT_COMMIT_TAG".into(), "v0.1.3".into())]),
@@ -558,11 +563,12 @@ mod tests {
 
         assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v0.1.3"));
         assert!(ctx.tag_resolution_error().is_none());
+        Ok(())
     }
 
     #[test]
-    fn empty_ci_commit_tag_still_records_ambiguous_git_tag_error() {
-        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+    fn empty_ci_commit_tag_still_records_ambiguous_git_tag_error() -> Result<()> {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
         let ctx = RuleContext::from_env(
             dir.path(),
             HashMap::from([("CI_COMMIT_TAG".into(), String::new())]),
@@ -577,17 +583,19 @@ mod tests {
             ctx.tag_resolution_error()
                 .is_some_and(|err| err.contains("multiple tags point at HEAD"))
         );
+        Ok(())
     }
 
     #[test]
-    fn ensure_valid_tag_context_errors_for_ambiguous_git_tags() {
-        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"]);
+    fn ensure_valid_tag_context_errors_for_ambiguous_git_tags() -> Result<()> {
+        let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
         let err = ctx
             .ensure_valid_tag_context()
             .expect_err("ambiguous tag context should fail");
         assert!(err.to_string().contains("multiple tags point at HEAD"));
+        Ok(())
     }
 }
 

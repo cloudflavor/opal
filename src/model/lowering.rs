@@ -1,3 +1,4 @@
+use crate::GitLabRemoteConfig;
 use crate::gitlab::PipelineGraph;
 use crate::model::{
     JobSpec, PipelineDefaultsSpec, PipelineFilterSpec, PipelineSpec, StageSpec, WorkflowSpec,
@@ -8,7 +9,11 @@ use std::path::Path;
 
 impl PipelineSpec {
     pub fn from_path(path: &Path) -> Result<Self> {
-        let graph = PipelineGraph::from_path(path)?;
+        Self::from_path_with_gitlab(path, None)
+    }
+
+    pub fn from_path_with_gitlab(path: &Path, gitlab: Option<&GitLabRemoteConfig>) -> Result<Self> {
+        let graph = PipelineGraph::from_path_with_gitlab(path, gitlab)?;
         Self::try_from(&graph)
     }
 }
@@ -19,6 +24,8 @@ impl TryFrom<&PipelineGraph> for PipelineSpec {
     fn try_from(graph: &PipelineGraph) -> Result<Self> {
         let mut jobs = HashMap::new();
         let mut stages = Vec::with_capacity(graph.stages.len());
+
+        // TODO: again some bullshit for for for for - refactor
 
         for stage in &graph.stages {
             let mut stage_jobs = Vec::with_capacity(stage.jobs.len());

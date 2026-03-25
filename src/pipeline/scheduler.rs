@@ -8,8 +8,9 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task;
 use tokio::time;
 
-use super::planner::{JobEvent, JobRunInfo};
+use super::planner::{JobEvent, JobFailureKind, JobRunInfo};
 
+// TODO: jesus fucking christ - this does too much, this should be part of the pipeline scheduler.
 pub fn spawn_job(
     exec: Arc<ExecutorCore>,
     plan: Arc<ExecutionPlan>,
@@ -43,6 +44,7 @@ pub fn spawn_job(
                     log_path: Some(log_path.clone()),
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("failed to acquire job slot: {err}")),
+                    failure_kind: Some(JobFailureKind::RunnerSystemFailure),
                     cancelled: false,
                 });
                 return;
@@ -75,6 +77,7 @@ pub fn spawn_job(
                         log_path: Some(log_path.clone()),
                         log_hash: log_hash.clone(),
                         result: Err(anyhow!("job task panicked: {err}")),
+                        failure_kind: Some(JobFailureKind::RunnerSystemFailure),
                         cancelled: false,
                     },
                 },
@@ -90,6 +93,7 @@ pub fn spawn_job(
                             "job exceeded timeout of {}",
                             humantime::format_duration(limit)
                         )),
+                        failure_kind: Some(JobFailureKind::JobExecutionTimeout),
                         cancelled: false,
                     }
                 }
@@ -104,6 +108,7 @@ pub fn spawn_job(
                     log_path: Some(log_path.clone()),
                     log_hash: log_hash.clone(),
                     result: Err(anyhow!("job task panicked: {err}")),
+                    failure_kind: Some(JobFailureKind::RunnerSystemFailure),
                     cancelled: false,
                 },
             }

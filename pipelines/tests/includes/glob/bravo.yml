@@ -1,0 +1,4 @@
+glob-bravo-job:
+  stage: test
+  script:
+    - echo "include glob bravo"

@@ -35,7 +35,16 @@ pub struct JobEvent {
     pub log_path: Option<PathBuf>,
     pub log_hash: String,
     pub result: Result<()>,
+    pub failure_kind: Option<JobFailureKind>,
     pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobFailureKind {
+    ScriptFailure,
+    JobExecutionTimeout,
+    RunnerSystemFailure,
+    StuckOrTimeoutFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
