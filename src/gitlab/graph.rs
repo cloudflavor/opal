@@ -142,7 +142,10 @@ pub struct EnvironmentConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvironmentAction {
     Start,
+    Prepare,
     Stop,
+    Verify,
+    Access,
 }
 
 #[derive(Debug, Clone)]

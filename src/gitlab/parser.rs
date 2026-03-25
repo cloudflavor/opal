@@ -1069,7 +1069,10 @@ fn build_graph(
 
         let environment = job_spec.environment.as_ref().map(|env| {
             let action = match env.action.as_deref() {
+                Some("prepare") => EnvironmentAction::Prepare,
                 Some("stop") => EnvironmentAction::Stop,
+                Some("verify") => EnvironmentAction::Verify,
+                Some("access") => EnvironmentAction::Access,
                 _ => EnvironmentAction::Start,
             };
             let name = if env.name.is_empty() {

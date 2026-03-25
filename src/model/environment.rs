@@ -12,5 +12,8 @@ pub struct EnvironmentSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvironmentActionSpec {
     Start,
+    Prepare,
     Stop,
+    Verify,
+    Access,
 }

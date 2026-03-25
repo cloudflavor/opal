@@ -334,7 +334,10 @@ impl From<EnvironmentAction> for EnvironmentActionSpec {
     fn from(value: EnvironmentAction) -> Self {
         match value {
             EnvironmentAction::Start => Self::Start,
+            EnvironmentAction::Prepare => Self::Prepare,
             EnvironmentAction::Stop => Self::Stop,
+            EnvironmentAction::Verify => Self::Verify,
+            EnvironmentAction::Access => Self::Access,
         }
     }
 }
@@ -343,7 +346,10 @@ impl From<EnvironmentActionSpec> for EnvironmentAction {
     fn from(value: EnvironmentActionSpec) -> Self {
         match value {
             EnvironmentActionSpec::Start => Self::Start,
+            EnvironmentActionSpec::Prepare => Self::Prepare,
             EnvironmentActionSpec::Stop => Self::Stop,
+            EnvironmentActionSpec::Verify => Self::Verify,
+            EnvironmentActionSpec::Access => Self::Access,
         }
     }
 }
