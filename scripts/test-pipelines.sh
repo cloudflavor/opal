@@ -41,6 +41,7 @@ SCENARIOS_JSON='[
   {"name":"only-except-api","pipeline":"pipelines/tests/only-except-sources.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=api","command":"plan","opal_args":""},
   {"name":"only-except-variables","pipeline":"pipelines/tests/only-except-variables.gitlab-ci.yml","env":"RELEASE=staging STAGING=1 SKIP_THIS=0","command":"plan","opal_args":""},
   {"name":"resources-services","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"resource-group-cross-run","pipeline":"pipelines/tests/resource-group-cross-run.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"resources-plan","pipeline":"pipelines/tests/resources-and-services.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-default-aliases","pipeline":"pipelines/tests/services-default-aliases.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -272,6 +273,10 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "timeout: 10m"
       assert_log_contains "${log_file}" "resource group: prod-lock"
       assert_log_contains "${log_file}" "environment: review/resources"
+      ;;
+    resource-group-cross-run)
+      assert_log_contains "${log_file}" "lock holder start"
+      assert_log_contains "${log_file}" "lock holder done"
       ;;
     top-level-branch)
       assert_log_contains "${log_file}" "top-level-job"
@@ -556,6 +561,53 @@ run_cache_fallback_scenario() {
   return 0
 }
 
+run_resource_group_cross_run_scenario() {
+  local pipeline_rel="$1"
+  local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
+  local log_file="${LOG_DIR}/resource-group-cross-run.log"
+
+  : > "${log_file}"
+
+  local cmd=("${OPAL_BIN}" "run")
+  if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
+    cmd+=("${OPAL_ARGS[@]}")
+  fi
+  cmd+=("--workdir" "${REPO_ROOT}")
+  cmd+=("--pipeline" "${pipeline_path}")
+
+  pushd "${REPO_ROOT}" >/dev/null
+  local start_ts
+  start_ts=$(date +%s)
+  env CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.first" 2>&1 &
+  local first_pid=$!
+  sleep 1
+  env CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.second" 2>&1
+  local second_status=$?
+  wait ${first_pid}
+  local first_status=$?
+  local end_ts
+  end_ts=$(date +%s)
+  cat "${log_file}.first" "${log_file}.second" > "${log_file}"
+  rm -f "${log_file}.first" "${log_file}.second"
+  popd >/dev/null
+
+  if (( first_status != 0 || second_status != 0 )); then
+    echo "    log saved to ${log_file} (failed)"
+    return 1
+  fi
+  if (( end_ts - start_ts < 5 )); then
+    echo "!! expected cross-run resource_group serialization to delay total runtime" >&2
+    echo "    log saved to ${log_file} (verification failed)"
+    return 1
+  fi
+  if ! verify_scenario_log "resource-group-cross-run" "${log_file}"; then
+    echo "    log saved to ${log_file} (verification failed)"
+    return 1
+  fi
+  echo "    log saved to ${log_file}"
+  return 0
+}
+
 wait_for_seeded_cache() {
   local cache_root="$1"
   local namespace="$2"
@@ -588,6 +640,13 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   if [[ "${name}" == "cache-fallback" ]]; then
     echo "==> ${name}"
     if ! run_cache_fallback_scenario "${pipeline}"; then
+      failures+=("${name}")
+    fi
+    continue
+  fi
+  if [[ "${name}" == "resource-group-cross-run" ]]; then
+    echo "==> ${name}"
+    if ! run_resource_group_cross_run_scenario "${pipeline}"; then
       failures+=("${name}")
     fi
     continue

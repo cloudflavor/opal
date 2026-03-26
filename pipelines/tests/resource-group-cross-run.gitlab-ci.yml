@@ -1,0 +1,15 @@
+stages:
+  - deploy
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+serialized-deploy:
+  stage: deploy
+  resource_group: cross-run-lock
+  script:
+    - echo "lock holder start"
+    - sleep 3
+    - echo "lock holder done"
