@@ -3,6 +3,7 @@ use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result};
+use git2::Repository;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
@@ -37,11 +38,12 @@ pub(super) fn prepare_job_workspace(
 }
 
 fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
+    let repo = Repository::discover(src).ok();
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let file_name = entry.file_name();
         let rel = PathBuf::from(&file_name);
-        if should_exclude(&rel) {
+        if should_exclude(src, &rel, repo.as_ref()) {
             continue;
         }
 
@@ -52,11 +54,25 @@ fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn should_exclude(rel: &Path) -> bool {
-    matches!(
+fn should_exclude(workspace_root: &Path, rel: &Path, repo: Option<&Repository>) -> bool {
+    let hardcoded = matches!(
         rel.file_name().and_then(|name| name.to_str()),
         Some(".opal" | "target" | "tests-temp")
-    )
+    );
+    if hardcoded {
+        return true;
+    }
+    if rel.starts_with(".git") {
+        return false;
+    }
+    let Some(repo) = repo else {
+        return false;
+    };
+    let candidate = workspace_root.join(rel);
+    let Ok(path) = candidate.strip_prefix(workspace_root) else {
+        return false;
+    };
+    repo.status_should_ignore(path).unwrap_or(false)
 }
 
 fn copy_entry(src: &Path, dest: &Path) -> Result<()> {
@@ -141,13 +157,18 @@ mod tests {
     fn copy_workspace_contents_excludes_runtime_heavy_dirs() {
         let src = temp_path("workspace-src");
         let dest = temp_path("workspace-dest");
+        git2::Repository::init(&src).expect("init repo");
         fs::create_dir_all(src.join("src")).expect("create src dir");
         fs::create_dir_all(src.join("target")).expect("create target dir");
         fs::create_dir_all(src.join("tests-temp")).expect("create tests-temp dir");
         fs::create_dir_all(src.join(".opal")).expect("create .opal dir");
+        fs::create_dir_all(src.join("ignored-dir")).expect("create ignored dir");
         fs::write(src.join("Cargo.toml"), "[package]").expect("write cargo");
+        fs::write(src.join(".gitignore"), "ignored-dir/\nignored.txt\n").expect("write gitignore");
         fs::write(src.join("src").join("main.rs"), "fn main() {}").expect("write source");
         fs::write(src.join("target").join("keep.out"), "nope").expect("write target");
+        fs::write(src.join("ignored-dir").join("foo.txt"), "nope").expect("write ignored dir file");
+        fs::write(src.join("ignored.txt"), "nope").expect("write ignored file");
 
         fs::create_dir_all(&dest).expect("create dest");
         copy_workspace_contents(&src, &dest).expect("copy workspace");
@@ -157,6 +178,8 @@ mod tests {
         assert!(!dest.join("target").exists());
         assert!(!dest.join("tests-temp").exists());
         assert!(!dest.join(".opal").exists());
+        assert!(!dest.join("ignored-dir").exists());
+        assert!(!dest.join("ignored.txt").exists());
 
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(dest);
