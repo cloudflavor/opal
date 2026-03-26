@@ -1,0 +1,11 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+cap-job:
+  stage: test
+  script:
+    - ip link add dummy0 type dummy
+    - echo "job override caps ok"

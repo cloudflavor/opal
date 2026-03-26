@@ -1,0 +1,9 @@
+stages:
+  - test
+
+arm-job:
+  stage: test
+  image: docker.io/library/alpine:3.19
+  script:
+    - test "$(uname -m)" = "aarch64"
+    - echo "job override arch ok"

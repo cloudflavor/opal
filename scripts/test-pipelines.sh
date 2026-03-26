@@ -61,6 +61,8 @@ SCENARIOS_JSON='[
   {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
   {"name":"artifact-metadata-plan","pipeline":"pipelines/tests/artifact-metadata.gitlab-ci.yml","env":"CI_COMMIT_REF_NAME=feature/meta CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"artifact-metadata","pipeline":"pipelines/tests/artifact-metadata.gitlab-ci.yml","env":"CI_COMMIT_REF_NAME=feature/meta CI_PIPELINE_SOURCE=push"},
+  {"name":"job-overrides-arch","pipeline":"pipelines/tests/job-overrides-arch.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-arch-workdir","repo_setup":"job_override_arch","command":"run","opal_args":"--no-tui --max-parallel-jobs 1 --engine container"},
+  {"name":"job-overrides-capabilities","pipeline":"pipelines/tests/job-overrides-capabilities.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-cap-workdir","repo_setup":"job_override_caps","command":"run","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"dotenv-reports","pipeline":"pipelines/tests/dotenv-reports.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -197,6 +199,12 @@ verify_scenario_log() {
       ;;
     artifact-metadata)
       assert_log_contains "${log_file}" "artifact metadata consumed v2.0.0"
+      ;;
+    job-overrides-arch)
+      assert_log_contains "${log_file}" "job override arch ok"
+      ;;
+    job-overrides-capabilities)
+      assert_log_contains "${log_file}" "job override caps ok"
       ;;
     dotenv-reports)
       assert_log_contains "${log_file}" "needs dotenv v1.2.3"
@@ -397,6 +405,22 @@ prepare_scenario_workdir() {
         printf '# Guide\nchanged\n' > "${workdir}/docs/guide.md"
         git -C "${workdir}" add docs/guide.md
         git -C "${workdir}" -c user.name='Opal Tests' -c user.email='opal@example.com' commit -m 'docs change' >/dev/null
+        ;;
+      job_override_arch)
+        mkdir -p "${workdir}/.opal"
+        cat > "${workdir}/.opal/config.toml" <<'TOML'
+[[jobs]]
+name = "arm-job"
+arch = "arm64"
+TOML
+        ;;
+      job_override_caps)
+        mkdir -p "${workdir}/.opal"
+        cat > "${workdir}/.opal/config.toml" <<'TOML'
+[[jobs]]
+name = "cap-job"
+cap_add = ["NET_ADMIN"]
+TOML
         ;;
       *)
         echo "!! unknown repo setup: ${repo_setup}" >&2
