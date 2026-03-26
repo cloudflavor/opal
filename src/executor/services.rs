@@ -86,7 +86,7 @@ impl ServiceRuntime {
                 runtime.cleanup();
                 return Err(err);
             }
-            if let Err(err) = runtime.wait_for_service_readiness(&container_name, service) {
+            if let Err(err) = runtime.wait_for_service_readiness(&container_name, service, &ports) {
                 runtime.cleanup();
                 return Err(err);
             }
@@ -222,6 +222,7 @@ impl ServiceRuntime {
         &self,
         container_name: &str,
         service: &ServiceSpec,
+        ports: &[ServicePort],
     ) -> Result<()> {
         let timeout = service_ready_timeout();
         let started = Instant::now();
@@ -241,10 +242,39 @@ impl ServiceRuntime {
 
             match readiness_from_state(&state) {
                 ServiceReadiness::Ready => {
-                    if state.health.is_none() && !confirmed_running_without_health {
-                        confirmed_running_without_health = true;
-                        thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
-                        continue;
+                    if state.health.is_none() {
+                        if !ports.is_empty() {
+                            let Some(ip) = inspect_service_ipv4(self.engine, container_name) else {
+                                if started.elapsed() >= timeout {
+                                    return Err(anyhow!(
+                                        "service '{}' ({}) did not expose a reachable IP within {}s",
+                                        container_name,
+                                        service.image,
+                                        timeout.as_secs()
+                                    ));
+                                }
+                                thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                                continue;
+                            };
+                            if probe_service_ports(self.engine, &self.network, &ip, ports)? {
+                                return Ok(());
+                            }
+                            if started.elapsed() >= timeout {
+                                return Err(anyhow!(
+                                    "service '{}' ({}) did not accept connections on exposed ports within {}s",
+                                    container_name,
+                                    service.image,
+                                    timeout.as_secs()
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                            continue;
+                        }
+                        if !confirmed_running_without_health {
+                            confirmed_running_without_health = true;
+                            thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                            continue;
+                        }
                     }
                     return Ok(());
                 }
@@ -407,6 +437,45 @@ fn parse_service_ipv4(payload: &[u8]) -> Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+fn probe_service_ports(
+    engine: EngineKind,
+    network: &str,
+    host: &str,
+    ports: &[ServicePort],
+) -> Result<bool> {
+    if ports.is_empty() {
+        return Ok(true);
+    }
+
+    let checks = ports
+        .iter()
+        .filter(|port| port.proto == "tcp")
+        .map(|port| format!("nc -z {} {}", shell_escape(host), port.port))
+        .collect::<Vec<_>>();
+    if checks.is_empty() {
+        return Ok(true);
+    }
+
+    let mut command = Command::new(engine_binary(engine));
+    command.arg("run").arg("--rm").arg("--network").arg(network);
+    if matches!(engine, EngineKind::ContainerCli) {
+        command.arg("--arch").arg("x86_64");
+    }
+    let script = format!("{}", checks.join(" && "));
+    let status = command
+        .arg("docker.io/library/alpine:3.19")
+        .arg("sh")
+        .arg("-lc")
+        .arg(script)
+        .status()
+        .with_context(|| "failed to run service connectivity probe")?;
+    Ok(status.success())
+}
+
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
