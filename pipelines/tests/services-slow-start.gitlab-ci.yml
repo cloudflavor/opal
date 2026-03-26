@@ -1,0 +1,18 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+service-slow-start:
+  stage: test
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: redis
+      command:
+        - sh
+        - -lc
+        - sleep 2; exec redis-server
+  script:
+    - nc -z redis 6379
+    - echo "service slow start ok"

@@ -17,6 +17,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `services-network-reachability.gitlab-ci.yml` – Validates that a job can actually reach a service by alias during runtime, which is especially important for the macOS `container` engine.
 - `services-multi-alias-reachability.gitlab-ci.yml` – Validates that all accepted aliases for a service are reachable during runtime.
 - `services-network-isolation.gitlab-ci.yml` – Validates that a service alias is reachable inside its own job but does not leak into a later job, proving per-job network isolation.
+- `services-slow-start.gitlab-ci.yml` – Validates that Opal waits for a no-healthcheck service to become actually reachable before starting the job script.
 - `services-variables.gitlab-ci.yml` – Validates that pipeline/job variables are passed to services while `services:variables` remain service-only and are not expanded against themselves.
 - `services-invalid-alias.gitlab-ci.yml` – Ensures invalid service aliases fail explicitly instead of being silently normalized.
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.
