@@ -1,0 +1,14 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+service-network-reachability:
+  stage: test
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: web
+  script:
+    - nc -z web 6379
+    - echo "service alias reachability ok"
