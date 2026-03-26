@@ -34,7 +34,16 @@ Last updated: 2026-03-26
 - `extends`
 - `!reference`
 - `inherit:default`
-  - currently only used for `before_script` and `after_script`
+  - `false`
+  - list form for the default keys Opal models today:
+    - `image`
+    - `before_script`
+    - `after_script`
+    - `cache`
+    - `services`
+    - `timeout`
+    - `retry`
+    - `interruptible`
 - `include`
   - supported forms:
     - string path
@@ -175,7 +184,16 @@ These features exist in Opal, but they do not match GitLab completely.
 - `default` is subset-only.
   Unknown default keys are ignored.
 - `inherit:default` is subset-only.
-  Opal only models inheritance for `before_script` and `after_script`.
+  Opal now models `inherit:default` for the default keys it supports today:
+  - `image`
+  - `before_script`
+  - `after_script`
+  - `cache`
+  - `services`
+  - `timeout`
+  - `retry`
+  - `interruptible`
+  It does not yet model GitLab keyword inheritance outside that supported default-key subset.
 - `only` / `except` are narrower than GitLab.
   Opal accepts only string/list filter values and matches only:
   - exact ref names
