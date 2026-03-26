@@ -1164,7 +1164,7 @@ fn build_graph(
             only,
             except,
         ) = parse_job(Value::Mapping(merged_map))?;
-        let inherit_flags = job_inherit_flags(&job_spec);
+        let inherit_defaults = job_inherit_defaults(&job_spec);
         let stage_name = job_spec.stage.unwrap_or_else(|| {
             stages
                 .first()
@@ -1192,25 +1192,41 @@ fn build_graph(
         let before_script = job_spec.before_script.map(Script::into_commands);
         let after_script = job_spec.after_script.map(Script::into_commands);
         let artifacts = job_spec.artifacts.into_config(&job_name)?;
-        let cache_entries = if job_cache.is_empty() {
+        let cache_entries = if job_cache.is_empty() && inherit_defaults.cache {
             defaults.cache.clone()
         } else {
             job_cache
         };
-        let services = if job_services.is_empty() {
+        let services = if job_services.is_empty() && inherit_defaults.services {
             defaults.services.clone()
         } else {
             job_services
         };
         let timeout =
-            parse_optional_timeout(&job_spec.timeout, &format!("job '{}'.timeout", job_name))?
-                .or(defaults.timeout);
+            parse_optional_timeout(&job_spec.timeout, &format!("job '{}'.timeout", job_name))?.or(
+                if inherit_defaults.timeout {
+                    defaults.timeout
+                } else {
+                    None
+                },
+            );
+        let retry_base = if inherit_defaults.retry {
+            defaults.retry.clone()
+        } else {
+            RetryPolicy::default()
+        };
         let retry = job_spec
             .retry
-            .map(|raw| raw.into_policy(&defaults.retry, &format!("job '{}'.retry", job_name)))
+            .map(|raw| raw.into_policy(&retry_base, &format!("job '{}'.retry", job_name)))
             .transpose()?
-            .unwrap_or_else(|| defaults.retry.clone());
-        let interruptible = job_spec.interruptible.unwrap_or(defaults.interruptible);
+            .unwrap_or(retry_base);
+        let interruptible = job_spec
+            .interruptible
+            .unwrap_or(if inherit_defaults.interruptible {
+                defaults.interruptible
+            } else {
+                false
+            });
         let resource_group = job_spec.resource_group.clone();
         let parallel = job_parallel;
 
@@ -1241,6 +1257,12 @@ fn build_graph(
             }
         });
 
+        let inherited_image = if job_image.is_none() && inherit_defaults.image {
+            defaults.image.clone()
+        } else {
+            job_image
+        };
+
         let node = graph.add_node(Job {
             name: job_name.clone(),
             stage: stage_name,
@@ -1250,19 +1272,25 @@ fn build_graph(
             dependencies: dependencies.clone(),
             before_script,
             after_script,
+            inherit_default_image: inherit_defaults.image,
+            inherit_default_before_script: inherit_defaults.before_script,
+            inherit_default_after_script: inherit_defaults.after_script,
+            inherit_default_cache: inherit_defaults.cache,
+            inherit_default_services: inherit_defaults.services,
+            inherit_default_timeout: inherit_defaults.timeout,
+            inherit_default_retry: inherit_defaults.retry,
+            inherit_default_interruptible: inherit_defaults.interruptible,
             when: job_spec.when.clone(),
             rules: job_spec.rules.clone(),
             artifacts,
             cache: cache_entries,
-            image: job_image,
+            image: inherited_image,
             variables: job_variables,
             services,
             timeout,
             retry,
             interruptible,
             resource_group,
-            inherit_default_before_script: inherit_flags.0,
-            inherit_default_after_script: inherit_flags.1,
             parallel,
             only,
             except,
@@ -1310,24 +1338,61 @@ fn build_graph(
     })
 }
 
-fn job_inherit_flags(job: &RawJob) -> (bool, bool) {
-    let mut inherit_before = true;
-    let mut inherit_after = true;
-    if let Some(inherit) = &job.inherit
-        && let Some(default) = &inherit.default
+struct JobInheritDefaults {
+    image: bool,
+    before_script: bool,
+    after_script: bool,
+    cache: bool,
+    services: bool,
+    timeout: bool,
+    retry: bool,
+    interruptible: bool,
+}
+
+impl Default for JobInheritDefaults {
+    fn default() -> Self {
+        Self {
+            image: true,
+            before_script: true,
+            after_script: true,
+            cache: true,
+            services: true,
+            timeout: true,
+            retry: true,
+            interruptible: true,
+        }
+    }
+}
+
+fn job_inherit_defaults(job: &RawJob) -> JobInheritDefaults {
+    let mut inherit = JobInheritDefaults::default();
+    if let Some(raw_inherit) = &job.inherit
+        && let Some(default) = &raw_inherit.default
     {
         match default {
             RawInheritDefault::Bool(value) => {
-                inherit_before = *value;
-                inherit_after = *value;
+                inherit.image = *value;
+                inherit.before_script = *value;
+                inherit.after_script = *value;
+                inherit.cache = *value;
+                inherit.services = *value;
+                inherit.timeout = *value;
+                inherit.retry = *value;
+                inherit.interruptible = *value;
             }
             RawInheritDefault::List(entries) => {
-                inherit_before = entries.iter().any(|entry| entry == "before_script");
-                inherit_after = entries.iter().any(|entry| entry == "after_script");
+                inherit.image = entries.iter().any(|entry| entry == "image");
+                inherit.before_script = entries.iter().any(|entry| entry == "before_script");
+                inherit.after_script = entries.iter().any(|entry| entry == "after_script");
+                inherit.cache = entries.iter().any(|entry| entry == "cache");
+                inherit.services = entries.iter().any(|entry| entry == "services");
+                inherit.timeout = entries.iter().any(|entry| entry == "timeout");
+                inherit.retry = entries.iter().any(|entry| entry == "retry");
+                inherit.interruptible = entries.iter().any(|entry| entry == "interruptible");
             }
         }
     }
-    (inherit_before, inherit_after)
+    inherit
 }
 
 fn resolve_job_definition(
@@ -2868,6 +2933,90 @@ platform-job:
         let image = job.image.as_ref().expect("image present");
         assert_eq!(image.entrypoint, vec![""]);
         assert_eq!(image.docker_user.as_deref(), Some("1000:1000"));
+    }
+
+    #[test]
+    fn inherit_default_controls_modeled_default_keywords() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - echo before
+  after_script:
+    - echo after
+  cache:
+    key: default-cache
+    paths:
+      - tests-temp/default-cache/
+  services:
+    - docker.io/library/redis:7.2
+  timeout: 10m
+  retry: 2
+  interruptible: true
+
+inherit-none:
+  stage: test
+  inherit:
+    default: false
+  image: docker.io/library/alpine:3.19
+  script:
+    - echo none
+
+inherit-some:
+  stage: test
+  inherit:
+    default: [image, retry, interruptible]
+  script:
+    - echo some
+"#,
+        )
+        .expect("pipeline parses");
+
+        let none = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "inherit-none")
+            .expect("job present");
+        assert!(none.inherit_default_image == false);
+        assert!(none.inherit_default_before_script == false);
+        assert!(none.inherit_default_after_script == false);
+        assert!(none.inherit_default_cache == false);
+        assert!(none.inherit_default_services == false);
+        assert!(none.inherit_default_timeout == false);
+        assert!(none.inherit_default_retry == false);
+        assert!(none.inherit_default_interruptible == false);
+        assert!(none.cache.is_empty());
+        assert!(none.services.is_empty());
+        assert_eq!(none.timeout, None);
+        assert_eq!(none.retry.max, 0);
+        assert!(!none.interruptible);
+
+        let some = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "inherit-some")
+            .expect("job present");
+        assert!(some.inherit_default_image);
+        assert!(!some.inherit_default_before_script);
+        assert!(!some.inherit_default_after_script);
+        assert!(!some.inherit_default_cache);
+        assert!(!some.inherit_default_services);
+        assert!(!some.inherit_default_timeout);
+        assert!(some.inherit_default_retry);
+        assert!(some.inherit_default_interruptible);
+        assert_eq!(
+            some.image.as_ref().map(|image| image.name.as_str()),
+            Some("docker.io/library/alpine:3.19")
+        );
+        assert!(some.cache.is_empty());
+        assert!(some.services.is_empty());
+        assert_eq!(some.timeout, None);
+        assert_eq!(some.retry.max, 2);
+        assert!(some.interruptible);
     }
 
     #[test]

@@ -89,8 +89,22 @@ pub(super) fn resolve_job_image_with_env(
 ) -> Result<ImageSpec> {
     let mut image = if let Some(image) = job.image.as_ref() {
         image.clone()
-    } else if let Some(image) = exec.pipeline.defaults.image.as_ref() {
-        image.clone()
+    } else if job.inherit_default_image {
+        if let Some(image) = exec.pipeline.defaults.image.as_ref() {
+            image.clone()
+        } else if let Some(image) = exec.config.image.clone() {
+            ImageSpec {
+                name: image,
+                docker_platform: None,
+                docker_user: None,
+                entrypoint: Vec::new(),
+            }
+        } else {
+            return Err(anyhow!(
+                "job '{}' has no image (use --base-image or set image in pipeline/job)",
+                job.name
+            ));
+        }
     } else if let Some(image) = exec.config.image.clone() {
         ImageSpec {
             name: image,
@@ -264,6 +278,12 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            inherit_default_image: true,
+            inherit_default_cache: true,
+            inherit_default_services: true,
+            inherit_default_timeout: true,
+            inherit_default_retry: true,
+            inherit_default_interruptible: true,
             when: None,
             rules: Vec::new(),
             only: Vec::new(),

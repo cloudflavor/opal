@@ -221,7 +221,11 @@ fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<Stri
 
 fn selected_services(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<ServiceSpec> {
     if job.services.is_empty() {
-        defaults.services.clone()
+        if job.inherit_default_services {
+            defaults.services.clone()
+        } else {
+            Vec::new()
+        }
     } else {
         job.services.clone()
     }
@@ -410,6 +414,12 @@ mod tests {
             after_script: None,
             inherit_default_before_script: true,
             inherit_default_after_script: true,
+            inherit_default_image: true,
+            inherit_default_cache: true,
+            inherit_default_services: true,
+            inherit_default_timeout: true,
+            inherit_default_retry: true,
+            inherit_default_interruptible: true,
             when: None,
             rules: Vec::<JobRule>::new(),
             only: Vec::new(),
