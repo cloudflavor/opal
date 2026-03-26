@@ -27,6 +27,8 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         mounts,
         image,
         image_platform,
+        image_user,
+        image_entrypoint,
         container_name,
         job,
         ui,
@@ -60,6 +62,8 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         container_name,
         image,
         image_platform,
+        image_user,
+        image_entrypoint,
         mounts,
         env_vars,
         network,
@@ -177,8 +181,8 @@ fn capture_output(
 #[cfg(test)]
 mod tests {
     use super::{capture_output, validate_engine_security_options};
-    use crate::engine::EngineCommandContext;
     use crate::EngineKind;
+    use crate::engine::EngineCommandContext;
     use crate::logging::LogFormatter;
     use crate::secrets::SecretsStore;
     use std::fs;
@@ -247,6 +251,8 @@ mod tests {
             container_name: "opal-job",
             image: "alpine:3.19",
             image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
             network: None,

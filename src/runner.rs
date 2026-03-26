@@ -10,6 +10,8 @@ pub struct ExecuteContext<'a> {
     pub mounts: &'a [VolumeMount],
     pub image: &'a str,
     pub image_platform: Option<&'a str>,
+    pub image_user: Option<&'a str>,
+    pub image_entrypoint: &'a [String],
     pub container_name: &'a str,
     pub job: &'a JobSpec,
     pub ui: Option<&'a UiBridge>,

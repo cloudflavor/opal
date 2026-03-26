@@ -26,6 +26,7 @@ impl PodmanExecutor {
             .with_volumes()
             .with_network()
             .with_platform()
+            .with_image_options()
             .with_privileges()
             .with_env()
             .build()
@@ -53,6 +54,8 @@ mod tests {
             container_name: "opal-job",
             image: "alpine:3.19",
             image_platform: Some("linux/arm64/v8"),
+            image_user: None,
+            image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
             network: None,
@@ -118,6 +121,18 @@ impl<'a> PodmanCommandBuilder<'a> {
     fn with_platform(mut self) -> Self {
         if let Some(platform) = self.ctx.image_platform {
             self.command.arg("--platform").arg(platform);
+        }
+        self
+    }
+
+    fn with_image_options(mut self) -> Self {
+        if let Some(user) = self.ctx.image_user {
+            self.command.arg("--user").arg(user);
+        }
+        if !self.ctx.image_entrypoint.is_empty() {
+            self.command
+                .arg("--entrypoint")
+                .arg(self.ctx.image_entrypoint.join(" "));
         }
         self
     }

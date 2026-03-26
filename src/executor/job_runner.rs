@@ -37,6 +37,8 @@ pub(crate) fn run_planned_job(
             mounts: &prepared.mounts,
             image: &prepared.job_image.name,
             image_platform: prepared.job_image.docker_platform.as_deref(),
+            image_user: prepared.job_image.docker_user.as_deref(),
+            image_entrypoint: &prepared.job_image.entrypoint,
             container_name: &container_name,
             job: &job,
             ui: ui_ref,

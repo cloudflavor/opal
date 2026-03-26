@@ -495,10 +495,20 @@ fn format_artifacts_metadata(
 }
 
 pub fn format_image_spec(image: &crate::model::ImageSpec) -> String {
+    let mut extra = Vec::new();
     if let Some(platform) = &image.docker_platform {
-        format!("{} (platform: {})", image.name, platform)
-    } else {
+        extra.push(format!("platform: {}", platform));
+    }
+    if let Some(user) = &image.docker_user {
+        extra.push(format!("user: {}", user));
+    }
+    if !image.entrypoint.is_empty() {
+        extra.push(format!("entrypoint: [{}]", image.entrypoint.join(", ")));
+    }
+    if extra.is_empty() {
         image.name.clone()
+    } else {
+        format!("{} ({})", image.name, extra.join(", "))
     }
 }
 

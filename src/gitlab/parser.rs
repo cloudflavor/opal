@@ -686,17 +686,30 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
         Value::String(name) => Ok(ImageConfig {
             name,
             docker_platform: None,
+            docker_user: None,
+            entrypoint: Vec::new(),
         }),
         Value::Mapping(mut map) => {
             if let Some(val) = map.remove(Value::String("name".to_string())) {
                 let name = extract_string(val, "image name")?;
-                let docker_platform = map
+                let entrypoint = map
+                    .remove(Value::String("entrypoint".to_string()))
+                    .map(|value| {
+                        serde_yaml::from_value::<ServiceCommand>(value)
+                            .map(ServiceCommand::into_vec)
+                    })
+                    .transpose()
+                    .context("failed to parse image.entrypoint")?
+                    .unwrap_or_default();
+                let docker_cfg = map
                     .remove(Value::String("docker".to_string()))
                     .map(parse_image_docker)
                     .transpose()?;
                 Ok(ImageConfig {
                     name,
-                    docker_platform,
+                    docker_platform: docker_cfg.as_ref().and_then(|cfg| cfg.platform.clone()),
+                    docker_user: docker_cfg.and_then(|cfg| cfg.user),
+                    entrypoint,
                 })
             } else {
                 bail!("image mapping must include 'name'")
@@ -706,16 +719,32 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
     }
 }
 
-fn parse_image_docker(value: Value) -> Result<String> {
+struct ImageDockerConfig {
+    platform: Option<String>,
+    user: Option<String>,
+}
+
+fn parse_image_docker(value: Value) -> Result<ImageDockerConfig> {
     let map = match value {
         Value::Mapping(map) => map,
         other => bail!("image.docker must be a mapping, got {other:?}"),
     };
     let platform_key = Value::String("platform".to_string());
-    let Some(value) = map.get(&platform_key) else {
-        bail!("image.docker must include 'platform'");
-    };
-    extract_string(value.clone(), "image.docker.platform")
+    let user_key = Value::String("user".to_string());
+    let platform = map
+        .get(&platform_key)
+        .cloned()
+        .map(|value| extract_string(value, "image.docker.platform"))
+        .transpose()?;
+    let user = map
+        .get(&user_key)
+        .cloned()
+        .map(|value| extract_string(value, "image.docker.user"))
+        .transpose()?;
+    if platform.is_none() && user.is_none() {
+        bail!("image.docker must include 'platform' or 'user'");
+    }
+    Ok(ImageDockerConfig { platform, user })
 }
 
 fn extract_string(value: Value, what: &str) -> Result<String> {
@@ -2808,6 +2837,37 @@ platform-job:
         let image = job.image.as_ref().expect("image present");
         assert_eq!(image.name, "docker.io/library/alpine:3.19");
         assert_eq!(image.docker_platform.as_deref(), Some("linux/arm64/v8"));
+    }
+
+    #[test]
+    fn parses_image_entrypoint_and_docker_user() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+platform-job:
+  stage: test
+  image:
+    name: docker.io/library/alpine:3.19
+    entrypoint: [""]
+    docker:
+      user: 1000:1000
+  script:
+    - echo ok
+"#,
+        )
+        .expect("pipeline parses");
+
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "platform-job")
+            .expect("job present");
+
+        let image = job.image.as_ref().expect("image present");
+        assert_eq!(image.entrypoint, vec![""]);
+        assert_eq!(image.docker_user.as_deref(), Some("1000:1000"));
     }
 
     #[test]

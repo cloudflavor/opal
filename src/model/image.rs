@@ -2,6 +2,8 @@
 pub struct ImageSpec {
     pub name: String,
     pub docker_platform: Option<String>,
+    pub docker_user: Option<String>,
+    pub entrypoint: Vec<String>,
 }
 
 impl From<String> for ImageSpec {
@@ -9,6 +11,8 @@ impl From<String> for ImageSpec {
         Self {
             name,
             docker_platform: None,
+            docker_user: None,
+            entrypoint: Vec::new(),
         }
     }
 }

@@ -113,6 +113,8 @@ pub struct ServiceConfig {
 pub struct ImageConfig {
     pub name: String,
     pub docker_platform: Option<String>,
+    pub docker_user: Option<String>,
+    pub entrypoint: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -237,6 +237,8 @@ impl From<&ImageConfig> for ImageSpec {
         Self {
             name: value.name.clone(),
             docker_platform: value.docker_platform.clone(),
+            docker_user: value.docker_user.clone(),
+            entrypoint: value.entrypoint.clone(),
         }
     }
 }
@@ -246,6 +248,8 @@ impl From<&ImageSpec> for ImageConfig {
         Self {
             name: value.name.clone(),
             docker_platform: value.docker_platform.clone(),
+            docker_user: value.docker_user.clone(),
+            entrypoint: value.entrypoint.clone(),
         }
     }
 }

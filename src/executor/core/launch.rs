@@ -95,6 +95,8 @@ pub(super) fn resolve_job_image_with_env(
         ImageSpec {
             name: image,
             docker_platform: None,
+            docker_user: None,
+            entrypoint: Vec::new(),
         }
     } else {
         return Err(anyhow!(

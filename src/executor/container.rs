@@ -29,6 +29,7 @@ impl ContainerExecutor {
             .with_workspace_volume()
             .with_volumes()
             .with_network()
+            .with_image_options()
             .with_env()
             .build()
     }
@@ -97,6 +98,18 @@ impl<'a> ContainerCommandBuilder<'a> {
     fn with_network(mut self) -> Self {
         if let Some(network) = self.ctx.network {
             self.command.arg("--network").arg(network);
+        }
+        self
+    }
+
+    fn with_image_options(mut self) -> Self {
+        if let Some(user) = self.ctx.image_user {
+            self.command.arg("--user").arg(user);
+        }
+        if !self.ctx.image_entrypoint.is_empty() {
+            self.command
+                .arg("--entrypoint")
+                .arg(self.ctx.image_entrypoint.join(" "));
         }
         self
     }
@@ -175,6 +188,8 @@ mod tests {
             container_name: "opal-job",
             image: "alpine:3.19",
             image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
             network: None,
@@ -210,6 +225,8 @@ mod tests {
             container_name: "opal-job",
             image: "alpine:3.19",
             image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
             mounts: &mounts,
             env_vars: &[],
             network: None,
@@ -273,6 +290,8 @@ mod tests {
             container_name: "opal-job",
             image: "alpine:3.19",
             image_platform: Some("linux/amd64"),
+            image_user: None,
+            image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
             network: None,
@@ -291,5 +310,41 @@ mod tests {
             .collect();
 
         assert!(args.windows(2).any(|pair| pair == ["--arch", "x86_64"]));
+    }
+
+    #[test]
+    fn build_command_includes_image_user_and_entrypoint() {
+        let entrypoint = vec!["/bin/sh".to_string(), "-lc".to_string()];
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            image_user: Some("1000:1000"),
+            image_entrypoint: &entrypoint,
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = ContainerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--entrypoint", "/bin/sh -lc"])
+        );
     }
 }
