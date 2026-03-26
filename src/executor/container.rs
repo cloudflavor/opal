@@ -60,6 +60,7 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg("--memory")
             .arg(memory);
         if let Some(arch) = container_arch_override()
+            .or_else(|| ctx.image_platform.and_then(container_arch_from_platform))
             .or_else(|| ctx.arch.map(str::to_string))
             .or_else(host_container_arch)
         {
@@ -147,9 +148,20 @@ fn normalize_container_arch(value: &str) -> Option<String> {
     }
 }
 
+fn container_arch_from_platform(value: &str) -> Option<String> {
+    let normalized = value.to_ascii_lowercase();
+    if normalized.contains("amd64") || normalized.contains("x86_64") {
+        return Some("x86_64".to_string());
+    }
+    if normalized.contains("arm64") || normalized.contains("aarch64") {
+        return Some("arm64".to_string());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ContainerExecutor, normalize_container_arch};
+    use super::{ContainerExecutor, container_arch_from_platform, normalize_container_arch};
     use crate::engine::EngineCommandContext;
     use crate::pipeline::VolumeMount;
     use std::path::Path;
@@ -232,5 +244,43 @@ mod tests {
             normalize_container_arch("x86_64").as_deref(),
             Some("x86_64")
         );
+    }
+
+    #[test]
+    fn container_arch_from_platform_maps_common_linux_platforms() {
+        assert_eq!(
+            container_arch_from_platform("linux/arm64/v8").as_deref(),
+            Some("arm64")
+        );
+        assert_eq!(
+            container_arch_from_platform("linux/amd64").as_deref(),
+            Some("x86_64")
+        );
+    }
+
+    #[test]
+    fn build_command_prefers_image_platform_over_host_default() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: Some("linux/amd64"),
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = ContainerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.windows(2).any(|pair| pair == ["--arch", "x86_64"]));
     }
 }
