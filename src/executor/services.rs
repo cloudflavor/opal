@@ -90,9 +90,7 @@ impl ServiceRuntime {
                 runtime.cleanup();
                 return Err(err);
             }
-            if matches!(engine, EngineKind::ContainerCli)
-                && let Some(ip) = inspect_service_ipv4(engine, &container_name)
-            {
+            if let Some(ip) = inspect_service_ipv4(engine, &container_name) {
                 for alias in &aliases {
                     runtime.host_aliases.push((alias.clone(), ip.clone()));
                 }
