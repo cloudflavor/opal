@@ -15,6 +15,7 @@
    opal run --pipeline .gitlab-ci.yml --workdir .
    ```
    Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
+   On macOS, the RC-supported local engine set is `container`, `docker`, `orbstack`, and `podman`.
 
 4. **Drive the UI**
    - Tabs show each job’s status (pending, running, waiting, success, failure).

@@ -51,6 +51,11 @@ Engine auto-selection behavior currently is:
 - macOS: prefer `orbstack` when detected, otherwise use Apple `container`.
 - Linux: use `docker`.
 
+Release-candidate supported local engines are:
+
+- macOS: `container`, `docker`, `orbstack`, `podman`
+- Linux: `docker`, `podman`, `nerdctl`
+
 ## Runtime and Config
 
 - Runtime data is stored under `$OPAL_HOME` (default `~/.opal`):
