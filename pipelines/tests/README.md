@@ -14,6 +14,8 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
 - `services-and-tags.gitlab-ci.yml` – Validates service string/mapping forms, multiple aliases, and informational runner tags in planner output.
 - `services-default-aliases.gitlab-ci.yml` – Validates GitLab-style default service aliases when no explicit alias is provided.
+- `services-network-reachability.gitlab-ci.yml` – Validates that a job can actually reach a service by alias during runtime, which is especially important for the macOS `container` engine.
+- `services-multi-alias-reachability.gitlab-ci.yml` – Validates that all accepted aliases for a service are reachable during runtime.
 - `services-variables.gitlab-ci.yml` – Validates that pipeline/job variables are passed to services while `services:variables` remain service-only and are not expanded against themselves.
 - `services-invalid-alias.gitlab-ci.yml` – Ensures invalid service aliases fail explicitly instead of being silently normalized.
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.

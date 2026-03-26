@@ -1,0 +1,15 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+
+service-multi-alias-reachability:
+  stage: test
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: cache,redis
+  script:
+    - nc -z cache 6379
+    - nc -z redis 6379
+    - echo "service multi alias reachability ok"
