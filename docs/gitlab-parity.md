@@ -87,6 +87,9 @@ Last updated: 2026-03-26
   - `branches`
   - `tags`
 - `image`
+  - string form
+  - mapping form with `name`
+  - `image:docker:platform`
 - `variables`
 - `timeout`
 - `retry`
@@ -272,6 +275,11 @@ These features exist in Opal, but they do not match GitLab completely.
   - `environment:kubernetes`
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
+- `image` is subset-only.
+  Opal supports string form, mapping form with `name`, and `image:docker:platform`.
+  Unsupported image behavior in Opal today includes:
+  - `image:docker:user`
+  - executor-specific image options outside `docker:platform`
 - `workflow` support is limited to `workflow:rules`.
   The broader workflow surface from GitLab is not implemented.
 - tag trigger source is inferred locally.

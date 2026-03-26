@@ -29,6 +29,7 @@ SCENARIOS_JSON='[
   {"name":"needs-surface","pipeline":"pipelines/tests/needs-surface.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"includes-inherit","pipeline":"pipelines/tests/includes-and-extends.gitlab-ci.yml","env":"SKIP_INHERIT=1","command":"plan","opal_args":""},
   {"name":"yaml-merge-parity","pipeline":"pipelines/tests/yaml-merge-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
+  {"name":"image-platform-parity","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-surface","pipeline":"pipelines/tests/include-surface.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-remote-unsupported","pipeline":"pipelines/tests/include-remote-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:remote is not supported yet","command":"plan","opal_args":""},
   {"name":"include-template-unsupported","pipeline":"pipelines/tests/include-template-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:template is not supported yet","command":"plan","opal_args":""},
@@ -254,6 +255,10 @@ verify_scenario_log() {
       ;;
     yaml-merge-parity)
       assert_log_contains "${log_file}" "merged-job"
+      ;;
+    image-platform-parity)
+      assert_log_contains "${log_file}" "platform-job"
+      assert_log_contains "${log_file}" "platform: linux/arm64/v8"
       ;;
     include-surface)
       assert_log_contains "${log_file}" "root-fragment-job"

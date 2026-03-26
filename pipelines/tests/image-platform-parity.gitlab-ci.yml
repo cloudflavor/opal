@@ -1,0 +1,11 @@
+stages:
+  - test
+
+platform-job:
+  stage: test
+  image:
+    name: docker.io/library/alpine:3.19
+    docker:
+      platform: linux/arm64/v8
+  script:
+    - echo "platform job"
