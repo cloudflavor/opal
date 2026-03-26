@@ -59,10 +59,8 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(cpus)
             .arg("--memory")
             .arg(memory);
-        if let Some(arch) = ctx
-            .arch
-            .map(str::to_string)
-            .or_else(container_arch_override)
+        if let Some(arch) = container_arch_override()
+            .or_else(|| ctx.arch.map(str::to_string))
             .or_else(host_container_arch)
         {
             command.arg("--arch").arg(arch);
@@ -137,14 +135,21 @@ fn container_arch_override() -> Option<String> {
 }
 
 fn host_container_arch() -> Option<String> {
-    // Apple's container CLI currently expects x86_64 guests even on Apple silicon hosts.
-    // Default to x86_64 unless OPAL_CONTAINER_ARCH overrides it.
-    Some("x86_64".to_string())
+    normalize_container_arch(std::env::consts::ARCH)
+}
+
+fn normalize_container_arch(value: &str) -> Option<String> {
+    match value {
+        "aarch64" => Some("arm64".to_string()),
+        "x86_64" => Some("x86_64".to_string()),
+        other if !other.is_empty() => Some(other.to_string()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ContainerExecutor;
+    use super::{ContainerExecutor, normalize_container_arch};
     use crate::engine::EngineCommandContext;
     use crate::pipeline::VolumeMount;
     use std::path::Path;
@@ -213,5 +218,17 @@ mod tests {
             .expect("artifact mount present");
 
         assert!(workspace_idx < artifact_idx);
+    }
+
+    #[test]
+    fn normalize_container_arch_maps_apple_silicon_name() {
+        assert_eq!(
+            normalize_container_arch("aarch64").as_deref(),
+            Some("arm64")
+        );
+        assert_eq!(
+            normalize_container_arch("x86_64").as_deref(),
+            Some("x86_64")
+        );
     }
 }
