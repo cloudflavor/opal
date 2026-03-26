@@ -1,0 +1,36 @@
+stages:
+  - test
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - echo "default before"
+  after_script:
+    - echo "default after"
+  cache:
+    key: default-cache
+    paths:
+      - tests-temp/default-cache/
+  services:
+    - docker.io/library/redis:7.2
+  timeout: 10m
+  retry: 2
+  interruptible: true
+
+inherit-none:
+  stage: test
+  inherit:
+    default: false
+  image: docker.io/library/alpine:3.19
+  script:
+    - echo "none"
+
+inherit-some:
+  stage: test
+  inherit:
+    default:
+      - image
+      - retry
+      - interruptible
+  script:
+    - echo "some"

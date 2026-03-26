@@ -8,6 +8,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `rules-playground.gitlab-ci.yml` – Focuses on the `rules:` mini-language: `if`, `changes`, `exists`, `when: manual|delayed`, inline `allow_failure`, schedule-only behavior, and interaction with `workflow:rules`.
 - `includes-and-extends.gitlab-ci.yml` – Exercises local `include:`, hidden/template jobs, `extends`, `inherit: { default: [...] }`, and shared variables (see `job_inherit_flags` in `src/gitlab/parser.rs`).
 - `yaml-merge-parity.gitlab-ci.yml` – Validates YAML merge-key (`<<`) support for merged job mappings and merged `variables` mappings.
+- `inherit-default-parity.gitlab-ci.yml` – Validates full `inherit:default` behavior for the default keys Opal models today.
 - `image-platform-parity.gitlab-ci.yml` – Validates GitLab-style `image:docker:platform` parsing and planner display.
 - `includes-parity.gitlab-ci.yml` – Exercises local include parity behavior: repository-root `include:local`, wildcard local includes, `include:files`, and parse-time environment expansion in include paths.
 - `include-surface.gitlab-ci.yml` – Exercises additional local include forms: bare string include entries and singular `include:file` entries.
