@@ -1,7 +1,10 @@
 use super::{core::ExecutorCore, job_runner};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::model::ArtifactSourceOutcome;
-use crate::pipeline::{self, HaltKind, JobEvent, JobFailureKind, JobStatus, JobSummary, RuleWhen};
+use crate::pipeline::{
+    self, HaltKind, JobEvent, JobFailureKind, JobStatus, JobSummary, ResourceGroupManager, RuleWhen,
+};
+use crate::runtime;
 use crate::ui::{UiBridge, UiCommand, UiJobStatus};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -56,8 +59,8 @@ pub(crate) async fn execute_plan(
     let mut halt_error: Option<anyhow::Error> = None;
     let mut summaries: Vec<JobSummary> = Vec::new();
     let mut attempts: HashMap<String, u32> = HashMap::new();
-    let mut resource_locks: HashMap<String, bool> = HashMap::new();
     let mut resource_waiting: HashMap<String, VecDeque<String>> = HashMap::new();
+    let resource_groups = ResourceGroupManager::new(runtime::resource_group_root());
     let mut manual_input_available = commands.is_some();
 
     let semaphore = Arc::new(Semaphore::new(exec.config.max_parallel_jobs.max(1)));
@@ -189,14 +192,28 @@ pub(crate) async fn execute_plan(
             }
 
             if let Some(group) = &planned.instance.resource_group {
-                if resource_locks.get(group).copied().unwrap_or(false) {
+                let acquired =
+                    match resource_groups.try_acquire(group, &planned.instance.job.name) {
+                        Ok(acquired) => acquired,
+                        Err(err) => {
+                            halt_kind = HaltKind::JobFailure;
+                            pipeline_failed = true;
+                            if halt_error.is_none() {
+                                halt_error = Some(err.context(format!(
+                                    "failed to acquire resource group '{}'",
+                                    group
+                                )));
+                            }
+                            break;
+                        }
+                    };
+                if !acquired {
                     resource_waiting
                         .entry(group.clone())
                         .or_default()
                         .push_back(name.clone());
                     continue;
                 }
-                resource_locks.insert(group.clone(), true);
             }
 
             let entry = attempts.entry(name.clone()).or_insert(0);
@@ -434,7 +451,7 @@ pub(crate) async fn execute_plan(
                         release_resource_lock(
                             planned,
                             &mut ready,
-                            &mut resource_locks,
+                            &resource_groups,
                             &mut resource_waiting,
                         );
                         release_dependents(
@@ -468,7 +485,7 @@ pub(crate) async fn execute_plan(
                             release_resource_lock(
                                 planned,
                                 &mut ready,
-                                &mut resource_locks,
+                                &resource_groups,
                                 &mut resource_waiting,
                             );
                             summaries.push(JobSummary {
@@ -498,7 +515,7 @@ pub(crate) async fn execute_plan(
                             release_resource_lock(
                                 planned,
                                 &mut ready,
-                                &mut resource_locks,
+                                &resource_groups,
                                 &mut resource_waiting,
                             );
                             ready.push_back(event.name.clone());
@@ -508,7 +525,7 @@ pub(crate) async fn execute_plan(
                         release_resource_lock(
                             planned,
                             &mut ready,
-                            &mut resource_locks,
+                            &resource_groups,
                             &mut resource_waiting,
                         );
                         if !planned.instance.rule.allow_failure && !pipeline_failed {
@@ -799,11 +816,11 @@ fn release_dependents<F>(
 fn release_resource_lock(
     planned: &ExecutableJob,
     ready: &mut VecDeque<String>,
-    resource_locks: &mut HashMap<String, bool>,
+    resource_groups: &ResourceGroupManager,
     resource_waiting: &mut HashMap<String, VecDeque<String>>,
 ) {
     if let Some(group) = &planned.instance.resource_group {
-        resource_locks.insert(group.clone(), false);
+        let _ = resource_groups.release(group);
         if let Some(queue) = resource_waiting.get_mut(group)
             && let Some(next) = queue.pop_front()
         {
@@ -818,9 +835,10 @@ mod tests {
     use crate::compiler::JobInstance;
     use crate::execution_plan::{ExecutableJob, ExecutionPlan};
     use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
-    use crate::pipeline::{JobFailureKind, RuleEvaluation, RuleWhen};
+    use crate::pipeline::{JobFailureKind, ResourceGroupManager, RuleEvaluation, RuleWhen};
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn release_resource_lock_requeues_next_waiting_job() {
@@ -843,21 +861,24 @@ mod tests {
             log_hash: "hash".into(),
         };
         let mut ready = VecDeque::new();
-        let mut resource_locks = HashMap::from([("builder".to_string(), true)]);
+        let temp = tempdir().expect("tempdir");
+        let manager = ResourceGroupManager::new(temp.path().join("locks"));
+        manager
+            .try_acquire("builder", "build")
+            .expect("lock acquires");
         let mut resource_waiting = HashMap::from([(
             "builder".to_string(),
             VecDeque::from(["package".to_string()]),
         )]);
 
-        release_resource_lock(
-            &planned,
-            &mut ready,
-            &mut resource_locks,
-            &mut resource_waiting,
-        );
+        release_resource_lock(&planned, &mut ready, &manager, &mut resource_waiting);
 
         assert_eq!(ready, VecDeque::from(["package".to_string()]));
-        assert_eq!(resource_locks.get("builder"), Some(&false));
+        assert!(
+            manager
+                .try_acquire("builder", "package")
+                .expect("lock re-acquires")
+        );
         assert!(resource_waiting["builder"].is_empty());
     }
 

@@ -2,6 +2,7 @@ pub mod artifacts;
 pub mod cache;
 pub mod mounts;
 pub mod planner;
+pub mod resource_group;
 pub mod rules;
 pub mod scheduler;
 
@@ -11,5 +12,6 @@ pub use mounts::VolumeMount;
 pub use planner::{
     HaltKind, JobEvent, JobFailureKind, JobRunInfo, JobStatus, JobSummary, StageState,
 };
+pub use resource_group::ResourceGroupManager;
 pub use rules::{RuleContext, RuleEvaluation, RuleWhen};
 pub use scheduler::spawn_job;

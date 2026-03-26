@@ -42,6 +42,10 @@ pub fn history_path() -> PathBuf {
     opal_home().join("history.json")
 }
 
+pub fn resource_group_root() -> PathBuf {
+    opal_home().join("resource-groups")
+}
+
 pub fn config_dirs(workdir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     paths.push(workdir.join(REPO_CONFIG_DIR).join("config.toml"));
