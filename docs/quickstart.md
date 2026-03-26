@@ -4,7 +4,7 @@
    ```bash
    cargo install --path .
    ```
-   Opal requires Docker, Podman, nerdctl (typically on Linux), or the Apple `container` runtime to execute jobs.
+   Opal requires Docker, Podman, Apple `container`, or OrbStack for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
 
 2. **Prepare a workspace**
    - Place your project in a directory containing `.gitlab-ci.yml`.

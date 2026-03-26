@@ -22,7 +22,8 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 - The executor keeps a ready queue and launches up to `--max-parallel-jobs` at a time.
 - Jobs run in containers using the selected engine:
-  - `docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
+  - `docker`, `podman`, `container`, or `orbstack` for the supported local engine set.
+  - `nerdctl` remains available as a Linux-oriented option when the underlying `containerd` environment is directly usable.
   - `auto` picks a sane default for the current platform.
 - Job services start as sibling containers on a per-job network, and Opal performs a readiness gate before running the job script when service inspection is available.
 - Manual jobs (`when: manual`) appear in the UI and can be started interactively.
