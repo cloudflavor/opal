@@ -5,7 +5,9 @@ platform-job:
   stage: test
   image:
     name: docker.io/library/alpine:3.19
+    entrypoint: [""]
     docker:
       platform: linux/arm64/v8
+      user: 1000:1000
   script:
     - echo "platform job"

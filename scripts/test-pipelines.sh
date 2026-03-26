@@ -267,6 +267,8 @@ verify_scenario_log() {
     image-platform-parity)
       assert_log_contains "${log_file}" "platform-job"
       assert_log_contains "${log_file}" "platform: linux/arm64/v8"
+      assert_log_contains "${log_file}" "user: 1000:1000"
+      assert_log_contains "${log_file}" "entrypoint: []"
       ;;
     include-surface)
       assert_log_contains "${log_file}" "root-fragment-job"
