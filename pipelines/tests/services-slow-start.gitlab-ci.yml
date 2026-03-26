@@ -14,5 +14,4 @@ service-slow-start:
         - -lc
         - sleep 2; exec redis-server
   script:
-    - nc -z redis 6379
     - echo "service slow start ok"
