@@ -113,6 +113,7 @@ mod tests {
             mounts: &mounts,
             env_vars: &[],
             network: None,
+            arch: None,
             cpus: None,
             memory: None,
             dns: None,

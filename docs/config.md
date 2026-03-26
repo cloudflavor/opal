@@ -9,6 +9,7 @@ Opal reads a layered `config.toml` to customize runtime behavior and automatical
 
 ```toml
 [container]         # applies to the Apple "container" CLI microVMs
+arch = "arm64"       # optional; defaults to x86_64 unless overridden
 cpus = "6"          # defaults to 4 if omitted
 memory = "2g"       # defaults to 1.6 GB (1638m) if omitted
 dns = "8.8.8.8"     # optional; leave unset to use the engine default
@@ -25,6 +26,7 @@ scheme = "https"                       # optional for Apple `container` CLI
 
 Currently only the Apple `container` CLI exposes tunables. You can configure it either via the dedicated `[container]` table (shown above) or the legacy `[engine.container]` table—both are merged, with `[container]` taking precedence.
 
+- `arch`: string passed to `container run --arch`.
 - `cpus`: string passed to `--cpus`. Controls maximum parallel threads in the VM.
 - `memory`: string passed to `--memory`. Accepts Docker-style units (e.g., `1024m`, `2g`).
 - `dns`: optional custom resolver for `container run --dns`.

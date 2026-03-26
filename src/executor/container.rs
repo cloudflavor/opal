@@ -59,7 +59,12 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(cpus)
             .arg("--memory")
             .arg(memory);
-        if let Some(arch) = container_arch_override().or_else(host_container_arch) {
+        if let Some(arch) = ctx
+            .arch
+            .map(str::to_string)
+            .or_else(container_arch_override)
+            .or_else(host_container_arch)
+        {
             command.arg("--arch").arg(arch);
         }
         // TODO: why the fuck is this hardcoded, there should be a default, but it should be a
@@ -155,6 +160,7 @@ mod tests {
             mounts: &[],
             env_vars: &[],
             network: None,
+            arch: None,
             cpus: None,
             memory: None,
             dns: None,
@@ -185,6 +191,7 @@ mod tests {
             mounts: &mounts,
             env_vars: &[],
             network: None,
+            arch: None,
             cpus: None,
             memory: None,
             dns: None,

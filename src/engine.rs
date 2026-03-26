@@ -10,6 +10,7 @@ pub struct EngineCommandContext<'a> {
     pub mounts: &'a [VolumeMount],
     pub env_vars: &'a [(String, String)],
     pub network: Option<&'a str>,
+    pub arch: Option<&'a str>,
     pub cpus: Option<&'a str>,
     pub memory: Option<&'a str>,
     pub dns: Option<&'a str>,

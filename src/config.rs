@@ -24,6 +24,7 @@ pub struct EngineSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ContainerEngineConfig {
+    pub arch: Option<String>,
     pub cpus: Option<String>,
     pub memory: Option<String>,
     pub dns: Option<String>,
@@ -110,7 +111,15 @@ impl EngineSettings {
 
 impl ContainerEngineConfig {
     fn merge(&mut self, other: ContainerEngineConfig) {
-        let ContainerEngineConfig { cpus, memory, dns } = other;
+        let ContainerEngineConfig {
+            arch,
+            cpus,
+            memory,
+            dns,
+        } = other;
+        if let Some(value) = arch {
+            self.arch = Some(value);
+        }
         if let Some(value) = cpus {
             self.cpus = Some(value);
         }
@@ -156,6 +165,40 @@ impl RegistryAuth {
             password,
             scheme: self.scheme.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContainerEngineConfig, OpalConfig};
+
+    #[test]
+    fn container_config_merge_overrides_arch() {
+        let mut base = OpalConfig {
+            container: Some(ContainerEngineConfig {
+                arch: Some("x86_64".into()),
+                cpus: None,
+                memory: None,
+                dns: None,
+            }),
+            ..OpalConfig::default()
+        };
+
+        base.merge(OpalConfig {
+            container: Some(ContainerEngineConfig {
+                arch: Some("arm64".into()),
+                cpus: None,
+                memory: None,
+                dns: None,
+            }),
+            ..OpalConfig::default()
+        });
+
+        assert_eq!(
+            base.container_settings()
+                .and_then(|cfg| cfg.arch.as_deref()),
+            Some("arm64")
+        );
     }
 }
 

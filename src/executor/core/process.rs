@@ -57,6 +57,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         mounts,
         env_vars,
         network,
+        arch: container_cfg.and_then(|cfg| cfg.arch.as_deref()),
         cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
         memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
         dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
