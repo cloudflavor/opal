@@ -239,7 +239,8 @@ These features exist in Opal, but they do not match GitLab completely.
   Opal now applies `interruptible` during local pipeline abort flows by cancelling running jobs marked `interruptible: true` while allowing running non-interruptible jobs to finish.
   This is a local approximation of GitLab's auto-cancel behavior, not a full implementation of GitLab's redundant-pipeline and `workflow:auto_cancel` semantics.
 - `resource_group` is local-only.
-  Opal serializes matching jobs within a single local run, but this is a process-local lock rather than GitLab's distributed coordination across runners and pipelines.
+  Opal now serializes matching jobs across separate local Opal runs on the same machine by using a filesystem-backed lock under `OPAL_HOME`.
+  This is still a local approximation rather than GitLab's distributed coordination across runners and pipelines.
 - `needs:project` is partial runtime support.
   Parsing and artifact mounting are implemented, but cross-project artifact download requires explicit GitLab credentials/configuration (`--gitlab-token`, optionally `--gitlab-base-url`) and network access to the GitLab API. Opal models artifact download only; it does not reproduce GitLab's server-side orchestration model.
 - `include:project` is partial runtime support.
@@ -385,7 +386,6 @@ It is ordered by what is most likely to unblock real repository configs and redu
 
 ### Priority 4: Runner-environment fidelity (medium impact)
 
-- Improve local semantics for `resource_group` beyond per-process locking when feasible.
 - Continue improving log fidelity so failure context matches GitLab UI expectations more closely.
 
 ## Regression Harness State
