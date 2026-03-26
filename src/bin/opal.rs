@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use opal::compiler::compile_pipeline;
 use opal::config::OpalConfig;
 use opal::display::{self, DisplayFormatter};
@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
                 gitlab_token,
                 jobs,
             } = args;
+            validate_engine_choice(engine)?;
             let resolved_workdir = workdir.unwrap_or(current_dir);
             let resolved_pipeline =
                 pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
@@ -178,6 +179,21 @@ fn rule_context_for_workdir(workdir: &Path) -> RuleContext {
         ctx_env.extend(secrets.env_pairs());
     }
     RuleContext::from_env(workdir, ctx_env, run_manual)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_engine_choice(choice: EngineChoice) -> Result<()> {
+    if matches!(choice, EngineChoice::Nerdctl) {
+        bail!(
+            "'nerdctl' is treated as a Linux-specific engine; on macOS use 'docker', 'orbstack', or 'container'"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn validate_engine_choice(_: EngineChoice) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

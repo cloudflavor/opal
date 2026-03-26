@@ -77,7 +77,7 @@ pub struct RunArgs {
         long = "engine",
         default_value = "auto",
         possible_values = EngineChoice::VARIANTS,
-        help = "Container runtime to use (auto, container, docker, podman, nerdctl, orbstack)"
+        help = "Container runtime to use (auto, container, docker, podman, nerdctl, orbstack). nerdctl is Linux-specific in Opal."
     )]
     pub engine: EngineChoice,
 

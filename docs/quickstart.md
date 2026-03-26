@@ -4,7 +4,7 @@
    ```bash
    cargo install --path .
    ```
-   Opal requires Docker, Podman, nerdctl, or the sandbox runtime (Apple `srt`) to execute jobs.
+   Opal requires Docker, Podman, nerdctl (typically on Linux), or the Apple `container` runtime to execute jobs.
 
 2. **Prepare a workspace**
    - Place your project in a directory containing `.gitlab-ci.yml`.
@@ -14,7 +14,7 @@
    ```bash
    opal run --pipeline .gitlab-ci.yml --workdir .
    ```
-   Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, or `sandbox`.
+   Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
 
 4. **Drive the UI**
    - Tabs show each job’s status (pending, running, waiting, success, failure).
