@@ -46,6 +46,7 @@ SCENARIOS_JSON='[
   {"name":"services-default-aliases","pipeline":"pipelines/tests/services-default-aliases.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-network-reachability","pipeline":"pipelines/tests/services-network-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-multi-alias-reachability","pipeline":"pipelines/tests/services-multi-alias-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"services-network-isolation","pipeline":"pipelines/tests/services-network-isolation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-variables","pipeline":"pipelines/tests/services-variables.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-invalid-alias","pipeline":"pipelines/tests/services-invalid-alias.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"unsupported characters"},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -314,6 +315,11 @@ verify_scenario_log() {
       ;;
     services-multi-alias-reachability)
       assert_log_contains "${log_file}" "service multi alias reachability ok"
+      ;;
+    services-network-isolation)
+      assert_log_contains "${log_file}" "first job service reachable"
+      assert_log_contains "${log_file}" "service network isolation ok"
+      assert_log_not_contains "${log_file}" '0003] service leaked across jobs'
       ;;
     services-variables)
       assert_log_contains "${log_file}" "service variables ok"

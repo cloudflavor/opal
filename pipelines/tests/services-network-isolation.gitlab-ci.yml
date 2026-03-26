@@ -1,0 +1,21 @@
+stages:
+  - first
+  - second
+
+default:
+  image: docker.io/library/alpine:3.19
+
+first-job:
+  stage: first
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: isolated
+  script:
+    - nc -z isolated 6379
+    - echo "first job service reachable"
+
+second-job:
+  stage: second
+  script:
+    - if nc -z isolated 6379; then echo "service leaked across jobs"; exit 1; fi
+    - echo "service network isolation ok"
