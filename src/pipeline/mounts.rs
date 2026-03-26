@@ -70,11 +70,6 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
     let mut collector = MountCollector::new(container_root);
     let mut dependency_mounts = Vec::new();
 
-    for (host, relative) in artifacts.job_mount_specs(job) {
-        let container = collector.container_path(&relative);
-        collector.push(host, container, false);
-    }
-
     for dependency in &job.needs {
         if !dependency.needs_artifacts {
             continue;
@@ -250,7 +245,9 @@ fn add_dependency_mounts(
 
     for (relative, mounts) in grouped {
         let container = collector.container_path(&relative);
-        let must_stage = mounts.len() > 1 || mounts.iter().any(|mount| !mount.exclude.is_empty());
+        let file_only = mounts.iter().all(|mount| mount.host.is_file());
+        let must_stage =
+            file_only || mounts.len() > 1 || mounts.iter().any(|mount| !mount.exclude.is_empty());
         if !must_stage {
             let Some(mount) = mounts.into_iter().next() else {
                 return Err(anyhow!(
@@ -264,7 +261,13 @@ fn add_dependency_mounts(
 
         let staged = stage_dependency_mount(artifacts, &job.name, &relative, &mounts)?;
         if staged.exists() {
-            collector.push(staged, container, true);
+            if file_only {
+                let container_parent = container.parent().unwrap_or(&container).to_path_buf();
+                let host_parent = staged.parent().unwrap_or(&staged).to_path_buf();
+                collector.push(host_parent, container_parent, true);
+            } else {
+                collector.push(staged, container, true);
+            }
         }
     }
 
@@ -436,7 +439,7 @@ impl<'a> MountCollector<'a> {
         if self
             .mounts
             .iter()
-            .any(|existing| existing.host == host && existing.container == container)
+            .any(|existing| existing.container == container)
         {
             return;
         }

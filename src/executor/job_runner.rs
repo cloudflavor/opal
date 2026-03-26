@@ -56,6 +56,7 @@ pub(crate) fn run_planned_job(
         if let Some(mut runtime) = prepared.service_runtime.take() {
             runtime.cleanup();
         }
+        exec.collect_declared_artifacts(&job, &prepared.host_workdir)?;
         exec.collect_untracked_artifacts(&job, &prepared.host_workdir)?;
         exec.collect_dotenv_artifacts(&job, &prepared.host_workdir)?;
         exec_result?;

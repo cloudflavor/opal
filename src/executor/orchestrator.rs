@@ -50,6 +50,7 @@ pub(crate) async fn execute_plan(
     let mut ready: VecDeque<String> = VecDeque::new();
     let mut waiting_on_failure: VecDeque<String> = VecDeque::new();
     let mut delayed_pending: HashSet<String> = HashSet::new();
+    let mut resource_retry_pending: HashSet<String> = HashSet::new();
     let mut manual_waiting: HashSet<String> = HashSet::new();
     let mut running = HashSet::new();
     let mut abort_requested = false;
@@ -208,11 +209,39 @@ pub(crate) async fn execute_plan(
                         }
                     };
                 if !acquired {
-                    resource_waiting
-                        .entry(group.clone())
-                        .or_default()
-                        .push_back(name.clone());
-                    continue;
+                    if running.is_empty() && ready.is_empty() {
+                        loop {
+                            tokio_time::sleep(std::time::Duration::from_millis(500)).await;
+                            match resource_groups.try_acquire(group, &planned.instance.job.name) {
+                                Ok(true) => break,
+                                Ok(false) => continue,
+                                Err(err) => {
+                                    halt_kind = HaltKind::JobFailure;
+                                    pipeline_failed = true;
+                                    if halt_error.is_none() {
+                                        halt_error = Some(err.context(format!(
+                                            "failed to acquire resource group '{}'",
+                                            group
+                                        )));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if pipeline_failed {
+                            break;
+                        }
+                    } else {
+                        if resource_retry_pending.insert(name.clone()) {
+                            let tx_clone = delay_tx.clone();
+                            let retry_name = name.clone();
+                            task::spawn(async move {
+                                tokio_time::sleep(std::time::Duration::from_millis(500)).await;
+                                let _ = tx_clone.send(retry_name);
+                            });
+                        }
+                        continue;
+                    }
                 }
             }
 
@@ -305,7 +334,7 @@ pub(crate) async fn execute_plan(
                 if let Some(rx) = commands.as_mut() {
                     (*rx).recv().await
                 } else {
-                    None
+                    std::future::pending().await
                 }
             } => {
                 match cmd {
@@ -367,7 +396,11 @@ pub(crate) async fn execute_plan(
         }
 
         let Some(event) = next_event else {
-            if running.is_empty() && ready.is_empty() && delayed_pending.is_empty() {
+            if running.is_empty()
+                && ready.is_empty()
+                && delayed_pending.is_empty()
+                && resource_retry_pending.is_empty()
+            {
                 halt_kind = HaltKind::ChannelClosed;
                 halt_error = Some(anyhow!(
                     "job worker channel closed unexpectedly while {} jobs remained",
@@ -381,6 +414,10 @@ pub(crate) async fn execute_plan(
         match event {
             SchedulerEvent::Delay(name) => {
                 if abort_requested {
+                    continue;
+                }
+                if resource_retry_pending.remove(&name) {
+                    ready.push_back(name);
                     continue;
                 }
                 delayed_pending.remove(&name);

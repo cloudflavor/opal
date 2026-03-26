@@ -375,6 +375,10 @@ impl ExecutorCore {
         self.artifacts.collect_untracked(job, workspace)
     }
 
+    pub(crate) fn collect_declared_artifacts(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+        self.artifacts.collect_declared(job, workspace)
+    }
+
     pub(crate) fn collect_dotenv_artifacts(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
         self.artifacts.collect_dotenv_report(job, workspace)
     }

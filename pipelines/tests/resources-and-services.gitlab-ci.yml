@@ -8,7 +8,7 @@ default:
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
-      - tests-temp/cache-data/
+      - tests-temp/cache-state/
   services:
     - name: docker.io/library/redis:7.2
       alias: cache
@@ -19,7 +19,9 @@ fetch-sources:
   stage: fetch
   script:
     - mkdir -p tests-temp/cache-data
+    - mkdir -p tests-temp/cache-state
     - date > tests-temp/cache-data/last-run.txt
+    - echo cached > tests-temp/cache-state/cache.txt
   artifacts:
     paths:
       - tests-temp/cache-data/
@@ -31,7 +33,8 @@ service-consumer:
       alias: redis
       command: ["redis-server"]
   script:
-    - echo "service reachable via $REDIS_PORT_6379_TCP_ADDR"
+    - nc -z redis 6379
+    - echo "service reachable via alias"
 
 resource-lock-a:
   stage: test
@@ -60,11 +63,13 @@ external-cache-check:
     - fetch-sources
   script:
     - cat tests-temp/cache-data/last-run.txt
+    - test -f tests-temp/cache-state/cache.txt
     - echo "cache key $CI_COMMIT_REF_SLUG"
 
 deploy-review:
   stage: deploy
   needs:
+    - fetch-sources
     - resource-lock-a
     - resource-lock-b
   environment:

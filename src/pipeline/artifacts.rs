@@ -88,6 +88,19 @@ impl ArtifactManager {
         specs
     }
 
+    pub fn collect_declared(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+        let exclude = build_exclude_matcher(&job.artifacts.exclude)?;
+        for relative in &job.artifacts.paths {
+            let src = workspace.join(relative);
+            if !src.exists() {
+                continue;
+            }
+            let dest = self.job_artifact_host_path(&job.name, relative);
+            copy_declared_path(&src, &dest, relative, exclude.as_ref())?;
+        }
+        Ok(())
+    }
+
     pub fn dependency_mount_specs(
         &self,
         job_name: &str,
@@ -263,6 +276,39 @@ fn artifact_relative_path(artifact: &Path) -> PathBuf {
         rel.push("artifact");
     }
     rel
+}
+
+fn copy_declared_path(
+    src: &Path,
+    dest: &Path,
+    relative: &Path,
+    exclude: Option<&GlobSet>,
+) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        for entry in
+            fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
+        {
+            let entry = entry?;
+            let child_src = entry.path();
+            let child_rel = relative.join(entry.file_name());
+            let child_dest = dest.join(entry.file_name());
+            copy_declared_path(&child_src, &child_dest, &child_rel, exclude)?;
+        }
+        return Ok(());
+    }
+    if exclude.is_some_and(|glob| glob.is_match(relative)) {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(src, dest)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    Ok(())
 }
 
 fn artifact_kind(path: &Path) -> ArtifactPathKind {
