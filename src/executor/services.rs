@@ -24,6 +24,7 @@ pub struct ServiceRuntime {
     containers: Vec<String>,
     link_env: Vec<(String, String)>,
     claimed_aliases: HashSet<String>,
+    host_aliases: Vec<(String, String)>,
 }
 
 impl ServiceRuntime {
@@ -54,6 +55,7 @@ impl ServiceRuntime {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: HashSet::new(),
+            host_aliases: Vec::new(),
         };
 
         for (idx, service) in services.iter().enumerate() {
@@ -88,6 +90,13 @@ impl ServiceRuntime {
                 runtime.cleanup();
                 return Err(err);
             }
+            if matches!(engine, EngineKind::ContainerCli)
+                && let Some(ip) = inspect_service_ipv4(engine, &container_name)
+            {
+                for alias in &aliases {
+                    runtime.host_aliases.push((alias.clone(), ip.clone()));
+                }
+            }
             if matches!(engine, EngineKind::ContainerCli) && !ports.is_empty() {
                 for alias in &aliases {
                     runtime
@@ -117,6 +126,10 @@ impl ServiceRuntime {
 
     pub fn link_env(&self) -> &[(String, String)] {
         &self.link_env
+    }
+
+    pub fn host_aliases(&self) -> &[(String, String)] {
+        &self.host_aliases
     }
 
     fn start_service(
@@ -348,6 +361,52 @@ fn inspect_service_state(engine: EngineKind, container_name: &str) -> Result<Ser
         ));
     }
     parse_service_state(&output.stdout)
+}
+
+fn inspect_service_ipv4(engine: EngineKind, container_name: &str) -> Option<String> {
+    let mut command = Command::new(engine_binary(engine));
+    command.arg("inspect").arg(container_name);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_service_ipv4(&output.stdout).ok().flatten()
+}
+
+fn parse_service_ipv4(payload: &[u8]) -> Result<Option<String>> {
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .context("failed to parse service inspect output as json")?;
+    let service = value
+        .as_array()
+        .and_then(|items| items.first())
+        .or_else(|| value.as_object().map(|_| &value))
+        .ok_or_else(|| anyhow!("service inspect output was not an object or array"))?;
+
+    if let Some(ip) = service
+        .get("networks")
+        .and_then(|networks| networks.as_array())
+        .and_then(|items| items.first())
+        .and_then(|network| network.get("ipv4Address"))
+        .and_then(|value| value.as_str())
+    {
+        return Ok(ip.split('/').next().map(str::to_string));
+    }
+
+    if let Some(networks) = service
+        .get("NetworkSettings")
+        .and_then(|settings| settings.get("Networks"))
+        .and_then(|networks| networks.as_object())
+    {
+        for network in networks.values() {
+            if let Some(ip) = network.get("IPAddress").and_then(|value| value.as_str())
+                && !ip.is_empty()
+            {
+                return Ok(Some(ip.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
@@ -712,8 +771,8 @@ fn default_service_aliases(image: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServiceReadiness, ServiceRuntime, ServiceState, parse_service_state, readiness_from_state,
-        should_retry_container_network_error,
+        ServiceReadiness, ServiceRuntime, ServiceState, parse_service_ipv4, parse_service_state,
+        readiness_from_state, should_retry_container_network_error,
     };
     use crate::EngineKind;
     use crate::model::ServiceSpec;
@@ -831,6 +890,7 @@ mod tests {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: Default::default(),
+            host_aliases: Vec::new(),
         };
         let service = ServiceSpec {
             image: "redis:7".into(),
@@ -855,6 +915,7 @@ mod tests {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: Default::default(),
+            host_aliases: Vec::new(),
         };
         let service = ServiceSpec {
             image: "tutum/wordpress:latest".into(),
@@ -879,6 +940,7 @@ mod tests {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: Default::default(),
+            host_aliases: Vec::new(),
         };
         let first = ServiceSpec {
             image: "redis:7".into(),
@@ -913,6 +975,7 @@ mod tests {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: Default::default(),
+            host_aliases: Vec::new(),
         };
         let first = ServiceSpec {
             image: "tutum/wordpress:latest".into(),
@@ -947,6 +1010,7 @@ mod tests {
             containers: Vec::new(),
             link_env: Vec::new(),
             claimed_aliases: Default::default(),
+            host_aliases: Vec::new(),
         };
         let service = ServiceSpec {
             image: "redis:7".into(),
@@ -960,6 +1024,24 @@ mod tests {
             .aliases_for_service(0, &service)
             .expect_err("alias must error");
         assert!(err.to_string().contains("unsupported characters"));
+    }
+
+    #[test]
+    fn parse_service_ipv4_accepts_container_cli_shape() {
+        let payload = br#"[{"networks":[{"ipv4Address":"192.168.64.57/24"}]}]"#;
+        assert_eq!(
+            parse_service_ipv4(payload).unwrap(),
+            Some("192.168.64.57".into())
+        );
+    }
+
+    #[test]
+    fn parse_service_ipv4_accepts_docker_shape() {
+        let payload = br#"[{"NetworkSettings":{"Networks":{"opal":{"IPAddress":"172.18.0.2"}}}}]"#;
+        assert_eq!(
+            parse_service_ipv4(payload).unwrap(),
+            Some("172.18.0.2".into())
+        );
     }
 
     #[test]

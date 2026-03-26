@@ -66,7 +66,10 @@ pub(super) fn prepare_job_run(
     );
 
     let job_image = exec.resolve_job_image_with_env(job, Some(&cache_env))?;
-    let script_commands = expanded_commands(&exec.pipeline.defaults, job);
+    let mut script_commands = expanded_commands(&exec.pipeline.defaults, job);
+    if let Some(runtime) = service_runtime.as_ref() {
+        prepend_service_hosts(&mut script_commands, runtime.host_aliases());
+    }
     let script_path = crate::executor::script::write_job_script(
         &exec.scripts_dir,
         &exec.container_workdir,
@@ -162,6 +165,21 @@ fn merge_dotenv_env(env: &mut Vec<(String, String)>, extra: Vec<(String, String)
             env.push((key, value));
         }
     }
+}
+
+fn prepend_service_hosts(commands: &mut Vec<String>, aliases: &[(String, String)]) {
+    if aliases.is_empty() {
+        return;
+    }
+    let mut prefix = Vec::with_capacity(aliases.len());
+    for (alias, ip) in aliases {
+        prefix.push(format!(
+            "printf '%s\\t%s\\n' '{}' '{}' >> /etc/hosts",
+            ip, alias
+        ));
+    }
+    prefix.append(commands);
+    *commands = prefix;
 }
 
 fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<String> {
