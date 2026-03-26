@@ -307,6 +307,13 @@ fn emit_plan_job<F>(
     if let Some(meta) = plan_job_meta(planned) {
         emit_line(format!("{} {}", display.bold_cyan("    info:"), meta));
     }
+    if let Some(image) = planned.instance.job.image.as_ref() {
+        emit_line(format!(
+            "{} {}",
+            display.bold_cyan("    image:"),
+            format_image_spec(image)
+        ));
+    }
 
     emit_section(
         display,
@@ -484,6 +491,14 @@ fn format_artifacts_metadata(
         None
     } else {
         Some(parts.join(" – "))
+    }
+}
+
+pub fn format_image_spec(image: &crate::model::ImageSpec) -> String {
+    if let Some(platform) = &image.docker_platform {
+        format!("{} (platform: {})", image.name, platform)
+    } else {
+        image.name.clone()
     }
 }
 

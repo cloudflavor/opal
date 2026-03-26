@@ -3,6 +3,7 @@ pub mod cache;
 pub mod conversions;
 pub mod dependencies;
 pub mod environment;
+pub mod image;
 pub mod job;
 pub mod lowering;
 pub mod pipeline;
@@ -12,6 +13,7 @@ pub use artifacts::{ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec};
 pub use cache::{CacheKeySpec, CachePolicySpec, CacheSpec};
 pub use dependencies::{DependencySourceSpec, ExternalDependencySpec, JobDependencySpec};
 pub use environment::{EnvironmentActionSpec, EnvironmentSpec};
+pub use image::ImageSpec;
 pub use job::{
     JobSpec, ParallelConfigSpec, ParallelMatrixEntrySpec, ParallelVariableSpec, RetryPolicySpec,
 };

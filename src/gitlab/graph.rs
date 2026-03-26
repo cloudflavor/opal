@@ -36,7 +36,7 @@ pub struct Job {
     pub except: Vec<String>,
     pub artifacts: ArtifactConfig,
     pub cache: Vec<CacheConfig>,
-    pub image: Option<String>,
+    pub image: Option<ImageConfig>,
     pub variables: HashMap<String, String>,
     pub services: Vec<ServiceConfig>,
     pub timeout: Option<Duration>,
@@ -68,7 +68,7 @@ pub enum ArtifactWhen {
 }
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaults {
-    pub image: Option<String>,
+    pub image: Option<ImageConfig>,
     pub before_script: Vec<String>,
     pub after_script: Vec<String>,
     pub variables: HashMap<String, String>,
@@ -107,6 +107,12 @@ pub struct ServiceConfig {
     pub entrypoint: Vec<String>,
     pub command: Vec<String>,
     pub variables: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageConfig {
+    pub name: String,
+    pub docker_platform: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

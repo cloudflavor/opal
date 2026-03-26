@@ -4,7 +4,7 @@ pub mod rules;
 
 pub use graph::{
     ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
-    EnvironmentAction, EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig,
-    ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters, PipelineGraph,
-    RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, ImageConfig, Job, JobDependency,
+    ParallelConfig, ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters,
+    PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };

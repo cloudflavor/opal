@@ -443,7 +443,7 @@ impl ExecutorCore {
         &self,
         job: &JobSpec,
         env_lookup: Option<&HashMap<String, String>>,
-    ) -> Result<String> {
+    ) -> Result<crate::model::ImageSpec> {
         launch::resolve_job_image_with_env(self, job, env_lookup)
     }
 

@@ -25,6 +25,7 @@ impl NerdctlExecutor {
             .with_workspace_volume()
             .with_volumes()
             .with_network()
+            .with_platform()
             .with_env()
             .build()
     }
@@ -70,6 +71,13 @@ impl<'a> NerdctlCommandBuilder<'a> {
     fn with_network(mut self) -> Self {
         if let Some(network) = self.ctx.network {
             self.command.arg("--network").arg(network);
+        }
+        self
+    }
+
+    fn with_platform(mut self) -> Self {
+        if let Some(platform) = self.ctx.image_platform {
+            self.command.arg("--platform").arg(platform);
         }
         self
     }

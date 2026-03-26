@@ -1,7 +1,7 @@
 use super::ExecutorCore;
 use crate::execution_plan::ExecutionPlan;
 use crate::model::DependencySourceSpec;
-use crate::model::{JobSpec, PipelineDefaultsSpec, ServiceSpec};
+use crate::model::{ImageSpec, JobSpec, PipelineDefaultsSpec, ServiceSpec};
 use crate::pipeline::{VolumeMount, mounts};
 use crate::secrets::SecretsStore;
 use anyhow::Result;
@@ -13,7 +13,7 @@ pub(crate) struct PreparedJobRun {
     pub env_vars: Vec<(String, String)>,
     pub service_runtime: Option<crate::executor::services::ServiceRuntime>,
     pub mounts: Vec<VolumeMount>,
-    pub job_image: String,
+    pub job_image: ImageSpec,
     pub script_path: PathBuf,
 }
 

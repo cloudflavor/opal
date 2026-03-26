@@ -25,6 +25,7 @@ impl DockerExecutor {
             .with_workspace_volume()
             .with_volumes()
             .with_network()
+            .with_platform()
             .with_env()
             .build()
     }
@@ -74,6 +75,13 @@ impl<'a> DockerCommandBuilder<'a> {
         self
     }
 
+    fn with_platform(mut self) -> Self {
+        if let Some(platform) = self.ctx.image_platform {
+            self.command.arg("--platform").arg(platform);
+        }
+        self
+    }
+
     fn with_env(mut self) -> Self {
         for (key, value) in self.ctx.env_vars {
             self.command.arg("--env").arg(format!("{key}={value}"));
@@ -110,6 +118,7 @@ mod tests {
             container_script: Path::new("/opal/script.sh"),
             container_name: "opal-job",
             image: "alpine:3.19",
+            image_platform: None,
             mounts: &mounts,
             env_vars: &[],
             network: None,
@@ -135,5 +144,34 @@ mod tests {
             .expect("artifact mount present");
 
         assert!(workspace_idx < artifact_idx);
+    }
+
+    #[test]
+    fn build_command_includes_platform_when_requested() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: Some("linux/arm64/v8"),
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = DockerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--platform", "linux/arm64/v8"])
+        );
     }
 }

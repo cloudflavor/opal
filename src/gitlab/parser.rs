@@ -19,9 +19,9 @@ use tracing::warn;
 
 use super::graph::{
     ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
-    EnvironmentAction, EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig,
-    ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineGraph, RetryPolicy,
-    ServiceConfig, StageGroup, WorkflowConfig,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, ImageConfig, Job, JobDependency,
+    ParallelConfig, ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineGraph,
+    RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };
 use super::rules::JobRule;
 
@@ -681,18 +681,41 @@ fn is_reserved_keyword(name: &str) -> bool {
     )
 }
 
-fn parse_image(value: Value) -> Result<String> {
+fn parse_image(value: Value) -> Result<ImageConfig> {
     match value {
-        Value::String(name) => Ok(name),
+        Value::String(name) => Ok(ImageConfig {
+            name,
+            docker_platform: None,
+        }),
         Value::Mapping(mut map) => {
             if let Some(val) = map.remove(Value::String("name".to_string())) {
-                extract_string(val, "image name")
+                let name = extract_string(val, "image name")?;
+                let docker_platform = map
+                    .remove(Value::String("docker".to_string()))
+                    .map(parse_image_docker)
+                    .transpose()?;
+                Ok(ImageConfig {
+                    name,
+                    docker_platform,
+                })
             } else {
                 bail!("image mapping must include 'name'")
             }
         }
         other => bail!("image must be a string or mapping, got {other:?}"),
     }
+}
+
+fn parse_image_docker(value: Value) -> Result<String> {
+    let map = match value {
+        Value::Mapping(map) => map,
+        other => bail!("image.docker must be a mapping, got {other:?}"),
+    };
+    let platform_key = Value::String("platform".to_string());
+    let Some(value) = map.get(&platform_key) else {
+        bail!("image.docker must include 'platform'");
+    };
+    extract_string(value.clone(), "image.docker.platform")
 }
 
 fn extract_string(value: Value, what: &str) -> Result<String> {
@@ -704,7 +727,7 @@ fn extract_string(value: Value, what: &str) -> Result<String> {
 
 type ParsedJobSpec = (
     RawJob,
-    Option<String>,
+    Option<ImageConfig>,
     HashMap<String, String>,
     Vec<CacheConfig>,
     Vec<ServiceConfig>,
@@ -2758,6 +2781,36 @@ merged-job:
     }
 
     #[test]
+    fn parses_image_docker_platform() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+platform-job:
+  stage: test
+  image:
+    name: docker.io/library/alpine:3.19
+    docker:
+      platform: linux/arm64/v8
+  script:
+    - echo ok
+"#,
+        )
+        .expect("pipeline parses");
+
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "platform-job")
+            .expect("job present");
+
+        let image = job.image.as_ref().expect("image present");
+        assert_eq!(image.name, "docker.io/library/alpine:3.19");
+        assert_eq!(image.docker_platform.as_deref(), Some("linux/arm64/v8"));
+    }
+
+    #[test]
     fn include_cycle_errors() -> Result<()> {
         let dir = tempdir()?;
         let a_path = dir.path().join("a.yml");
@@ -3114,10 +3167,20 @@ test-job:
 "#;
 
         let pipeline = PipelineGraph::from_yaml_str(yaml).expect("pipeline parses");
-        assert_eq!(pipeline.defaults.image.as_deref(), Some("rust:latest"));
+        assert_eq!(
+            pipeline
+                .defaults
+                .image
+                .as_ref()
+                .map(|image| image.name.as_str()),
+            Some("rust:latest")
+        );
         let build_idx = find_job(&pipeline, "build-job");
         assert_eq!(
-            pipeline.graph[build_idx].image.as_deref(),
+            pipeline.graph[build_idx]
+                .image
+                .as_ref()
+                .map(|image| image.name.as_str()),
             Some("rust:slim")
         );
         let test_idx = find_job(&pipeline, "test-job");

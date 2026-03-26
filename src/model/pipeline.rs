@@ -1,4 +1,4 @@
-use super::{CacheSpec, RetryPolicySpec, ServiceSpec};
+use super::{CacheSpec, ImageSpec, RetryPolicySpec, ServiceSpec};
 use crate::gitlab::rules::JobRule;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -20,7 +20,7 @@ pub struct StageSpec {
 
 #[derive(Debug, Clone, Default)]
 pub struct PipelineDefaultsSpec {
-    pub image: Option<String>,
+    pub image: Option<ImageSpec>,
     pub before_script: Vec<String>,
     pub after_script: Vec<String>,
     pub variables: HashMap<String, String>,

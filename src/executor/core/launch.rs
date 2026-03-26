@@ -2,7 +2,7 @@ use super::ExecutorCore;
 use crate::display::{self, indent_block};
 use crate::env::expand_value;
 use crate::execution_plan::ExecutableJob;
-use crate::model::JobSpec;
+use crate::model::{ImageSpec, JobSpec};
 use crate::naming::{job_name_slug, stage_name_slug};
 use crate::pipeline::JobRunInfo;
 use crate::ui::UiBridge;
@@ -54,7 +54,11 @@ pub(super) fn log_job_start(
 
         let job_image = resolve_job_image(exec, job)?;
         let image_label = display.bold_cyan("    image:");
-        display::print_line(format!("{} {}", image_label, job_image));
+        display::print_line(format!(
+            "{} {}",
+            image_label,
+            display::format_image_spec(&job_image)
+        ));
 
         let container_label = display.bold_cyan("    container:");
         display::print_line(format!("{} {}", container_label, container_name));
@@ -74,7 +78,7 @@ pub(super) fn log_job_start(
     Ok(JobRunInfo { container_name })
 }
 
-pub(super) fn resolve_job_image(exec: &ExecutorCore, job: &JobSpec) -> Result<String> {
+pub(super) fn resolve_job_image(exec: &ExecutorCore, job: &JobSpec) -> Result<ImageSpec> {
     resolve_job_image_with_env(exec, job, None)
 }
 
@@ -82,13 +86,16 @@ pub(super) fn resolve_job_image_with_env(
     exec: &ExecutorCore,
     job: &JobSpec,
     env_lookup: Option<&HashMap<String, String>>,
-) -> Result<String> {
-    let template = if let Some(image) = job.image.as_ref() {
+) -> Result<ImageSpec> {
+    let mut image = if let Some(image) = job.image.as_ref() {
         image.clone()
     } else if let Some(image) = exec.pipeline.defaults.image.as_ref() {
         image.clone()
     } else if let Some(image) = exec.config.image.clone() {
-        image
+        ImageSpec {
+            name: image,
+            docker_platform: None,
+        }
     } else {
         return Err(anyhow!(
             "job '{}' has no image (use --base-image or set image in pipeline/job)",
@@ -96,15 +103,17 @@ pub(super) fn resolve_job_image_with_env(
         ));
     };
 
-    if !template.contains('$') {
-        return Ok(template);
+    if !image.name.contains('$') {
+        return Ok(image);
     }
 
     if let Some(map) = env_lookup {
-        Ok(expand_value(&template, map))
+        image.name = expand_value(&image.name, map);
+        Ok(image)
     } else {
         let owned_lookup: HashMap<String, String> = exec.job_env(job).into_iter().collect();
-        Ok(expand_value(&template, &owned_lookup))
+        image.name = expand_value(&image.name, &owned_lookup);
+        Ok(image)
     }
 }
 
@@ -178,7 +187,7 @@ mod tests {
         )
         .expect("image resolves");
 
-        assert_eq!(image, "registry.example.com/linux:latest");
+        assert_eq!(image.name, "registry.example.com/linux:latest");
     }
 
     fn test_core() -> ExecutorCore {

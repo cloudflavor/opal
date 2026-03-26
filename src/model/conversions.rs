@@ -1,14 +1,14 @@
 use crate::gitlab::{
     ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
-    EnvironmentAction, EnvironmentConfig, ExternalDependency, Job, JobDependency, ParallelConfig,
-    ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters, RetryPolicy,
-    ServiceConfig, WorkflowConfig,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, ImageConfig, Job, JobDependency,
+    ParallelConfig, ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters,
+    RetryPolicy, ServiceConfig, WorkflowConfig,
 };
 use crate::model::{
     ArtifactSpec, ArtifactWhenSpec, CacheKeySpec, CachePolicySpec, CacheSpec, DependencySourceSpec,
-    EnvironmentActionSpec, EnvironmentSpec, ExternalDependencySpec, JobDependencySpec, JobSpec,
-    ParallelConfigSpec, ParallelMatrixEntrySpec, ParallelVariableSpec, PipelineDefaultsSpec,
-    PipelineFilterSpec, RetryPolicySpec, ServiceSpec, WorkflowSpec,
+    EnvironmentActionSpec, EnvironmentSpec, ExternalDependencySpec, ImageSpec, JobDependencySpec,
+    JobSpec, ParallelConfigSpec, ParallelMatrixEntrySpec, ParallelVariableSpec,
+    PipelineDefaultsSpec, PipelineFilterSpec, RetryPolicySpec, ServiceSpec, WorkflowSpec,
 };
 
 impl From<&JobSpec> for Job {
@@ -38,7 +38,7 @@ impl From<&JobSpec> for Job {
                 report_dotenv: value.artifacts.report_dotenv.clone(),
             },
             cache: value.cache.iter().map(CacheConfig::from).collect(),
-            image: value.image.clone(),
+            image: value.image.as_ref().map(ImageConfig::from),
             variables: value.variables.clone(),
             services: value.services.iter().map(ServiceConfig::from).collect(),
             timeout: value.timeout,
@@ -79,7 +79,7 @@ impl From<&Job> for JobSpec {
                 report_dotenv: value.artifacts.report_dotenv.clone(),
             },
             cache: value.cache.iter().map(CacheSpec::from).collect(),
-            image: value.image.clone(),
+            image: value.image.as_ref().map(ImageSpec::from),
             variables: value.variables.clone(),
             services: value.services.iter().map(ServiceSpec::from).collect(),
             timeout: value.timeout,
@@ -116,7 +116,7 @@ impl From<&ArtifactWhenSpec> for ArtifactWhen {
 impl From<&PipelineDefaults> for PipelineDefaultsSpec {
     fn from(value: &PipelineDefaults) -> Self {
         Self {
-            image: value.image.clone(),
+            image: value.image.as_ref().map(ImageSpec::from),
             before_script: value.before_script.clone(),
             after_script: value.after_script.clone(),
             variables: value.variables.clone(),
@@ -228,6 +228,24 @@ impl From<&ServiceSpec> for ServiceConfig {
             entrypoint: value.entrypoint.clone(),
             command: value.command.clone(),
             variables: value.variables.clone(),
+        }
+    }
+}
+
+impl From<&ImageConfig> for ImageSpec {
+    fn from(value: &ImageConfig) -> Self {
+        Self {
+            name: value.name.clone(),
+            docker_platform: value.docker_platform.clone(),
+        }
+    }
+}
+
+impl From<&ImageSpec> for ImageConfig {
+    fn from(value: &ImageSpec) -> Self {
+        Self {
+            name: value.name.clone(),
+            docker_platform: value.docker_platform.clone(),
         }
     }
 }

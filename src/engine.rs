@@ -7,6 +7,7 @@ pub struct EngineCommandContext<'a> {
     pub container_script: &'a Path,
     pub container_name: &'a str,
     pub image: &'a str,
+    pub image_platform: Option<&'a str>,
     pub mounts: &'a [VolumeMount],
     pub env_vars: &'a [(String, String)],
     pub network: Option<&'a str>,

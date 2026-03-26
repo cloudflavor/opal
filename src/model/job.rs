@@ -1,4 +1,4 @@
-use super::{ArtifactSpec, CacheSpec, EnvironmentSpec, JobDependencySpec, ServiceSpec};
+use super::{ArtifactSpec, CacheSpec, EnvironmentSpec, ImageSpec, JobDependencySpec, ServiceSpec};
 use crate::gitlab::rules::JobRule;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -21,7 +21,7 @@ pub struct JobSpec {
     pub except: Vec<String>,
     pub artifacts: ArtifactSpec,
     pub cache: Vec<CacheSpec>,
-    pub image: Option<String>,
+    pub image: Option<ImageSpec>,
     pub variables: HashMap<String, String>,
     pub services: Vec<ServiceSpec>,
     pub timeout: Option<Duration>,
