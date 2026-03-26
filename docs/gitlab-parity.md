@@ -277,6 +277,7 @@ These features exist in Opal, but they do not match GitLab completely.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `image` is subset-only.
   Opal supports string form, mapping form with `name`, and `image:docker:platform`.
+  On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `image:docker:platform` to the engine's `--platform` selection.
   On the Apple `container` engine, `image:docker:platform` is translated into the corresponding `container run --arch` selection for common `amd64` / `arm64` Linux platform values.
   Unsupported image behavior in Opal today includes:
   - `image:docker:user`

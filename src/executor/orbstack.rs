@@ -37,6 +37,42 @@ struct OrbstackCommandBuilder<'a> {
     workspace_mount: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::OrbstackExecutor;
+    use crate::engine::EngineCommandContext;
+    use std::path::Path;
+
+    #[test]
+    fn build_command_includes_platform_when_requested() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: Some("linux/arm64/v8"),
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = OrbstackExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--platform", "linux/arm64/v8"])
+        );
+    }
+}
+
 impl<'a> OrbstackCommandBuilder<'a> {
     fn new(ctx: &'a EngineCommandContext<'a>) -> Self {
         let workspace_mount = format!("{}:{}", ctx.workdir.display(), ctx.container_root.display());
