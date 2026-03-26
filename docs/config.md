@@ -14,6 +14,13 @@ cpus = "6"          # defaults to 4 if omitted
 memory = "2g"       # defaults to 1.6 GB (1638m) if omitted
 dns = "8.8.8.8"     # optional; leave unset to use the engine default
 
+[[jobs]]
+name = "deploy"
+arch = "arm64"
+privileged = true
+cap_add = ["NET_ADMIN"]
+cap_drop = ["MKNOD"]
+
 [[registry]]
 server = "registry.gitlab.com"
 username = "gitlab-ci-token"
@@ -30,6 +37,19 @@ Currently only the Apple `container` CLI exposes tunables. You can configure it 
 - `cpus`: string passed to `--cpus`. Controls maximum parallel threads in the VM.
 - `memory`: string passed to `--memory`. Accepts Docker-style units (e.g., `1024m`, `2g`).
 - `dns`: optional custom resolver for `container run --dns`.
+
+Job-specific runtime overrides:
+
+- Use `[[jobs]]` entries to target exact job names.
+- Supported keys today:
+  - `name`: exact job name to match
+  - `arch`: override job architecture/platform selection
+  - `privileged`: request privileged containers on engines that support it
+  - `cap_add`: add Linux capabilities on engines that support it
+  - `cap_drop`: drop Linux capabilities on engines that support it
+- Engine behavior:
+  - `docker`, `podman`, `nerdctl`, `orbstack`: support `privileged`, `cap_add`, and `cap_drop`
+  - Apple `container`: supports `arch`, but fails explicitly if `privileged` or capability flags are requested
 
 Add more `[engine.<name>]` tables in the future to tune other runtimes.
 
