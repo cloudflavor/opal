@@ -72,6 +72,7 @@ pub fn build_job_env(
     push("CI", "true");
     push("GITLAB_CI", "true");
     push("CI_JOB_NAME", &job.name);
+    push("CI_JOB_NAME_SLUG", &job_name_slug(&job.name));
     push("CI_JOB_STAGE", &job.stage);
     push("CI_PROJECT_DIR", &container_workdir.display().to_string());
     push("CI_BUILDS_DIR", &container_root.display().to_string());
@@ -366,6 +367,10 @@ mod tests {
             &HashMap::from([("CI_PROJECT_DIR".into(), "/workspace".into())]),
         );
         let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("CI_JOB_NAME_SLUG").map(String::as_str),
+            Some("build")
+        );
         assert_eq!(
             map.get("CI_PROJECT_DIR").map(String::as_str),
             Some("/workspace")
