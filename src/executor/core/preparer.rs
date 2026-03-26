@@ -14,6 +14,10 @@ pub(crate) struct PreparedJobRun {
     pub service_runtime: Option<crate::executor::services::ServiceRuntime>,
     pub mounts: Vec<VolumeMount>,
     pub job_image: ImageSpec,
+    pub arch: Option<String>,
+    pub privileged: bool,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
     pub script_path: PathBuf,
 }
 
@@ -65,6 +69,8 @@ pub(super) fn prepare_job_run(
         collect_dotenv_env(exec, plan, job, &completed_jobs)?,
     );
 
+    let job_override = exec.config.settings.job_override_for(&job.name);
+
     let job_image = exec.resolve_job_image_with_env(job, Some(&cache_env))?;
     let mut script_commands = expanded_commands(&exec.pipeline.defaults, job);
     if let Some(runtime) = service_runtime.as_ref() {
@@ -84,6 +90,19 @@ pub(super) fn prepare_job_run(
         service_runtime,
         mounts,
         job_image,
+        arch: job_override.as_ref().and_then(|cfg| cfg.arch.clone()),
+        privileged: job_override
+            .as_ref()
+            .map(|cfg| cfg.privileged)
+            .unwrap_or(false),
+        cap_add: job_override
+            .as_ref()
+            .map(|cfg| cfg.cap_add.clone())
+            .unwrap_or_default(),
+        cap_drop: job_override
+            .as_ref()
+            .map(|cfg| cfg.cap_drop.clone())
+            .unwrap_or_default(),
         script_path,
     })
 }

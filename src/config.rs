@@ -10,6 +10,7 @@ use std::path::Path;
 #[serde(default)]
 pub struct OpalConfig {
     pub container: Option<ContainerEngineConfig>,
+    pub jobs: Vec<JobOverrideConfig>,
     pub engines: EngineSettings,
     #[serde(rename = "registry")]
     pub registries: Vec<RegistryAuth>,
@@ -28,6 +29,24 @@ pub struct ContainerEngineConfig {
     pub cpus: Option<String>,
     pub memory: Option<String>,
     pub dns: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct JobOverrideConfig {
+    pub name: String,
+    pub arch: Option<String>,
+    pub privileged: Option<bool>,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedJobOverride {
+    pub arch: Option<String>,
+    pub privileged: bool,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,6 +105,30 @@ impl OpalConfig {
         Ok(results)
     }
 
+    pub fn job_override_for(&self, job_name: &str) -> Option<ResolvedJobOverride> {
+        let mut resolved = ResolvedJobOverride::default();
+        let mut matched = false;
+        for entry in &self.jobs {
+            if entry.name != job_name {
+                continue;
+            }
+            matched = true;
+            if let Some(value) = &entry.arch {
+                resolved.arch = Some(value.clone());
+            }
+            if let Some(value) = entry.privileged {
+                resolved.privileged = value;
+            }
+            if !entry.cap_add.is_empty() {
+                resolved.cap_add = entry.cap_add.clone();
+            }
+            if !entry.cap_drop.is_empty() {
+                resolved.cap_drop = entry.cap_drop.clone();
+            }
+        }
+        matched.then_some(resolved)
+    }
+
     fn merge(&mut self, mut other: OpalConfig) {
         if let Some(new_container) = other.container.take() {
             match &mut self.container {
@@ -94,6 +137,7 @@ impl OpalConfig {
             }
         }
         self.engines.merge(other.engines);
+        self.jobs.extend(other.jobs);
         self.registries.extend(other.registries);
     }
 }
@@ -170,7 +214,7 @@ impl RegistryAuth {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerEngineConfig, OpalConfig};
+    use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig};
 
     #[test]
     fn container_config_merge_overrides_arch() {
@@ -199,6 +243,35 @@ mod tests {
                 .and_then(|cfg| cfg.arch.as_deref()),
             Some("arm64")
         );
+    }
+
+    #[test]
+    fn job_override_for_merges_matching_entries() {
+        let config = OpalConfig {
+            jobs: vec![
+                JobOverrideConfig {
+                    name: "deploy".into(),
+                    arch: Some("arm64".into()),
+                    privileged: Some(false),
+                    cap_add: Vec::new(),
+                    cap_drop: Vec::new(),
+                },
+                JobOverrideConfig {
+                    name: "deploy".into(),
+                    arch: None,
+                    privileged: Some(true),
+                    cap_add: vec!["NET_ADMIN".into()],
+                    cap_drop: vec!["MKNOD".into()],
+                },
+            ],
+            ..OpalConfig::default()
+        };
+
+        let resolved = config.job_override_for("deploy").expect("override present");
+        assert_eq!(resolved.arch.as_deref(), Some("arm64"));
+        assert!(resolved.privileged);
+        assert_eq!(resolved.cap_add, vec!["NET_ADMIN"]);
+        assert_eq!(resolved.cap_drop, vec!["MKNOD"]);
     }
 }
 

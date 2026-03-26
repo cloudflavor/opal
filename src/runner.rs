@@ -15,4 +15,8 @@ pub struct ExecuteContext<'a> {
     pub ui: Option<&'a UiBridge>,
     pub env_vars: &'a [(String, String)],
     pub network: Option<&'a str>,
+    pub arch: Option<&'a str>,
+    pub privileged: bool,
+    pub cap_add: &'a [String],
+    pub cap_drop: &'a [String],
 }

@@ -26,6 +26,7 @@ impl OrbstackExecutor {
             .with_volumes()
             .with_network()
             .with_platform()
+            .with_privileges()
             .with_env()
             .build()
     }
@@ -56,6 +57,9 @@ mod tests {
             env_vars: &[],
             network: None,
             arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
             cpus: None,
             memory: None,
             dns: None,
@@ -114,6 +118,19 @@ impl<'a> OrbstackCommandBuilder<'a> {
     fn with_platform(mut self) -> Self {
         if let Some(platform) = self.ctx.image_platform {
             self.command.arg("--platform").arg(platform);
+        }
+        self
+    }
+
+    fn with_privileges(mut self) -> Self {
+        if self.ctx.privileged {
+            self.command.arg("--privileged");
+        }
+        for capability in self.ctx.cap_add {
+            self.command.arg("--cap-add").arg(capability);
+        }
+        for capability in self.ctx.cap_drop {
+            self.command.arg("--cap-drop").arg(capability);
         }
         self
     }

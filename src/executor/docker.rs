@@ -26,6 +26,7 @@ impl DockerExecutor {
             .with_volumes()
             .with_network()
             .with_platform()
+            .with_privileges()
             .with_env()
             .build()
     }
@@ -82,6 +83,19 @@ impl<'a> DockerCommandBuilder<'a> {
         self
     }
 
+    fn with_privileges(mut self) -> Self {
+        if self.ctx.privileged {
+            self.command.arg("--privileged");
+        }
+        for capability in self.ctx.cap_add {
+            self.command.arg("--cap-add").arg(capability);
+        }
+        for capability in self.ctx.cap_drop {
+            self.command.arg("--cap-drop").arg(capability);
+        }
+        self
+    }
+
     fn with_env(mut self) -> Self {
         for (key, value) in self.ctx.env_vars {
             self.command.arg("--env").arg(format!("{key}={value}"));
@@ -123,6 +137,9 @@ mod tests {
             env_vars: &[],
             network: None,
             arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
             cpus: None,
             memory: None,
             dns: None,
@@ -159,6 +176,9 @@ mod tests {
             env_vars: &[],
             network: None,
             arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
             cpus: None,
             memory: None,
             dns: None,
@@ -173,5 +193,41 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--platform", "linux/arm64/v8"])
         );
+    }
+
+    #[test]
+    fn build_command_includes_privileged_and_capabilities() {
+        let cap_add = vec!["NET_ADMIN".to_string()];
+        let cap_drop = vec!["MKNOD".to_string()];
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            privileged: true,
+            cap_add: &cap_add,
+            cap_drop: &cap_drop,
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = DockerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.iter().any(|arg| arg == "--privileged"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--cap-add", "NET_ADMIN"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--cap-drop", "MKNOD"]));
     }
 }

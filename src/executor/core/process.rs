@@ -32,6 +32,10 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         ui,
         env_vars,
         network,
+        arch,
+        privileged,
+        cap_add,
+        cap_drop,
     } = ctx;
     if !exec.config.enable_tui {
         let display = exec.display();
@@ -59,11 +63,16 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         mounts,
         env_vars,
         network,
-        arch: container_cfg.and_then(|cfg| cfg.arch.as_deref()),
+        privileged,
+        cap_add,
+        cap_drop,
+        arch: arch.or_else(|| container_cfg.and_then(|cfg| cfg.arch.as_deref())),
         cpus: container_cfg.and_then(|cfg| cfg.cpus.as_deref()),
         memory: container_cfg.and_then(|cfg| cfg.memory.as_deref()),
         dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
     };
+
+    validate_engine_security_options(exec.config.engine, &command_ctx)?;
 
     let mut proc = spawn_container_process(exec, &command_ctx)?;
     let output_line_count = capture_output(
@@ -95,6 +104,20 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         ));
     }
 
+    Ok(())
+}
+
+fn validate_engine_security_options(
+    engine: EngineKind,
+    ctx: &EngineCommandContext<'_>,
+) -> Result<()> {
+    if matches!(engine, EngineKind::ContainerCli)
+        && (ctx.privileged || !ctx.cap_add.is_empty() || !ctx.cap_drop.is_empty())
+    {
+        return Err(anyhow!(
+            "the Apple 'container' engine does not support privileged mode or capability flags"
+        ));
+    }
     Ok(())
 }
 
@@ -153,11 +176,14 @@ fn capture_output(
 
 #[cfg(test)]
 mod tests {
-    use super::capture_output;
+    use super::{capture_output, validate_engine_security_options};
+    use crate::engine::EngineCommandContext;
+    use crate::EngineKind;
     use crate::logging::LogFormatter;
     use crate::secrets::SecretsStore;
     use std::fs;
     use std::io::Cursor;
+    use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -209,6 +235,33 @@ mod tests {
         assert_eq!(emitted, 0);
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validate_engine_security_options_rejects_container_privileged_mode() {
+        let cap_add = vec!["NET_ADMIN".to_string()];
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            arch: None,
+            privileged: true,
+            cap_add: &cap_add,
+            cap_drop: &[],
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let err = validate_engine_security_options(EngineKind::ContainerCli, &ctx)
+            .expect_err("container engine should reject privileged flags");
+        assert!(err.to_string().contains("does not support privileged mode"));
     }
 
     fn temp_path(prefix: &str) -> PathBuf {

@@ -45,6 +45,10 @@ pub(crate) fn run_planned_job(
                 .service_runtime
                 .as_ref()
                 .map(|runtime| runtime.network_name()),
+            arch: prepared.arch.as_deref(),
+            privileged: prepared.privileged,
+            cap_add: &prepared.cap_add,
+            cap_drop: &prepared.cap_drop,
         });
         exec.cleanup_finished_container(&container_name);
         if let Some(mut runtime) = prepared.service_runtime.take() {
