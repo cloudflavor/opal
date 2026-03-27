@@ -35,9 +35,11 @@ Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `
 ## Quick Start
 
 ```bash
-cargo install opal
+cargo install opal-cli
 opal run
 ```
+
+This installs the executable as `opal` on your system.
 
 For a local checkout during development, use:
 

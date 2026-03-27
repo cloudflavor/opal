@@ -3,8 +3,10 @@
 ## Install
 
 ```bash
-cargo install opal
+cargo install opal-cli
 ```
+
+This installs the executable as `opal`.
 
 Opal requires Docker, Podman, Apple `container`, or OrbStack for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
 

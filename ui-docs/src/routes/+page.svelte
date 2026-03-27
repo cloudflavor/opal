@@ -107,7 +107,7 @@
   <div class="install-intro">
     <div>
       <h3>Install from crates.io</h3>
-      <pre>cargo install opal</pre>
+      <pre>cargo install opal-cli</pre>
     </div>
     <a class="reference-doc-link" href="/docs/install">Open install docs →</a>
   </div>

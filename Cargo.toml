@@ -1,5 +1,5 @@
 [package]
-name = "opal"
+name = "opal-cli"
 version = "0.1.0-rc1"
 edition = "2024"
 description = "Terminal-first GitLab pipeline runner with TUI, history browser, and embedded docs."
@@ -19,6 +19,13 @@ include = [
   "/docs/**",
   "/src/**",
 ]
+
+[lib]
+name = "opal"
+
+[[bin]]
+name = "opal"
+path = "src/bin/opal.rs"
 
 [dependencies]
 anyhow = "1.0"

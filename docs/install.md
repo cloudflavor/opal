@@ -3,10 +3,16 @@
 ## Install from crates.io
 
 ```bash
-cargo install opal
+cargo install opal-cli
 ```
 
 This is the default user-facing install path.
+
+The installed executable is still:
+
+```bash
+opal
+```
 
 ## Install from a local checkout
 
