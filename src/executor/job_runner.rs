@@ -4,6 +4,8 @@ use crate::pipeline::{JobEvent, JobFailureKind, JobRunInfo};
 use crate::runner::ExecuteContext;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::{Result, anyhow};
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -101,7 +103,7 @@ pub(crate) fn run_planned_job(
 
     let duration = job_start.elapsed().as_secs_f32();
     let cancelled = exec.take_cancelled_job(&job_name);
-    let final_result = completion_result(result, cancelled);
+    let final_result = completion_result(result, cancelled, &log_path);
     if let Some(ui) = ui_ref {
         match &final_result {
             Ok(_) => ui.job_finished(&job_name, UiJobStatus::Success, duration, None),
@@ -143,12 +145,45 @@ pub(crate) fn run_planned_job(
     }
 }
 
-fn completion_result(result: Result<()>, cancelled: bool) -> Result<()> {
+fn completion_result(result: Result<()>, cancelled: bool, log_path: &Path) -> Result<()> {
     if cancelled {
         Err(anyhow!("job cancelled by user"))
     } else {
-        result
+        enrich_failure_with_log_hint(result, log_path)
     }
+}
+
+fn enrich_failure_with_log_hint(result: Result<()>, log_path: &Path) -> Result<()> {
+    let err = match result {
+        Ok(()) => return Ok(()),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    if !message.contains("container command exited with status") {
+        return Err(err);
+    }
+    let Some(hint) = failure_hint_from_log(log_path) else {
+        return Err(err);
+    };
+    Err(anyhow!("{message}; hint: {hint}"))
+}
+
+fn failure_hint_from_log(log_path: &Path) -> Option<&'static str> {
+    let tail = read_log_tail(log_path, 32 * 1024)?;
+    if tail.contains("error: rustup could not choose a version of rustc to run")
+        && tail.contains("no default is configured")
+    {
+        return Some(
+            "the job log shows an empty rustup home. A workspace-local `RUSTUP_HOME` can mask the Rust toolchain bundled in the image, especially after a cold branch/tag cache key. Prefer leaving `RUSTUP_HOME` unset in Rust images, or bootstrap the toolchain explicitly before running `rustc`/`cargo`",
+        );
+    }
+    None
+}
+
+fn read_log_tail(log_path: &Path, max_bytes: usize) -> Option<String> {
+    let bytes = fs::read(log_path).ok()?;
+    let start = bytes.len().saturating_sub(max_bytes);
+    Some(String::from_utf8_lossy(&bytes[start..]).into_owned())
 }
 
 fn extract_exit_code(result: &Result<()>, cancelled: bool) -> Option<i32> {
@@ -277,11 +312,41 @@ mod tests {
     use super::{classify_failure, completion_result, extract_exit_code};
     use crate::pipeline::JobFailureKind;
     use anyhow::anyhow;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn completion_result_prefers_cancelled_state() {
-        let result = completion_result(Ok(()), true).expect_err("cancelled job should fail");
+        let log_path = temp_path("job-run-cancelled").join("job.log");
+        let result = completion_result(Ok(()), true, &log_path)
+            .expect_err("cancelled job should fail");
         assert_eq!(result.to_string(), "job cancelled by user");
+    }
+
+    #[test]
+    fn completion_result_adds_rustup_hint_from_log() {
+        let temp_root = temp_path("job-run-rustup-hint");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        let log_path = temp_root.join("job.log");
+        fs::write(
+            &log_path,
+            "[fetch-sources] error: rustup could not choose a version of rustc to run, because one wasn't specified explicitly, and no default is configured.\nhelp: run 'rustup default stable' to download the latest stable release of Rust and set it as your default toolchain.\n",
+        )
+        .expect("write log");
+
+        let result = completion_result(
+            Err(anyhow!("container command exited with status Some(1)")),
+            false,
+            &log_path,
+        )
+        .expect_err("rustup failure should remain an error");
+        let message = result.to_string();
+        assert!(message.contains("container command exited with status Some(1)"));
+        assert!(message.contains("RUSTUP_HOME"));
+        assert!(message.contains("cold branch/tag cache key"));
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -366,5 +431,13 @@ mod tests {
     fn extract_exit_code_reads_container_exit_status() {
         let result = Err(anyhow!("container command exited with status Some(137)"));
         assert_eq!(extract_exit_code(&result, false), Some(137));
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
     }
 }

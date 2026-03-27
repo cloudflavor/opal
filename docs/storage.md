@@ -142,6 +142,33 @@ $OPAL_HOME/<run-id>/cache-staging/
 
 for staged pull-only cache copies.
 
+## Toolchain homes in language images
+
+Be careful when redirecting language toolchain homes into the project workspace.
+
+For Rust images in particular:
+
+- `CARGO_HOME` is commonly safe to point at `"$CI_PROJECT_DIR/.cargo"` when you want a local registry and crate cache.
+- `RUSTUP_HOME` is different: official Rust images already contain a toolchain under the image default rustup location.
+- If you override `RUSTUP_HOME` to something like `"$CI_PROJECT_DIR/.rustup"`, you can accidentally hide the bundled toolchain from `rustc`, `cargo`, and `rustup`.
+
+Why this often appears only after a tag or new branch:
+
+- many pipelines key caches from `CI_COMMIT_REF_SLUG`
+- GitLab defines `CI_COMMIT_REF_SLUG` from the current branch or tag ref name
+- a new branch or tag therefore starts with a cold cache unless another run already populated it
+- if that cold cache also becomes your new `RUSTUP_HOME`, the container can suddenly fail with:
+
+```text
+error: rustup could not choose a version of rustc to run
+```
+
+Recommended pattern for Rust images:
+
+- leave `RUSTUP_HOME` unset unless you intentionally bootstrap a toolchain into that custom location
+- cache `CARGO_HOME` and `target/`
+- if you do need a custom `RUSTUP_HOME`, run an explicit bootstrap step such as `rustup default stable` or your pinned toolchain install before calling `rustc` or `cargo`
+
 ## History
 
 Opal records completed runs in:

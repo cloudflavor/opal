@@ -15,13 +15,11 @@ default:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
       - .cargo/
-      - .rustup/
       - target/
 
 variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
   CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
 
 fetch-sources:
