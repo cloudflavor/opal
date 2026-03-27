@@ -25,6 +25,12 @@ pub struct HistoryJob {
     pub artifacts: Vec<String>,
     #[serde(default)]
     pub caches: Vec<HistoryCache>,
+    #[serde(default)]
+    pub container_name: Option<String>,
+    #[serde(default)]
+    pub service_network: Option<String>,
+    #[serde(default)]
+    pub service_containers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

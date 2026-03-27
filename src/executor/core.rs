@@ -64,6 +64,9 @@ struct JobResourceInfo {
     artifact_dir: Option<String>,
     artifact_paths: Vec<String>,
     caches: Vec<HistoryCache>,
+    container_name: Option<String>,
+    service_network: Option<String>,
+    service_containers: Vec<String>,
 }
 
 impl ExecutorCore {
@@ -321,6 +324,9 @@ impl ExecutorCore {
                         artifact_dir,
                         artifact_paths,
                         caches,
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
                     },
                 )
             })
@@ -339,6 +345,9 @@ impl ExecutorCore {
                         artifact_dir: info.artifact_dir.clone(),
                         artifact_paths: info.artifact_paths.clone(),
                         caches: info.caches.clone(),
+                        container_name: info.container_name.clone(),
+                        service_network: info.service_network.clone(),
+                        service_containers: info.service_containers.clone(),
                     },
                 )
             })
@@ -353,18 +362,46 @@ impl ExecutorCore {
         let resource_map = resources
             .iter()
             .map(|(name, info)| {
+                let runtime = self.runtime_state.runtime_objects(name);
                 (
                     name.clone(),
                     history_store::HistoryResources {
                         artifact_dir: info.artifact_dir.clone(),
                         artifacts: info.artifact_paths.clone(),
                         caches: info.caches.clone(),
+                        container_name: runtime
+                            .as_ref()
+                            .and_then(|objects| objects.container_name.clone())
+                            .or_else(|| info.container_name.clone()),
+                        service_network: runtime
+                            .as_ref()
+                            .and_then(|objects| objects.service_network.clone())
+                            .or_else(|| info.service_network.clone()),
+                        service_containers: runtime
+                            .as_ref()
+                            .map(|objects| objects.service_containers.clone())
+                            .unwrap_or_else(|| info.service_containers.clone()),
                     },
                 )
             })
             .collect();
         self.history_store
             .record(&self.run_id, summaries, &resource_map)
+    }
+
+    pub(crate) fn record_runtime_objects(
+        &self,
+        job_name: &str,
+        container_name: String,
+        service_network: Option<String>,
+        service_containers: Vec<String>,
+    ) {
+        self.runtime_state.record_runtime_objects(
+            job_name,
+            container_name,
+            service_network,
+            service_containers,
+        );
     }
 
     pub(crate) fn log_job_start(

@@ -374,6 +374,7 @@ mod tests {
             engines: EngineSettings {
                 default: Some(EngineChoice::Docker),
                 container: None,
+                preserve_runtime_objects: false,
             },
             ..OpalConfig::default()
         };
@@ -390,6 +391,7 @@ mod tests {
             engines: EngineSettings {
                 default: Some(EngineChoice::Docker),
                 container: None,
+                preserve_runtime_objects: false,
             },
             ..OpalConfig::default()
         };

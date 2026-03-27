@@ -12,6 +12,9 @@ pub(super) struct HistoryResources {
     pub artifact_dir: Option<String>,
     pub artifacts: Vec<String>,
     pub caches: Vec<crate::history::HistoryCache>,
+    pub container_name: Option<String>,
+    pub service_network: Option<String>,
+    pub service_containers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,16 @@ impl HistoryStore {
                     caches: resources
                         .get(&summary.name)
                         .map(|info| info.caches.clone())
+                        .unwrap_or_default(),
+                    container_name: resources
+                        .get(&summary.name)
+                        .and_then(|info| info.container_name.clone()),
+                    service_network: resources
+                        .get(&summary.name)
+                        .and_then(|info| info.service_network.clone()),
+                    service_containers: resources
+                        .get(&summary.name)
+                        .map(|info| info.service_containers.clone())
                         .unwrap_or_default(),
                 })
                 .collect(),
@@ -169,6 +182,9 @@ mod tests {
                     host: "/tmp/cache".into(),
                     paths: vec!["target".into()],
                 }],
+                container_name: Some("opal-build-01".into()),
+                service_network: Some("opal-net-build".into()),
+                service_containers: vec!["opal-svc-build-00".into()],
             },
         )]);
 
@@ -179,6 +195,15 @@ mod tests {
         assert_eq!(entry.run_id, "run-123");
         assert_eq!(entry.status, HistoryStatus::Success);
         assert_eq!(entry.jobs.len(), 1);
+        assert_eq!(entry.jobs[0].artifact_dir.as_deref(), Some("/tmp/artifacts"));
+        assert_eq!(entry.jobs[0].artifacts, vec!["dist/"]);
+        assert_eq!(entry.jobs[0].caches[0].key, "cache");
+        assert_eq!(entry.jobs[0].container_name.as_deref(), Some("opal-build-01"));
+        assert_eq!(
+            entry.jobs[0].service_network.as_deref(),
+            Some("opal-net-build")
+        );
+        assert_eq!(entry.jobs[0].service_containers, vec!["opal-svc-build-00"]);
         assert_eq!(store.snapshot().len(), 1);
         assert!(path.exists());
         let _ = std::fs::remove_file(path);

@@ -161,8 +161,28 @@ Each history entry records:
   - artifact directory
   - artifact list
   - cache metadata
+  - main job container name (when recorded)
+  - service network name (when recorded)
+  - service container names (when recorded)
 
 This is what powers `opal view` and the run-history sidebar in the TUI.
+
+## Runtime object cleanup
+
+By default, Opal cleans up runtime objects after successful job completion:
+
+- main job containers
+- service containers
+- per-job service networks
+
+You can override that with config:
+
+```toml
+[engine]
+preserve_runtime_objects = true
+```
+
+When enabled, Opal keeps those runtime objects for post-run inspection and records their names into job history so they can be surfaced in `opal view`.
 
 ## Resource groups
 

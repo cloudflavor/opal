@@ -35,6 +35,9 @@ pub struct UiJobResources {
     pub artifact_dir: Option<String>,
     pub artifact_paths: Vec<String>,
     pub caches: Vec<HistoryCache>,
+    pub container_name: Option<String>,
+    pub service_network: Option<String>,
+    pub service_containers: Vec<String>,
 }
 
 impl From<&HistoryJob> for UiJobResources {
@@ -43,6 +46,9 @@ impl From<&HistoryJob> for UiJobResources {
             artifact_dir: job.artifact_dir.clone(),
             artifact_paths: job.artifacts.clone(),
             caches: job.caches.clone(),
+            container_name: job.container_name.clone(),
+            service_network: job.service_network.clone(),
+            service_containers: job.service_containers.clone(),
         }
     }
 }

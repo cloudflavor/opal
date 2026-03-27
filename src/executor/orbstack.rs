@@ -145,6 +145,7 @@ mod tests {
             mounts: &[],
             env_vars: &[],
             network: None,
+            preserve_runtime_objects: false,
             arch: None,
             privileged: false,
             cap_add: &[],

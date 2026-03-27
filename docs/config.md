@@ -13,6 +13,7 @@ This means project-level `.opal/config.toml` overrides global defaults.
 ```toml
 [engine]
 default = "docker"   # override --engine auto for this project or machine
+preserve_runtime_objects = true
 
 [container]         # applies to the Apple "container" CLI microVMs
 arch = "arm64"       # optional; defaults to x86_64 unless overridden
@@ -49,10 +50,22 @@ Accepted values:
 - `nerdctl`
 - `orbstack`
 
+Additional engine-level controls:
+
+- `preserve_runtime_objects`
+  - default: `false`
+  - when `true`, Opal keeps job/service runtime objects for inspection instead of cleaning them up automatically after successful job completion
+
 CLI behavior still wins over config:
 
 - explicit `--engine docker` beats config
 - config default is used only when the CLI choice is `auto`
+
+Runtime object preservation behavior:
+
+- default behavior is to clean up job containers and service networks after jobs finish
+- when `preserve_runtime_objects = true`, Opal keeps those runtime objects so you can inspect them manually after the run
+- this is intended for debugging local container/service behavior, not for normal day-to-day cleanup
 
 Currently only the Apple `container` CLI exposes tunables. You can configure it either via the dedicated `[container]` table (shown above) or the legacy `[engine.container]` table—both are merged, with `[container]` taking precedence.
 

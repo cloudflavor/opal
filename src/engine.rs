@@ -13,6 +13,7 @@ pub struct EngineCommandContext<'a> {
     pub mounts: &'a [VolumeMount],
     pub env_vars: &'a [(String, String)],
     pub network: Option<&'a str>,
+    pub preserve_runtime_objects: bool,
     pub arch: Option<&'a str>,
     pub privileged: bool,
     pub cap_add: &'a [String],

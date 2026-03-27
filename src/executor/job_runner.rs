@@ -47,13 +47,33 @@ pub(crate) fn run_planned_job(
                 .service_runtime
                 .as_ref()
                 .map(|runtime| runtime.network_name()),
+            preserve_runtime_objects: exec.config.settings.preserve_runtime_objects(),
             arch: prepared.arch.as_deref(),
             privileged: prepared.privileged,
             cap_add: &prepared.cap_add,
             cap_drop: &prepared.cap_drop,
         });
-        exec.cleanup_finished_container(&container_name);
-        if let Some(mut runtime) = prepared.service_runtime.take() {
+        let service_network = prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.network_name().to_string());
+        let service_containers = prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.container_names().to_vec())
+            .unwrap_or_default();
+        exec.record_runtime_objects(
+            &job.name,
+            container_name.clone(),
+            service_network,
+            service_containers,
+        );
+        if !exec.config.settings.preserve_runtime_objects() {
+            exec.cleanup_finished_container(&container_name);
+        }
+        if let Some(mut runtime) = prepared.service_runtime.take()
+            && !exec.config.settings.preserve_runtime_objects()
+        {
             runtime.cleanup();
         }
         exec.collect_declared_artifacts(&job, &prepared.host_workdir)?;

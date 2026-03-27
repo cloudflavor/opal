@@ -6,8 +6,16 @@ use std::sync::{Arc, Mutex};
 pub(super) struct RuntimeState {
     job_attempts: Arc<Mutex<HashMap<String, usize>>>,
     running_containers: Arc<Mutex<HashMap<String, String>>>,
+    runtime_objects: Arc<Mutex<HashMap<String, RuntimeObjects>>>,
     cancelled_jobs: Arc<Mutex<HashSet<String>>>,
     completed_jobs: Arc<Mutex<HashMap<String, ArtifactSourceOutcome>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RuntimeObjects {
+    pub container_name: Option<String>,
+    pub service_network: Option<String>,
+    pub service_containers: Vec<String>,
 }
 
 impl RuntimeState {
@@ -35,6 +43,30 @@ impl RuntimeState {
 
     pub(super) fn running_container(&self, job_name: &str) -> Option<String> {
         let map = self.running_containers.lock().ok()?;
+        map.get(job_name).cloned()
+    }
+
+    pub(super) fn record_runtime_objects(
+        &self,
+        job_name: &str,
+        container_name: String,
+        service_network: Option<String>,
+        service_containers: Vec<String>,
+    ) {
+        if let Ok(mut map) = self.runtime_objects.lock() {
+            map.insert(
+                job_name.to_string(),
+                RuntimeObjects {
+                    container_name: Some(container_name),
+                    service_network,
+                    service_containers,
+                },
+            );
+        }
+    }
+
+    pub(super) fn runtime_objects(&self, job_name: &str) -> Option<RuntimeObjects> {
+        let map = self.runtime_objects.lock().ok()?;
         map.get(job_name).cloned()
     }
 

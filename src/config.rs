@@ -22,6 +22,7 @@ pub struct OpalConfig {
 pub struct EngineSettings {
     pub default: Option<EngineChoice>,
     pub container: Option<ContainerEngineConfig>,
+    pub preserve_runtime_objects: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -96,6 +97,10 @@ impl OpalConfig {
         self.engines.default
     }
 
+    pub fn preserve_runtime_objects(&self) -> bool {
+        self.engines.preserve_runtime_objects
+    }
+
     pub fn registry_auth_for(&self, engine: EngineKind) -> Result<Vec<ResolvedRegistryAuth>> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -153,6 +158,8 @@ impl EngineSettings {
         if let Some(default) = other.default {
             self.default = Some(default);
         }
+        self.preserve_runtime_objects =
+            self.preserve_runtime_objects || other.preserve_runtime_objects;
         if let Some(new_container) = other.container {
             match &mut self.container {
                 Some(existing) => existing.merge(new_container),
@@ -329,5 +336,18 @@ default = "container"
         );
 
         assert_eq!(base.default_engine(), Some(crate::EngineChoice::Container));
+    }
+
+    #[test]
+    fn parses_preserve_runtime_objects_from_engine_table() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[engine]
+preserve_runtime_objects = true
+"#,
+        )
+        .expect("parse config");
+
+        assert!(parsed.preserve_runtime_objects());
     }
 }

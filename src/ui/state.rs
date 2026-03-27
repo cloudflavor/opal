@@ -439,6 +439,42 @@ impl UiState {
 
     fn resource_tree_entries(&self, resources: &UiJobResources) -> Vec<HistoryTreeEntry> {
         let mut nodes = Vec::new();
+        if let Some(container) = &resources.container_name {
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!("Container: {container}"),
+                    color: Color::Cyan,
+                }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
+        if let Some(network) = &resources.service_network {
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!("Service network: {network}"),
+                    color: Color::Cyan,
+                }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
+        if !resources.service_containers.is_empty() {
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!(
+                        "Service containers: {}",
+                        Self::summarize_list(&resources.service_containers)
+                    ),
+                    color: Color::Cyan,
+                }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
         if let Some(dir) = &resources.artifact_dir {
             let title = format!("Artifact dir: {}", self.relative_display(dir));
             let path = PathBuf::from(dir);
@@ -3368,6 +3404,9 @@ mod tests {
                 artifact_dir: None,
                 artifacts: Vec::new(),
                 caches: Vec::new(),
+                container_name: None,
+                service_network: None,
+                service_containers: Vec::new(),
             }],
         }];
         let mut state = UiState::new(
@@ -3410,6 +3449,9 @@ mod tests {
                     artifact_dir: None,
                     artifacts: Vec::new(),
                     caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
                 },
                 HistoryJob {
                     name: "unit-tests".to_string(),
@@ -3420,6 +3462,9 @@ mod tests {
                     artifact_dir: None,
                     artifacts: Vec::new(),
                     caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
                 },
             ],
         }];
@@ -3461,6 +3506,9 @@ mod tests {
                 artifact_dir: None,
                 artifacts: Vec::new(),
                 caches: Vec::new(),
+                container_name: None,
+                service_network: None,
+                service_containers: Vec::new(),
             }],
         }];
 

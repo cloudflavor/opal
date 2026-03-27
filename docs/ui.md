@@ -16,6 +16,7 @@ The documentation files under `docs/` are embedded into the Opal binary at build
 4. **Plan pane** – Shows the pipeline plan that Opal evaluated for this run (stage order, dependencies, manual/delayed gates, artifact summaries). Scroll with `[` / `]`, page with `{` / `}`, jump to top/bottom with `\` / `|`, and press `p` to open the full plan in your pager when you need more context.
 5. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the full log in your pager.
 6. **Job resources** – When you expand a run in the history sidebar, each job now lists its artifacts and caches. Press `Enter` on any artifact or cache directory to render a tree in the preview pane, or press `Enter` on an artifact file to read it directly.
+   When runtime-object preservation is enabled, this section also surfaces the recorded job container, service network, and service container names for inspection.
 
 ## Help overlay
 

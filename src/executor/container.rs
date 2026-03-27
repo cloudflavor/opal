@@ -51,7 +51,6 @@ impl<'a> ContainerCommandBuilder<'a> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .arg("run")
-            .arg("--rm")
             .arg("--name")
             .arg(ctx.container_name)
             .arg("--workdir")
@@ -60,6 +59,9 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(cpus)
             .arg("--memory")
             .arg(memory);
+        if !ctx.preserve_runtime_objects {
+            command.arg("--rm");
+        }
         if let Some(arch) = ctx
             .arch
             .map(str::to_string)
@@ -164,6 +166,7 @@ mod tests {
             mounts: &[],
             env_vars: &[],
             network: None,
+            preserve_runtime_objects: false,
             arch: None,
             privileged: false,
             cap_add: &[],
@@ -180,6 +183,38 @@ mod tests {
             .collect();
 
         assert!(args.iter().any(|arg| arg == "--rm"));
+    }
+
+    #[test]
+    fn build_command_skips_rm_when_preserving_runtime_objects() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
+            mounts: &[],
+            env_vars: &[],
+            network: None,
+            preserve_runtime_objects: true,
+            arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = ContainerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(!args.iter().any(|arg| arg == "--rm"));
     }
 
     #[test]
@@ -201,6 +236,7 @@ mod tests {
             mounts: &mounts,
             env_vars: &[],
             network: None,
+            preserve_runtime_objects: false,
             arch: None,
             privileged: false,
             cap_add: &[],
@@ -266,6 +302,7 @@ mod tests {
             mounts: &[],
             env_vars: &[],
             network: None,
+            preserve_runtime_objects: false,
             arch: None,
             privileged: false,
             cap_add: &[],
@@ -298,6 +335,7 @@ mod tests {
             mounts: &[],
             env_vars: &[],
             network: None,
+            preserve_runtime_objects: false,
             arch: None,
             privileged: false,
             cap_add: &[],

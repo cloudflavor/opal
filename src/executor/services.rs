@@ -113,6 +113,10 @@ impl ServiceRuntime {
         &self.network
     }
 
+    pub fn container_names(&self) -> &[String] {
+        &self.containers
+    }
+
     pub fn cleanup(&mut self) {
         for name in self.containers.drain(..).rev() {
             let _ = Command::new(engine_binary(self.engine))
