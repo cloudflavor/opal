@@ -84,6 +84,8 @@ Notes:
 ##### `--no-tui`
 
 - Disables the Ratatui interface and prints plain terminal output instead
+- Parallel jobs still run in parallel in this mode.
+- When multiple jobs emit logs concurrently, Opal prefixes each streamed line with the job name so interleaved output stays attributable.
 
 ##### `--gitlab-base-url <url>`
 

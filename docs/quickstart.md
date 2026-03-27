@@ -58,6 +58,8 @@ opal run --no-tui
 
 Use this mode when you want plain terminal output instead of the interactive interface, for example in scripts, local CI-style checks, or when sharing a terminal recording.
 
+If multiple jobs run in parallel, their output can still interleave in `--no-tui` mode. Opal prefixes each streamed line with the job name so you can still tell which job emitted it.
+
 ## Drive The UI
 
 - Tabs show each job’s status (pending, running, waiting, success, failure).
