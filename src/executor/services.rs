@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 const MAX_NAME_LEN: usize = 63;
-const CONTAINER_NETWORK_RETRY_ATTEMPTS: usize = 3;
-const CONTAINER_NETWORK_RETRY_DELAY_MS: u64 = 500;
+const CONTAINER_NETWORK_RETRY_ATTEMPTS: usize = 8;
+const CONTAINER_NETWORK_RETRY_DELAY_MS: u64 = 750;
 const CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 10;
 const SERVICE_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
 const SERVICE_READY_POLL_MS: u64 = 250;
@@ -879,6 +879,8 @@ fn should_retry_container_network_error(message: &str) -> bool {
     message.contains("XPC timeout for request to com.apple.container.apiserver/networkCreate")
         || message
             .contains("XPC timeout for request to com.apple.container.apiserver/networkDelete")
+        || message.contains("Connection invalid")
+        || message.contains("apiserver")
 }
 
 fn merged_env(
@@ -1201,13 +1203,18 @@ mod tests {
         };
 
         let mut command = service_command(EngineKind::Docker, &service);
-        command.arg("--user").arg(service.docker_user.as_deref().unwrap());
+        command
+            .arg("--user")
+            .arg(service.docker_user.as_deref().unwrap());
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect();
 
-        assert!(args.windows(2).any(|pair| pair == ["--platform", "linux/arm64/v8"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--platform", "linux/arm64/v8"])
+        );
         assert!(args.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
     }
 
@@ -1224,7 +1231,9 @@ mod tests {
         };
 
         let mut command = service_command(EngineKind::ContainerCli, &service);
-        command.arg("--user").arg(service.docker_user.as_deref().unwrap());
+        command
+            .arg("--user")
+            .arg(service.docker_user.as_deref().unwrap());
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())

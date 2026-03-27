@@ -35,4 +35,3 @@ pub(crate) fn container_arch_from_platform(value: &str) -> Option<String> {
     }
     None
 }
-

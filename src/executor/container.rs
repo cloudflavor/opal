@@ -1,5 +1,5 @@
-use super::core::ExecutorCore;
 use super::container_arch::default_container_cli_arch;
+use super::core::ExecutorCore;
 use crate::engine::EngineCommandContext;
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
@@ -145,8 +145,8 @@ impl<'a> ContainerCommandBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::ContainerExecutor;
-    use crate::executor::container_arch::{container_arch_from_platform, normalize_container_arch};
     use crate::engine::EngineCommandContext;
+    use crate::executor::container_arch::{container_arch_from_platform, normalize_container_arch};
     use crate::pipeline::VolumeMount;
     use std::path::Path;
 
