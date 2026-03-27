@@ -1,13 +1,10 @@
-# `opal plan`
+# Opal Plan
 
 `opal plan` lets you explore the pipeline graph without spinning up containers. It uses the same parser and rule evaluation as `opal run`, so the output is a faithful preview of what will execute when you launch a real run.
 
 ```
 opal plan --pipeline .gitlab-ci.yml --workdir .
 ```
-
-![`opal plan` in Ghostty](assets/opal-plan-window.png)
-
 
 Use `--job <name>` (repeatable) when you want to inspect only selected jobs plus their required upstream dependency closure.
 

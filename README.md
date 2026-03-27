@@ -102,6 +102,8 @@ See `docs/` for deeper references:
 - `docs/pipeline.md`
 - `docs/gitlab-parity.md`
 
+Release-candidate preparation notes live outside the embedded docs set in `release/rc-checklist.md`.
+
 Use `docs/gitlab-parity.md` for the exact supported surface and known divergences from GitLab Runner/GitLab CI.
 For exact runtime usage details, especially host env forwarding and repository secrets, see `docs/pipeline.md`.
 

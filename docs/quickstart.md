@@ -24,9 +24,6 @@
    - The left column lists run history; use `↑/↓` to inspect past results.
    - Press `?` at any time to open the contextual help overlay. From there you can open these Markdown docs with `1-9` or `←/→`.
 
-
-   ![`opal run` in Ghostty](assets/opal-run-window.png)
-
 5. **Preview the DAG**
    ```bash
    opal plan --pipeline .gitlab-ci.yml --workdir .
