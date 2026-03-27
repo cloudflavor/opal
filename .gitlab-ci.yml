@@ -38,6 +38,20 @@ lint:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --all-targets -- -D warnings
 
+ui-docs-check:
+  stage: test
+  image: docker.io/library/node:22
+  before_script: []
+  variables:
+    npm_config_cache: "$CI_PROJECT_DIR/.cache/npm"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG-ui-docs"
+    paths:
+      - .cache/npm/
+  script:
+    - npm --prefix ui-docs ci
+    - npm --prefix ui-docs run check
+
 unit-tests:
   stage: test
   needs:
@@ -110,12 +124,33 @@ build-release:
     - extended-tests
     - e2e-tests
     - lint
+    - ui-docs-check
   script:
     - cargo build --release --locked
   artifacts:
     expire_in: 1 week
     paths:
       - target/release/opal
+
+ui-docs-build:
+  stage: build
+  image: docker.io/library/node:22
+  before_script: []
+  needs:
+    - ui-docs-check
+  variables:
+    npm_config_cache: "$CI_PROJECT_DIR/.cache/npm"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG-ui-docs"
+    paths:
+      - .cache/npm/
+  script:
+    - npm --prefix ui-docs ci
+    - npm --prefix ui-docs run build
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - ui-docs/.svelte-kit/cloudflare/
 
 package-crate:
   stage: package
