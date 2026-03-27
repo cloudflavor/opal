@@ -1,6 +1,6 @@
 # opal
 
-[![Docs](https://img.shields.io/badge/docs-opal.cloudflavor.io%2Fdocs-0ea5e9)](https://opal.cloudflavor.io/docs)
+[![Docs](https://img.shields.io/badge/docs-opal.cloudflavor.io-0ea5e9)](https://opal.cloudflavor.io)
 
 Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, and docs.
 
@@ -36,7 +36,7 @@ Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `
 
 ```bash
 cargo install opal
-opal run --workdir . --pipeline .gitlab-ci.yml
+opal run
 ```
 
 For a local checkout during development, use:
@@ -48,13 +48,15 @@ cargo install --path .
 Common entry points:
 
 ```bash
-opal run --workdir . --pipeline .gitlab-ci.yml
+opal run
 opal run --no-tui
-opal plan --workdir . --pipeline .gitlab-ci.yml
+opal plan
 opal view
 ```
 
 When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
+
+By default, Opal expects `.gitlab-ci.yml` in the current working directory and prepares each job from a snapshot of that current working tree.
 
 Preview the DAG without execution:
 
@@ -118,7 +120,7 @@ Release-candidate preparation notes live in `release/rc-checklist.md`.
 
 Read the hosted docs at:
 
-- `https://opal.cloudflavor.io/docs`
+- `https://opal.cloudflavor.io`
 
 Key references in the repo docs set:
 
