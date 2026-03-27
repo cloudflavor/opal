@@ -111,6 +111,14 @@ function createRenderer() {
   return renderer;
 }
 
+function postprocessHtml(html) {
+  return html.replace(
+    /<p><a href="https:\/\/asciinema\.org\/a\/([^"/]+)"><img src="https:\/\/asciinema\.org\/a\/\1\.svg" alt="asciicast"><\/a><\/p>/g,
+    (_match, id) =>
+      `<div class="asciinema-embed"><iframe src="https://asciinema.org/a/${id}/iframe" loading="lazy" title="Asciinema recording ${id}" allowfullscreen></iframe></div>`
+  );
+}
+
 const entries = (await fs.readdir(docsDir))
   .filter((name) => name.endsWith('.md'))
   .sort((a, b) => {
@@ -130,7 +138,9 @@ for (const filename of entries) {
   const title = titleFromMarkdown(markdown, slug);
   const tokens = marked.lexer(markdown);
   const headings = collectHeadings(tokens);
-  const html = await marked.parse(markdown, { renderer: createRenderer(), headerIds: false, mangle: false });
+  const html = postprocessHtml(
+    await marked.parse(markdown, { renderer: createRenderer(), headerIds: false, mangle: false })
+  );
   docs.push({ slug, title, summary: summaryFromMarkdown(markdown), headings, html });
 }
 

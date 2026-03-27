@@ -181,6 +181,24 @@
     padding: 0.65rem 0.75rem;
     text-align: left;
   }
+  :global(article .asciinema-embed) {
+    width: 100%;
+    margin: 1.5rem 0;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--panel-strong) 82%, transparent);
+    box-shadow: var(--shadow);
+  }
+  :global(article .asciinema-embed iframe) {
+    display: block;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    min-height: 560px;
+    max-height: 760px;
+    border: 0;
+    background: #000;
+  }
   @media (max-width: 1100px) {
     .doc-layout { grid-template-columns: 1fr; }
     .toc { position: static; }

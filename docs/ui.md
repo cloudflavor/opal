@@ -2,6 +2,8 @@
 
 The Ratatui-based UI is optimized for keyboard navigation. This document complements the in-app shortcut list and explains each pane in detail.
 
+The documentation files under `docs/` are embedded into the Opal binary at build time. Press `?` anywhere in the TUI to open the help and documentation viewer.
+
 ## Layout
 
 1. **Runs sidebar** – Shows the current run plus history. Collapse/expand with `←/→/h/l`. Press `Enter` to load a past run’s jobs and logs into the main view.
