@@ -5,7 +5,7 @@
 In an interactive terminal, Opal Plan opens the formatted output in your pager by default. Use `--no-pager` to print directly, or `--json` to emit a machine-readable plan.
 
 ```
-opal plan --pipeline .gitlab-ci.yml --workdir .
+opal plan
 opal plan --no-pager --job lint
 opal plan --json --job lint
 ```
