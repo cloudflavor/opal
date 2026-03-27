@@ -6,6 +6,12 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "ui-docs",
 	"main": ".svelte-kit/cloudflare/_worker.js",
+	"routes": [
+		{
+			"pattern": "opal.cloudflavor.io",
+			"custom_domain": true
+		}
+	],
 	"compatibility_date": "2026-03-17",
 	"compatibility_flags": [
 		"nodejs_compat",
@@ -14,6 +20,10 @@
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
+	},
+	"build": {
+		"command": "npm run build",
+		"watch_dir": ["src", "static", "../docs", "scripts-sync-docs.mjs", "svelte.config.js", "vite.config.ts"]
 	},
 	"observability": {
 		"enabled": true

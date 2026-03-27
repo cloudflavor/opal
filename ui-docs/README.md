@@ -30,6 +30,12 @@ npm run build
 npm run deploy
 ```
 
+The Worker is configured for the custom domain:
+
+```text
+opal.cloudflavor.io
+```
+
 ## Generated content
 
 - `scripts-sync-docs.mjs` reads `../docs/*.md`
