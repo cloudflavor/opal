@@ -16,6 +16,7 @@ pub(super) struct RuntimeObjects {
     pub container_name: Option<String>,
     pub service_network: Option<String>,
     pub service_containers: Vec<String>,
+    pub runtime_summary_path: Option<String>,
 }
 
 impl RuntimeState {
@@ -52,6 +53,7 @@ impl RuntimeState {
         container_name: String,
         service_network: Option<String>,
         service_containers: Vec<String>,
+        runtime_summary_path: Option<String>,
     ) {
         if let Ok(mut map) = self.runtime_objects.lock() {
             map.insert(
@@ -60,6 +62,7 @@ impl RuntimeState {
                     container_name: Some(container_name),
                     service_network,
                     service_containers,
+                    runtime_summary_path,
                 },
             );
         }

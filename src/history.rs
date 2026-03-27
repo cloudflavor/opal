@@ -31,6 +31,8 @@ pub struct HistoryJob {
     pub service_network: Option<String>,
     #[serde(default)]
     pub service_containers: Vec<String>,
+    #[serde(default)]
+    pub runtime_summary_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -62,11 +62,21 @@ pub(crate) fn run_planned_job(
             .as_ref()
             .map(|runtime| runtime.container_names().to_vec())
             .unwrap_or_default();
+        let runtime_summary_path = exec.write_runtime_summary(
+            &job.name,
+            &container_name,
+            prepared
+                .service_runtime
+                .as_ref()
+                .map(|runtime| runtime.network_name()),
+            &service_containers,
+        )?;
         exec.record_runtime_objects(
             &job.name,
             container_name.clone(),
             service_network,
             service_containers,
+            runtime_summary_path,
         );
         if !exec.config.settings.preserve_runtime_objects() {
             exec.cleanup_finished_container(&container_name);

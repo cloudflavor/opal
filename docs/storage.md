@@ -29,6 +29,7 @@ $OPAL_HOME/
 │  └─ <job-slug>/
 │     ├─ artifacts/
 │     └─ dependencies/
+│     └─ runtime/
 ├─ cache/
 ├─ resource-groups/
 ├─ history.json
@@ -45,6 +46,8 @@ Important paths:
   - `$OPAL_HOME/<run-id>/scripts/`
 - copied per-job workspaces:
   - `$OPAL_HOME/<run-id>/workspaces/<job-slug>/`
+- per-job runtime inspection summaries:
+  - `$OPAL_HOME/<run-id>/<job-slug>/runtime/inspect.txt`
 - persistent local cache root:
   - `$OPAL_HOME/cache/`
 - cross-run local resource-group locks:
@@ -183,6 +186,14 @@ preserve_runtime_objects = true
 ```
 
 When enabled, Opal keeps those runtime objects for post-run inspection and records their names into job history so they can be surfaced in `opal view`.
+
+Opal also writes a normalized runtime summary file per job at:
+
+```text
+$OPAL_HOME/<run-id>/<job-slug>/runtime/inspect.txt
+```
+
+That file is intended to be the easiest single place to inspect the recorded runtime/container details from `opal view`.
 
 ## Resource groups
 

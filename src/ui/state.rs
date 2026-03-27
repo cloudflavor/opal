@@ -475,6 +475,22 @@ impl UiState {
                 collapsed: false,
             });
         }
+        if let Some(path) = &resources.runtime_summary_path {
+            let path = PathBuf::from(path);
+            let title = path
+                .file_name()
+                .map(|name| format!("Runtime summary: {}", name.to_string_lossy()))
+                .unwrap_or_else(|| format!("Runtime summary: {}", path.display()));
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::FileEntry {
+                    path: path.clone(),
+                    is_dir: false,
+                },
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
         if let Some(dir) = &resources.artifact_dir {
             let title = format!("Artifact dir: {}", self.relative_display(dir));
             let path = PathBuf::from(dir);
@@ -594,6 +610,7 @@ impl UiState {
         nodes.push(HistoryRenderNode {
             key: entry.key.clone(),
             parent_index,
+            display: entry.display.clone(),
             line,
         });
         let current_index = nodes.len() - 1;
@@ -977,6 +994,13 @@ impl UiState {
                     self.history_selection = idx + 1;
                 }
             }
+            HistoryNodeKey::ResourceInfo => {
+                if let HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, .. }) =
+                    &nodes[idx].display
+                {
+                    self.load_text_preview("Runtime details".to_string(), label.clone());
+                }
+            }
             _ => {}
         }
         self.refresh_history_bounds();
@@ -1026,7 +1050,14 @@ impl UiState {
                     })
                 }
             }
-            HistoryNodeKey::ResourceInfo => None,
+            HistoryNodeKey::ResourceInfo => {
+                if let HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, .. }) =
+                    &nodes[idx].display
+                {
+                    self.load_text_preview("Runtime details".to_string(), label.clone());
+                }
+                None
+            }
         }
     }
 
@@ -1110,6 +1141,16 @@ impl UiState {
         });
         self.focus = PaneFocus::Jobs;
         Ok(())
+    }
+
+    pub(super) fn load_text_preview(&mut self, title: String, text: String) {
+        self.history_preview = Some(HistoryPreview {
+            title,
+            path: PathBuf::new(),
+            lines: text.lines().map(str::to_string).collect(),
+            scroll_offset: 0,
+        });
+        self.focus = PaneFocus::Jobs;
     }
 
     pub(super) fn on_active_selection_changed(&mut self) {
@@ -2500,6 +2541,7 @@ enum ScrollDirection {
 pub(super) struct HistoryRenderNode {
     key: HistoryNodeKey,
     parent_index: Option<usize>,
+    display: HistoryNodeDisplay,
     line: Line<'static>,
 }
 
@@ -3407,6 +3449,7 @@ mod tests {
                 container_name: None,
                 service_network: None,
                 service_containers: Vec::new(),
+                runtime_summary_path: None,
             }],
         }];
         let mut state = UiState::new(
@@ -3452,6 +3495,7 @@ mod tests {
                     container_name: None,
                     service_network: None,
                     service_containers: Vec::new(),
+                    runtime_summary_path: None,
                 },
                 HistoryJob {
                     name: "unit-tests".to_string(),
@@ -3465,6 +3509,7 @@ mod tests {
                     container_name: None,
                     service_network: None,
                     service_containers: Vec::new(),
+                    runtime_summary_path: None,
                 },
             ],
         }];
@@ -3509,6 +3554,7 @@ mod tests {
                 container_name: None,
                 service_network: None,
                 service_containers: Vec::new(),
+                runtime_summary_path: None,
             }],
         }];
 

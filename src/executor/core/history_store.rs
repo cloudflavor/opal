@@ -15,6 +15,7 @@ pub(super) struct HistoryResources {
     pub container_name: Option<String>,
     pub service_network: Option<String>,
     pub service_containers: Vec<String>,
+    pub runtime_summary_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +95,9 @@ impl HistoryStore {
                         .get(&summary.name)
                         .map(|info| info.service_containers.clone())
                         .unwrap_or_default(),
+                    runtime_summary_path: resources
+                        .get(&summary.name)
+                        .and_then(|info| info.runtime_summary_path.clone()),
                 })
                 .collect(),
         };
@@ -185,6 +189,7 @@ mod tests {
                 container_name: Some("opal-build-01".into()),
                 service_network: Some("opal-net-build".into()),
                 service_containers: vec!["opal-svc-build-00".into()],
+                runtime_summary_path: Some("/tmp/runtime/inspect.txt".into()),
             },
         )]);
 
@@ -195,10 +200,16 @@ mod tests {
         assert_eq!(entry.run_id, "run-123");
         assert_eq!(entry.status, HistoryStatus::Success);
         assert_eq!(entry.jobs.len(), 1);
-        assert_eq!(entry.jobs[0].artifact_dir.as_deref(), Some("/tmp/artifacts"));
+        assert_eq!(
+            entry.jobs[0].artifact_dir.as_deref(),
+            Some("/tmp/artifacts")
+        );
         assert_eq!(entry.jobs[0].artifacts, vec!["dist/"]);
         assert_eq!(entry.jobs[0].caches[0].key, "cache");
-        assert_eq!(entry.jobs[0].container_name.as_deref(), Some("opal-build-01"));
+        assert_eq!(
+            entry.jobs[0].container_name.as_deref(),
+            Some("opal-build-01")
+        );
         assert_eq!(
             entry.jobs[0].service_network.as_deref(),
             Some("opal-net-build")

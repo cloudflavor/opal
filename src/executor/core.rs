@@ -5,6 +5,7 @@ mod preparer;
 mod process;
 mod registry;
 mod runtime_state;
+mod runtime_summary;
 mod stage_tracker;
 mod workspace;
 
@@ -67,6 +68,7 @@ struct JobResourceInfo {
     container_name: Option<String>,
     service_network: Option<String>,
     service_containers: Vec<String>,
+    runtime_summary_path: Option<String>,
 }
 
 impl ExecutorCore {
@@ -327,6 +329,7 @@ impl ExecutorCore {
                         container_name: None,
                         service_network: None,
                         service_containers: Vec::new(),
+                        runtime_summary_path: None,
                     },
                 )
             })
@@ -348,6 +351,7 @@ impl ExecutorCore {
                         container_name: info.container_name.clone(),
                         service_network: info.service_network.clone(),
                         service_containers: info.service_containers.clone(),
+                        runtime_summary_path: info.runtime_summary_path.clone(),
                     },
                 )
             })
@@ -381,6 +385,10 @@ impl ExecutorCore {
                             .as_ref()
                             .map(|objects| objects.service_containers.clone())
                             .unwrap_or_else(|| info.service_containers.clone()),
+                        runtime_summary_path: runtime
+                            .as_ref()
+                            .and_then(|objects| objects.runtime_summary_path.clone())
+                            .or_else(|| info.runtime_summary_path.clone()),
                     },
                 )
             })
@@ -395,13 +403,31 @@ impl ExecutorCore {
         container_name: String,
         service_network: Option<String>,
         service_containers: Vec<String>,
+        runtime_summary_path: Option<String>,
     ) {
         self.runtime_state.record_runtime_objects(
             job_name,
             container_name,
             service_network,
             service_containers,
+            runtime_summary_path,
         );
+    }
+
+    pub(crate) fn write_runtime_summary(
+        &self,
+        job_name: &str,
+        container_name: &str,
+        service_network: Option<&str>,
+        service_containers: &[String],
+    ) -> Result<Option<String>> {
+        runtime_summary::write_runtime_summary(
+            self,
+            job_name,
+            container_name,
+            service_network,
+            service_containers,
+        )
     }
 
     pub(crate) fn log_job_start(
