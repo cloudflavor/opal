@@ -26,6 +26,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `services-variables.gitlab-ci.yml` – Validates that pipeline/job variables are passed to services while `services:variables` remain service-only and are not expanded against themselves.
 - `services-invalid-alias.gitlab-ci.yml` – Ensures invalid service aliases fail explicitly instead of being silently normalized.
 - `services-readiness-failure.gitlab-ci.yml` – Validates service readiness failure handling by starting a deliberately broken sidecar and expecting Opal to fail before job script execution.
+- `runtime-preservation.gitlab-ci.yml` – Validates `[engine].preserve_runtime_objects = true`, including recorded container/service runtime metadata and the generated runtime summary file surfaced through history.
 - `cache-policies.gitlab-ci.yml` – Validates local cache restore/save semantics, especially `cache:policy: pull` behavior where jobs can write to restored cache contents without persisting those changes back to the shared cache.
 - `cache-fallback.gitlab-ci.yml` – Validates `cache:fallback_keys` restore behavior by seeding a default-branch cache and then restoring it from a feature-branch run when the primary key is missing.
 - `artifact-metadata.gitlab-ci.yml` – Validates `artifacts:name`, `artifacts:expire_in`, and dotenv report metadata in both planner output and downstream runtime behavior.

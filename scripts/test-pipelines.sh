@@ -56,6 +56,7 @@ SCENARIOS_JSON='[
   {"name":"services-docker-runtime","pipeline":"pipelines/tests/services-docker-runtime.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"services-variables","pipeline":"pipelines/tests/services-variables.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-invalid-alias","pipeline":"pipelines/tests/services-invalid-alias.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"unsupported characters"},
+  {"name":"runtime-preservation","pipeline":"pipelines/tests/runtime-preservation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/runtime-preservation-workdir","repo_setup":"preserve_runtime","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"control-flow-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"intentional-failure"},
   {"name":"job-select-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --job rule-variables"},
@@ -381,6 +382,17 @@ verify_scenario_log() {
     services-variables)
       assert_log_contains "${log_file}" "service variables ok"
       ;;
+    runtime-preservation)
+      assert_log_contains "${log_file}" "runtime preservation ok"
+      local latest_run
+      latest_run=$(jq -r '.[-1].run_id' tests-temp/opal-home/history.json)
+      jq -e '.[-1].jobs[] | select(.name == "preserved-runtime") | .container_name and .service_network and (.service_containers | length > 0) and .runtime_summary_path' tests-temp/opal-home/history.json >/dev/null
+      local summary_path
+      summary_path=$(jq -r '.[-1].jobs[] | select(.name == "preserved-runtime") | .runtime_summary_path' tests-temp/opal-home/history.json)
+      test -f "$summary_path"
+      grep -Fq 'Main container' "$summary_path"
+      grep -Fq 'Service containers' "$summary_path"
+      ;;
     environment-plan)
       assert_log_contains "${log_file}" "on_stop: stop-review"
       assert_log_contains "${log_file}" "auto_stop 1day"
@@ -455,6 +467,13 @@ TOML
 [[jobs]]
 name = "cap-job"
 cap_add = ["NET_ADMIN"]
+TOML
+        ;;
+      preserve_runtime)
+        mkdir -p "${workdir}/.opal"
+        cat > "${workdir}/.opal/config.toml" <<'TOML'
+[engine]
+preserve_runtime_objects = true
 TOML
         ;;
       *)
