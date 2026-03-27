@@ -2,9 +2,15 @@
 
 1. **Install**
    ```bash
-   cargo install --path .
+   cargo install opal
    ```
    Opal requires Docker, Podman, Apple `container`, or OrbStack for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
+
+   If you are installing from a local checkout while developing Opal itself, use:
+
+   ```bash
+   cargo install --path .
+   ```
 
 2. **Prepare a workspace**
    - Place your project in a directory containing `.gitlab-ci.yml`.
@@ -24,10 +30,12 @@
    - The left column lists run history; use `↑/↓` to inspect past results.
    - Press `?` at any time to open the contextual help overlay. From there you can open these Markdown docs with `1-9` or `←/→`.
 
+[![asciicast](https://asciinema.org/a/LxDIEb87AyDtDM5c.svg)](https://asciinema.org/a/LxDIEb87AyDtDM5c)
+
 5. **Preview the DAG**
-   ```bash
-   opal plan --pipeline .gitlab-ci.yml --workdir .
-   ```
+  ```bash
+  opal plan --pipeline .gitlab-ci.yml --workdir .
+  ```
    `opal plan` evaluates rules/filters and prints every stage, job, dependency, and manual gate so you can verify the DAG before any containers start.
 
 6. **Inspect results**

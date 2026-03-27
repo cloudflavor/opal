@@ -4,21 +4,40 @@
 
 Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, and docs.
 
+## Demo
+
+[![asciicast](https://asciinema.org/a/LxDIEb87AyDtDM5c.svg)](https://asciinema.org/a/LxDIEb87AyDtDM5c)
+
 ## Features
 
-- `opal run` executes a local-runner subset of GitLab pipelines (including `rules`, `workflow:rules`, `needs`, `dependencies`, artifacts, cache, services, and matrix jobs).
-- `opal plan` prints a dry-run execution plan without starting containers.
+- `opal run` executes a practical local-runner subset of GitLab pipelines, including `rules`, `workflow:rules`, `needs`, `dependencies`, artifacts, cache, services, and matrix jobs.
+- `opal plan` prints the evaluated DAG without starting containers.
 - `opal view` opens the history/log browser for previous runs.
-- Ratatui UI with help overlays, embedded Markdown docs, and pager integration for plans/logs/files.
+- The TUI includes embedded markdown docs, help overlays, pager integration, and history/resource browsing. Press `?` inside the TUI to open the built-in documentation viewer.
 - GitLab-style predefined job metadata is injected into job environments, including `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
 - Supported local engines: `docker`, `podman`, Apple `container`, and `orbstack`.
-- `nerdctl` remains available as a Linux-oriented engine option when the underlying `containerd` environment is actually local and directly usable.
+- `nerdctl` remains available as a Linux-oriented engine option when the underlying `containerd` environment is directly usable.
 
 ## Quick Start
 
 ```bash
-cargo install --path .
+cargo install opal
 opal run --workdir . --pipeline .gitlab-ci.yml
+```
+
+For a local checkout during development, use:
+
+```bash
+cargo install --path .
+```
+
+Common entry points:
+
+```bash
+opal run --workdir . --pipeline .gitlab-ci.yml
+opal run --no-tui
+opal plan --workdir . --pipeline .gitlab-ci.yml
+opal view
 ```
 
 Preview the DAG without execution:
@@ -32,12 +51,6 @@ Limit planning or execution to specific jobs plus their required upstream depend
 ```bash
 opal plan --workdir . --pipeline .gitlab-ci.yml --job package-linux
 opal run --workdir . --pipeline .gitlab-ci.yml --job lint
-```
-
-Open the stored history/log UI from previous runs:
-
-```bash
-opal view
 ```
 
 The full user-facing command surface, engine behavior, and runtime usage now live in the docs set rather than in this README.
@@ -105,7 +118,7 @@ Release-candidate preparation notes live outside the embedded docs set in `relea
 Use `docs/gitlab-parity.md` for the exact supported surface and known divergences from GitLab Runner/GitLab CI.
 For exact runtime usage details, especially host env forwarding and repository secrets, see `docs/pipeline.md`.
 
-The `docs/` directory is embedded into the TUI help viewer at build time.
+The `docs/` directory is embedded into the Opal binary at build time and can be opened from the TUI with `?`.
 
 ## License
 
