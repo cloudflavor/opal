@@ -37,6 +37,19 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 
 This is intentionally a local-runner approximation, not a full reproduction of GitLab Runner orchestration semantics. In particular, service networking, `interruptible`, and cross-pipeline coordination remain partial.
 
+## Workspace Semantics
+
+- Opal does not do a fresh Git clone/fetch for every local job the way GitLab Runner normally does.
+- Instead, Opal prepares a per-job workspace snapshot from your current working tree so local development can run against dirty tracked edits and in-progress source changes.
+- This is intentional: Opal is meant to help you debug the pipeline you are actively editing, not force a clean remote-style checkout before every job.
+- The snapshot is still Git-aware enough to avoid leaking obvious runtime/build garbage into jobs:
+  - top-level and nested Git-ignored paths are excluded
+  - runtime-heavy directories such as `target/`, `tests-temp/`, `.opal/`, `node_modules/`, `.svelte-kit/`, `.wrangler/`, and similar generated directories are excluded from the copied workspace
+- In practice, the goal is:
+  - include source files and dirty local edits you actually want to test
+  - exclude generated junk that GitLab Runner would not treat as meaningful source input
+- This means Opal is deliberately closer to “run my current local pipeline against my working tree” than to “recreate GitLab’s clone/fetch/clean lifecycle exactly.”
+
 ## Artifacts & logs
 
 - Each run gets a session directory under `$OPAL_HOME/<run-id>/` (default `~/.opal/<run-id>/`). Job artifacts are stored under `$OPAL_HOME/<run-id>/<job>/artifacts/`.
