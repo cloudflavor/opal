@@ -9,6 +9,7 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 - `default.*` values merge into jobs for the subset Opal models today: `image`, `before_script`, `after_script`, `variables`, `cache`, `services`, `timeout`, `retry`, and `interruptible`. For `retry`, Opal models `max`, `when`, and `exit_codes` for local rerun decisions.
 - `inherit:default` can now disable or selectively retain the modeled default-key subset: `image`, `before_script`, `after_script`, `cache`, `services`, `timeout`, `retry`, and `interruptible`.
 - `image` supports string form, `image.name`, `image.entrypoint`, and `image:docker:platform` / `image:docker:user` for local engines that can express those options.
+- `services` supports string form plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, and `services:docker:platform` / `services:docker:user`.
 - Hidden/template jobs (names beginning with `.`) may be referenced via `extends`. Cycles are detected and reported.
 - `workflow:rules`, `rules`, `only`, and `except` are partially supported. See `docs/gitlab-parity.md` for the exact supported forms and known divergences.
 
@@ -27,7 +28,7 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
   - `docker`, `podman`, `container`, or `orbstack` for the supported local engine set.
   - `nerdctl` remains available as a Linux-oriented option when the underlying `containerd` environment is directly usable.
   - `auto` picks a sane default for the current platform.
-- Job services start as sibling containers on a per-job network, and Opal performs a readiness gate before running the job script when service inspection is available.
+- Job services start as sibling containers on a per-job network, and Opal performs a readiness gate before running the job script when service inspection is available. On Apple’s `container` engine, Opal now fails fast if the underlying `container network create` call stalls instead of hanging indefinitely.
 - Manual jobs (`when: manual`) appear in the UI and can be started interactively.
 - `resource_group` serializes matching jobs within a local run.
 - When a job fails, downstream jobs that depend on it are cancelled, and no new work starts (`fail-fast` semantics). Use `r` to restart a failed job after fixing the issue.

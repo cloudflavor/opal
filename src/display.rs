@@ -641,6 +641,12 @@ fn plan_service_lines(job: &crate::model::JobSpec) -> Vec<String> {
             if !service.aliases.is_empty() {
                 parts.push(format!("alias {}", service.aliases.join(",")));
             }
+            if let Some(platform) = &service.docker_platform {
+                parts.push(format!("platform {platform}"));
+            }
+            if let Some(user) = &service.docker_user {
+                parts.push(format!("user {user}"));
+            }
             if !service.entrypoint.is_empty() {
                 parts.push(format!("entrypoint [{}]", service.entrypoint.join(", ")));
             }

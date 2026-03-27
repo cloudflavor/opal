@@ -1,4 +1,5 @@
 pub mod core;
+pub mod container_arch;
 pub mod job_runner;
 pub mod orchestrator;
 pub mod paths;

@@ -448,6 +448,8 @@ mod tests {
         ServiceSpec {
             image: image.into(),
             aliases: alias.into_iter().map(str::to_string).collect(),
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),

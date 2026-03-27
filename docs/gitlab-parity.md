@@ -101,6 +101,15 @@ Last updated: 2026-03-26
   - `image:entrypoint`
   - `image:docker:platform`
   - `image:docker:user`
+- `services`
+  - string form
+  - mapping form with `name`
+  - `alias`
+  - `entrypoint`
+  - `command`
+  - `variables`
+  - `services:docker:platform`
+  - `services:docker:user`
 - `variables`
 - `timeout`
 - `retry`
@@ -303,6 +312,13 @@ These features exist in Opal, but they do not match GitLab completely.
   Unsupported image behavior in Opal today includes:
   - `image:kubernetes`
   - executor-specific image options outside `docker:platform` / `docker:user`
+- `services` is subset-only.
+  Opal supports string services plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, `services:docker:platform`, and `services:docker:user`.
+  On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `services:docker:platform` and `services:docker:user` to the local engine's service container flags.
+  On the Apple `container` engine, `services:docker:platform` is translated into `container run --arch`, `services:docker:user` is forwarded to `container run --user`, and Opal now fails fast when the engine's per-job network creation stalls instead of hanging indefinitely.
+  Unsupported service behavior in Opal today includes:
+  - `services:kubernetes`
+  - executor-specific service options outside `docker:platform` / `docker:user`
 - `workflow` support is limited to `workflow:rules`.
   The broader workflow surface from GitLab is not implemented.
 - tag trigger source is inferred locally.

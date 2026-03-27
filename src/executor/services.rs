@@ -1,3 +1,4 @@
+use super::container_arch::default_container_cli_arch;
 use crate::EngineKind;
 use crate::model::ServiceSpec;
 use crate::naming::job_name_slug;
@@ -7,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as FmtWrite;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::warn;
@@ -15,6 +16,7 @@ use tracing::warn;
 const MAX_NAME_LEN: usize = 63;
 const CONTAINER_NETWORK_RETRY_ATTEMPTS: usize = 3;
 const CONTAINER_NETWORK_RETRY_DELAY_MS: u64 = 500;
+const CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 10;
 const SERVICE_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
 const SERVICE_READY_POLL_MS: u64 = 250;
 
@@ -138,7 +140,7 @@ impl ServiceRuntime {
         base_env: &[(String, String)],
         _shared_env: &HashMap<String, String>,
     ) -> Result<()> {
-        let mut command = service_command(self.engine);
+        let mut command = service_command(self.engine, service);
         command
             .arg("-d")
             .arg("--name")
@@ -154,6 +156,10 @@ impl ServiceRuntime {
         let merged = merged_env(base_env, &service.variables);
         for (key, value) in merged {
             command.arg("--env").arg(format!("{key}={value}"));
+        }
+
+        if let Some(user) = &service.docker_user {
+            command.arg("--user").arg(user);
         }
 
         if !service.entrypoint.is_empty() {
@@ -180,7 +186,7 @@ impl ServiceRuntime {
             eprintln!("[opal] service command: {} {}", program, args.join(" "));
         }
 
-        run_command(command).with_context(|| {
+        run_command_with_timeout(command, command_timeout(self.engine)).with_context(|| {
             format!(
                 "failed to start service '{}' ({})",
                 container_name, service.image
@@ -314,7 +320,7 @@ fn service_supported(engine: EngineKind) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!(
-            "services are only supported when using docker, podman, nerdctl, or orbstack"
+            "services are only supported when using docker, podman, nerdctl, orbstack, or container"
         ))
     }
 }
@@ -328,11 +334,15 @@ fn engine_binary(engine: EngineKind) -> &'static str {
     }
 }
 
-fn service_command(engine: EngineKind) -> Command {
+fn service_command(engine: EngineKind, service: &ServiceSpec) -> Command {
     let mut command = Command::new(engine_binary(engine));
     command.arg("run");
     if matches!(engine, EngineKind::ContainerCli) {
-        command.arg("--arch").arg("x86_64");
+        if let Some(arch) = default_container_cli_arch(service.docker_platform.as_deref()) {
+            command.arg("--arch").arg(arch);
+        }
+    } else if let Some(platform) = &service.docker_platform {
+        command.arg("--platform").arg(platform);
     }
     command
 }
@@ -459,7 +469,9 @@ fn probe_service_ports(
     let mut command = Command::new(engine_binary(engine));
     command.arg("run").arg("--rm").arg("--network").arg(network);
     if matches!(engine, EngineKind::ContainerCli) {
-        command.arg("--arch").arg("x86_64");
+        if let Some(arch) = default_container_cli_arch(None) {
+            command.arg("--arch").arg(arch);
+        }
     }
     let script = format!("{}", checks.join(" && "));
     let status = command
@@ -738,16 +750,83 @@ fn run_command(mut cmd: Command) -> Result<()> {
     }
 }
 
+fn run_command_with_timeout(mut cmd: Command, timeout: Option<Duration>) -> Result<()> {
+    let Some(timeout) = timeout else {
+        return run_command(cmd);
+    };
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let started = Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            let output = child.wait_with_output()?;
+            if output.status.success() {
+                return Ok(());
+            }
+            return Err(command_failed(
+                &cmd,
+                &output.stdout,
+                &output.stderr,
+                output.status.code(),
+            ));
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child.wait_with_output().ok();
+            let (stdout, stderr, code) = if let Some(output) = output {
+                (output.stdout, output.stderr, output.status.code())
+            } else {
+                (Vec::new(), Vec::new(), None)
+            };
+            return Err(anyhow!(
+                "command {:?} timed out after {}s{}",
+                &cmd,
+                timeout.as_secs(),
+                command_failed_detail(&stdout, &stderr, code)
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn command_timeout(engine: EngineKind) -> Option<Duration> {
+    if matches!(engine, EngineKind::ContainerCli) {
+        Some(container_command_timeout())
+    } else {
+        None
+    }
+}
+
+fn container_command_timeout() -> Duration {
+    env::var("OPAL_CONTAINER_COMMAND_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS))
+}
+
 fn command_failed(cmd: &Command, stdout: &[u8], stderr: &[u8], code: Option<i32>) -> anyhow::Error {
+    anyhow!(
+        "command {:?} exited with status {:?}{}",
+        cmd,
+        code,
+        command_failed_detail(stdout, stderr, code)
+    )
+}
+
+fn command_failed_detail(stdout: &[u8], stderr: &[u8], _code: Option<i32>) -> String {
     let stdout = String::from_utf8_lossy(stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+    match (stdout.is_empty(), stderr.is_empty()) {
         (true, true) => String::new(),
         (false, true) => format!(": {stdout}"),
         (true, false) => format!(": {stderr}"),
         (false, false) => format!(": stdout={stdout}; stderr={stderr}"),
-    };
-    anyhow!("command {:?} exited with status {:?}{detail}", cmd, code)
+    }
 }
 
 fn run_network_create(engine: EngineKind, network: &str) -> Result<()> {
@@ -769,7 +848,7 @@ fn run_network_command(engine: EngineKind, action: &str, network: &str) -> Resul
     for attempt in 0..attempts {
         let mut command = Command::new(engine_binary(engine));
         command.arg("network").arg(action).arg(network);
-        match run_command(command) {
+        match run_command_with_timeout(command, command_timeout(engine)) {
             Ok(()) => return Ok(()),
             Err(err) => {
                 if matches!(engine, EngineKind::ContainerCli)
@@ -839,11 +918,13 @@ fn default_service_aliases(image: &str) -> Vec<String> {
 mod tests {
     use super::{
         ServiceReadiness, ServiceRuntime, ServiceState, parse_service_ipv4, parse_service_state,
-        readiness_from_state, should_retry_container_network_error,
+        readiness_from_state, service_command, should_retry_container_network_error,
     };
     use crate::EngineKind;
     use crate::model::ServiceSpec;
     use std::collections::HashMap;
+    use std::process::Command;
+    use std::time::Duration;
 
     #[test]
     fn retries_container_network_xpc_timeouts() {
@@ -962,6 +1043,8 @@ mod tests {
         let service = ServiceSpec {
             image: "redis:7".into(),
             aliases: vec!["cache".into(), "redis".into()],
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -987,6 +1070,8 @@ mod tests {
         let service = ServiceSpec {
             image: "tutum/wordpress:latest".into(),
             aliases: Vec::new(),
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1012,6 +1097,8 @@ mod tests {
         let first = ServiceSpec {
             image: "redis:7".into(),
             aliases: vec!["cache".into()],
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1019,6 +1106,8 @@ mod tests {
         let second = ServiceSpec {
             image: "postgres:16".into(),
             aliases: vec!["cache".into()],
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1047,6 +1136,8 @@ mod tests {
         let first = ServiceSpec {
             image: "tutum/wordpress:latest".into(),
             aliases: Vec::new(),
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1054,6 +1145,8 @@ mod tests {
         let second = ServiceSpec {
             image: "tutum/wordpress:latest".into(),
             aliases: Vec::new(),
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1082,6 +1175,8 @@ mod tests {
         let service = ServiceSpec {
             image: "redis:7".into(),
             aliases: vec!["bad_alias".into()],
+            docker_platform: None,
+            docker_user: None,
             entrypoint: Vec::new(),
             command: Vec::new(),
             variables: HashMap::new(),
@@ -1091,6 +1186,63 @@ mod tests {
             .aliases_for_service(0, &service)
             .expect_err("alias must error");
         assert!(err.to_string().contains("unsupported characters"));
+    }
+
+    #[test]
+    fn service_command_for_docker_forwards_platform_and_user() {
+        let service = ServiceSpec {
+            image: "redis:7".into(),
+            aliases: vec!["cache".into()],
+            docker_platform: Some("linux/arm64/v8".into()),
+            docker_user: Some("1000:1000".into()),
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        let mut command = service_command(EngineKind::Docker, &service);
+        command.arg("--user").arg(service.docker_user.as_deref().unwrap());
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.windows(2).any(|pair| pair == ["--platform", "linux/arm64/v8"]));
+        assert!(args.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
+    }
+
+    #[test]
+    fn service_command_for_container_cli_translates_platform_to_arch() {
+        let service = ServiceSpec {
+            image: "redis:7".into(),
+            aliases: vec!["cache".into()],
+            docker_platform: Some("linux/amd64".into()),
+            docker_user: Some("1000:1000".into()),
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
+        };
+
+        let mut command = service_command(EngineKind::ContainerCli, &service);
+        command.arg("--user").arg(service.docker_user.as_deref().unwrap());
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.windows(2).any(|pair| pair == ["--arch", "x86_64"]));
+        assert!(args.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
+    }
+
+    #[test]
+    fn run_command_with_timeout_fails_fast() {
+        let mut command = Command::new("sh");
+        command.arg("-lc").arg("sleep 1");
+
+        let err = super::run_command_with_timeout(command, Some(Duration::from_millis(50)))
+            .expect_err("command should time out");
+
+        assert!(err.to_string().contains("timed out"));
     }
 
     #[test]

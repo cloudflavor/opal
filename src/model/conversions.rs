@@ -225,6 +225,8 @@ impl From<&ServiceConfig> for ServiceSpec {
         Self {
             image: value.image.clone(),
             aliases: value.aliases.clone(),
+            docker_platform: value.docker_platform.clone(),
+            docker_user: value.docker_user.clone(),
             entrypoint: value.entrypoint.clone(),
             command: value.command.clone(),
             variables: value.variables.clone(),
@@ -237,6 +239,8 @@ impl From<&ServiceSpec> for ServiceConfig {
         Self {
             image: value.image.clone(),
             aliases: value.aliases.clone(),
+            docker_platform: value.docker_platform.clone(),
+            docker_user: value.docker_user.clone(),
             entrypoint: value.entrypoint.clone(),
             command: value.command.clone(),
             variables: value.variables.clone(),

@@ -1,8 +1,8 @@
 use super::core::ExecutorCore;
+use super::container_arch::default_container_cli_arch;
 use crate::engine::EngineCommandContext;
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
-use std::env;
 use std::process::{Command, Stdio};
 
 const DEFAULT_MEMORY_LIMIT: &str = "1638m"; // ~1.6 GB
@@ -60,10 +60,10 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(cpus)
             .arg("--memory")
             .arg(memory);
-        if let Some(arch) = container_arch_override()
-            .or_else(|| ctx.image_platform.and_then(container_arch_from_platform))
-            .or_else(|| ctx.arch.map(str::to_string))
-            .or_else(host_container_arch)
+        if let Some(arch) = ctx
+            .arch
+            .map(str::to_string)
+            .or_else(|| default_container_cli_arch(ctx.image_platform))
         {
             command.arg("--arch").arg(arch);
         }
@@ -126,7 +126,7 @@ impl<'a> ContainerCommandBuilder<'a> {
             .arg(self.ctx.image)
             .arg("sh")
             .arg(self.ctx.container_script);
-        if env::var("OPAL_DEBUG_CONTAINER")
+        if std::env::var("OPAL_DEBUG_CONTAINER")
             .map(|v| v == "1")
             .unwrap_or(false)
         {
@@ -142,39 +142,10 @@ impl<'a> ContainerCommandBuilder<'a> {
     }
 }
 
-fn container_arch_override() -> Option<String> {
-    env::var("OPAL_CONTAINER_ARCH")
-        .ok()
-        .filter(|value| !value.is_empty())
-}
-
-fn host_container_arch() -> Option<String> {
-    normalize_container_arch(std::env::consts::ARCH)
-}
-
-fn normalize_container_arch(value: &str) -> Option<String> {
-    match value {
-        "aarch64" => Some("arm64".to_string()),
-        "x86_64" => Some("x86_64".to_string()),
-        other if !other.is_empty() => Some(other.to_string()),
-        _ => None,
-    }
-}
-
-fn container_arch_from_platform(value: &str) -> Option<String> {
-    let normalized = value.to_ascii_lowercase();
-    if normalized.contains("amd64") || normalized.contains("x86_64") {
-        return Some("x86_64".to_string());
-    }
-    if normalized.contains("arm64") || normalized.contains("aarch64") {
-        return Some("arm64".to_string());
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ContainerExecutor, container_arch_from_platform, normalize_container_arch};
+    use super::ContainerExecutor;
+    use crate::executor::container_arch::{container_arch_from_platform, normalize_container_arch};
     use crate::engine::EngineCommandContext;
     use crate::pipeline::VolumeMount;
     use std::path::Path;

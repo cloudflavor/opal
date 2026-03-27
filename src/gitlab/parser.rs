@@ -703,7 +703,7 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
                     .unwrap_or_default();
                 let docker_cfg = map
                     .remove(Value::String("docker".to_string()))
-                    .map(parse_image_docker)
+                    .map(|value| parse_docker_executor_config(value, "image.docker"))
                     .transpose()?;
                 Ok(ImageConfig {
                     name,
@@ -719,32 +719,32 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
     }
 }
 
-struct ImageDockerConfig {
+struct DockerExecutorConfig {
     platform: Option<String>,
     user: Option<String>,
 }
 
-fn parse_image_docker(value: Value) -> Result<ImageDockerConfig> {
+fn parse_docker_executor_config(value: Value, field: &str) -> Result<DockerExecutorConfig> {
     let map = match value {
         Value::Mapping(map) => map,
-        other => bail!("image.docker must be a mapping, got {other:?}"),
+        other => bail!("{field} must be a mapping, got {other:?}"),
     };
     let platform_key = Value::String("platform".to_string());
     let user_key = Value::String("user".to_string());
     let platform = map
         .get(&platform_key)
         .cloned()
-        .map(|value| extract_string(value, "image.docker.platform"))
+        .map(|value| extract_string(value, &format!("{field}.platform")))
         .transpose()?;
     let user = map
         .get(&user_key)
         .cloned()
-        .map(|value| extract_string(value, "image.docker.user"))
+        .map(|value| extract_string(value, &format!("{field}.user")))
         .transpose()?;
     if platform.is_none() && user.is_none() {
-        bail!("image.docker must include 'platform' or 'user'");
+        bail!("{field} must include 'platform' or 'user'");
     }
-    Ok(ImageDockerConfig { platform, user })
+    Ok(DockerExecutorConfig { platform, user })
 }
 
 fn extract_string(value: Value, what: &str) -> Result<String> {
@@ -968,6 +968,8 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
             RawService::Simple(image) => ServiceConfig {
                 image,
                 aliases: Vec::new(),
+                docker_platform: None,
+                docker_user: None,
                 entrypoint: Vec::new(),
                 command: Vec::new(),
                 variables: HashMap::new(),
@@ -1808,6 +1810,8 @@ struct RawServiceConfig {
     #[serde(default)]
     alias: Option<String>,
     #[serde(default)]
+    docker: Option<Value>,
+    #[serde(default)]
     entrypoint: ServiceCommand,
     #[serde(default)]
     command: ServiceCommand,
@@ -1821,9 +1825,15 @@ impl RawServiceConfig {
             .image
             .or(self.name)
             .ok_or_else(|| anyhow!("service entry must specify an image (name)"))?;
+        let docker = self
+            .docker
+            .map(|value| parse_docker_executor_config(value, "services.docker"))
+            .transpose()?;
         Ok(ServiceConfig {
             image,
             aliases: parse_service_aliases(self.alias),
+            docker_platform: docker.as_ref().and_then(|cfg| cfg.platform.clone()),
+            docker_user: docker.and_then(|cfg| cfg.user),
             entrypoint: self.entrypoint.into_vec(),
             command: self.command.into_vec(),
             variables: self.variables,
@@ -2933,6 +2943,41 @@ platform-job:
         let image = job.image.as_ref().expect("image present");
         assert_eq!(image.entrypoint, vec![""]);
         assert_eq!(image.docker_user.as_deref(), Some("1000:1000"));
+    }
+
+    #[test]
+    fn parses_service_docker_platform_and_user() {
+        let pipeline = PipelineGraph::from_yaml_str(
+            r#"
+stages:
+  - test
+
+service-job:
+  stage: test
+  image: docker.io/library/alpine:3.19
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: cache
+      docker:
+        platform: linux/arm64/v8
+        user: 1000:1000
+  script:
+    - echo ok
+"#,
+        )
+        .expect("pipeline parses");
+
+        let job = pipeline
+            .graph
+            .node_weights()
+            .find(|job| job.name == "service-job")
+            .expect("job present");
+
+        let service = job.services.first().expect("service present");
+        assert_eq!(service.image, "docker.io/library/redis:7.2");
+        assert_eq!(service.aliases, vec!["cache"]);
+        assert_eq!(service.docker_platform.as_deref(), Some("linux/arm64/v8"));
+        assert_eq!(service.docker_user.as_deref(), Some("1000:1000"));
     }
 
     #[test]

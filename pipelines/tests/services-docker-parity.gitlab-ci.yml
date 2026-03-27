@@ -1,0 +1,14 @@
+stages:
+  - test
+
+service-options:
+  stage: test
+  image: docker.io/library/alpine:3.19
+  services:
+    - name: docker.io/library/redis:7.2
+      alias: cache
+      docker:
+        platform: linux/arm64/v8
+        user: 1000:1000
+  script:
+    - echo "service docker options"
