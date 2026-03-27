@@ -1,0 +1,32 @@
+{
+	"name": "ui-docs",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "npm run docs:sync && vite dev",
+		"build": "npm run docs:sync && vite build",
+		"preview": "npm run build && wrangler dev",
+		"prepare": "npm run docs:sync && svelte-kit sync || echo ''",
+		"check": "npm run docs:sync && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "npm run docs:sync && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"deploy": "npm run build && wrangler deploy",
+		"cf-typegen": "wrangler types ./src/worker-configuration.d.ts",
+		"docs:sync": "node scripts-sync-docs.mjs"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-cloudflare": "^7.2.8",
+		"@sveltejs/kit": "^2.50.2",
+		"@sveltejs/vite-plugin-svelte": "^6.2.4",
+		"@types/node": "^25.5.0",
+		"svelte": "^5.51.0",
+		"svelte-check": "^4.4.2",
+		"typescript": "^5.9.3",
+		"vite": "^7.3.1",
+		"wrangler": "^4.77.0"
+	},
+	"dependencies": {
+		"marked": "^17.0.5",
+		"shiki": "^4.0.2"
+	}
+}

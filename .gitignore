@@ -6,6 +6,5 @@ notes/
 .opal/env/
 tests-temp/
 .codex
-ui-docs/
 opal-plan
 *.cast
