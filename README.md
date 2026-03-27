@@ -128,7 +128,7 @@ The `docs/` directory is embedded into the TUI help viewer at build time.
 Requirements:
 
 - Run from a tagged commit (or set `CI_COMMIT_TAG`).
-- On macOS, install Apple `container` CLI (or Docker/Podman/NerdCTL) for Linux target builds.
+- On macOS, use one of the supported local engines for release artifact work: Apple `container`, Docker, OrbStack, or Podman.
 - On Linux hosts, only Linux artifacts are produced.
 
 Artifacts and per-platform checksum notes are written to `./releases/`.
