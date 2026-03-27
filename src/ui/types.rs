@@ -17,6 +17,7 @@ pub enum HistoryAction {
     SelectJob(usize),
     ViewLog { title: String, path: PathBuf },
     ViewRun(String),
+    ViewHistoryJob { run_id: String, job_name: String },
     ViewDir { title: String, path: PathBuf },
     ViewFile { title: String, path: PathBuf },
 }

@@ -10,7 +10,9 @@ use owo_colors::OwoColorize;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, ScrollbarState, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, List, ListItem, Paragraph, ScrollbarState, Wrap,
+};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
@@ -233,10 +235,13 @@ impl UiState {
         let (lines, rows) = self.tab_lines(width as usize);
         let summary = self.pipeline_counts();
         let paragraph = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                "Jobs  {}/{} done  run:{} fail:{}",
-                summary.done, summary.total, summary.running, summary.failed
-            )))
+            .block(self.pane_block(
+                format!(
+                    "Jobs  {}/{} done  run:{} fail:{}",
+                    summary.done, summary.total, summary.running, summary.failed
+                ),
+                !self.focus_is_history(),
+            ))
             .wrap(Wrap { trim: false });
 
         let content_height = rows.saturating_add(2); // account for top/bottom borders
@@ -251,7 +256,7 @@ impl UiState {
             self.history_scroll = 0;
             self.clear_history_preview();
             let list = List::new(vec![ListItem::new(Line::from("no runs recorded"))])
-                .block(Block::default().borders(Borders::ALL).title("Runs"));
+                .block(self.pane_block("History", self.focus_is_history()));
             return (list, ScrollbarState::default());
         }
 
@@ -280,7 +285,7 @@ impl UiState {
             })
             .collect();
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Runs"));
+        let list = List::new(items).block(self.pane_block("History", self.focus_is_history()));
         let scrollbar = ScrollbarState::new(nodes.len()).position(self.history_scroll);
         (list, scrollbar)
     }
@@ -297,7 +302,7 @@ impl UiState {
     pub(super) fn history_preview_view(&self, width: u16, height: u16) -> Paragraph<'static> {
         let Some(preview) = &self.history_preview else {
             return Paragraph::new(vec![Line::from("no log loaded")])
-                .block(Block::default().borders(Borders::ALL).title("Logs"))
+                .block(self.pane_block("Logs", !self.focus_is_history()))
                 .wrap(Wrap { trim: false });
         };
 
@@ -317,7 +322,7 @@ impl UiState {
         lines.extend(preview.visible_lines(inner_width, inner_height as usize));
 
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Logs"))
+            .block(self.pane_block("Logs", !self.focus_is_history()))
             .wrap(Wrap { trim: false })
     }
 
@@ -395,17 +400,11 @@ impl UiState {
     fn finished_run_tree_entry(&self, entry: &HistoryEntry) -> HistoryTreeEntry {
         let mut children = Vec::new();
         for job in &entry.jobs {
-            let log_path = job
-                .log_path
-                .as_ref()
-                .map(PathBuf::from)
-                .or_else(|| Some(self.default_log_path(&entry.run_id, &job.log_hash)));
             let resources = UiJobResources::from(job);
             children.push(HistoryTreeEntry {
                 key: HistoryNodeKey::FinishedJob {
                     run_id: entry.run_id.clone(),
                     job_name: job.name.clone(),
-                    log_path,
                 },
                 display: HistoryNodeDisplay::Job(JobDisplay {
                     name: job.name.clone(),
@@ -603,10 +602,6 @@ impl UiState {
         }
     }
 
-    fn default_log_path(&self, run_id: &str, log_hash: &str) -> PathBuf {
-        runtime::logs_dir(run_id).join(format!("{log_hash}.log"))
-    }
-
     pub(super) fn history_job_line(
         connector: &str,
         name: &str,
@@ -688,13 +683,38 @@ impl UiState {
 
     pub(super) fn apply_history_highlight(mut line: Line<'static>) -> Line<'static> {
         let highlight = Style::default()
-            .bg(Color::DarkGray)
+            .bg(Color::Rgb(36, 48, 74))
             .fg(Color::White)
             .add_modifier(Modifier::BOLD);
         for span in &mut line.spans {
             span.style = span.style.patch(highlight);
         }
         line
+    }
+
+    fn pane_block<T: Into<ratatui::text::Line<'static>>>(
+        &self,
+        title: T,
+        focused: bool,
+    ) -> Block<'static> {
+        let border_style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let title_style = if focused {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .title(title)
+            .title_style(title_style)
     }
 
     pub(super) fn is_run_collapsed(&self, key: &str) -> bool {
@@ -759,6 +779,17 @@ impl UiState {
         self.focus = PaneFocus::Jobs;
         self.on_active_selection_changed();
         self.loaded_dirs.clear();
+        Ok(())
+    }
+
+    pub(super) fn view_history_job(&mut self, run_id: &str, job_name: &str) -> Result<()> {
+        self.view_history_run(run_id)?;
+        if let Some(view) = &mut self.history_view
+            && let Some(idx) = view.jobs.iter().position(|job| job.name == job_name)
+        {
+            view.selected = idx;
+            self.on_active_selection_changed();
+        }
         Ok(())
     }
 
@@ -929,12 +960,10 @@ impl UiState {
             HistoryNodeKey::FinishedRun { run_id } => Some(HistoryAction::ViewRun(run_id.clone())),
             HistoryNodeKey::CurrentJob(idx) => Some(HistoryAction::SelectJob(*idx)),
             HistoryNodeKey::FinishedJob {
-                run_id,
-                job_name,
-                log_path,
-            } => log_path.clone().map(|path| HistoryAction::ViewLog {
-                title: format!("{run_id} • {job_name}"),
-                path,
+                run_id, job_name, ..
+            } => Some(HistoryAction::ViewHistoryJob {
+                run_id: run_id.clone(),
+                job_name: job_name.clone(),
             }),
             HistoryNodeKey::ResourceDir { title, path } => {
                 self.ensure_dir_loaded(path);
@@ -1169,39 +1198,31 @@ impl UiState {
         compact: bool,
     ) -> Vec<Span<'static>> {
         let (icon_char, icon_color) = job.status.icon();
-        let highlight = if selected {
-            Some(Style::default().add_modifier(Modifier::UNDERLINED))
-        } else {
-            None
-        };
         let active = job.status == UiJobStatus::Running;
-        let active_style = if active {
+        let overlay = if selected {
             Some(
                 Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
+                    .bg(if active {
+                        Color::Cyan
+                    } else {
+                        Color::Rgb(36, 48, 74)
+                    })
+                    .fg(if active { Color::Black } else { Color::White })
                     .add_modifier(Modifier::BOLD),
             )
+        } else if active {
+            Some(Style::default().fg(Color::Cyan))
         } else {
             None
         };
-        let overlay = active_style.or(highlight);
         let mut spans = Vec::new();
 
         spans.push(Span::styled(
             icon_char.to_string(),
             Self::apply_highlight(
-                Self::apply_highlight(
-                    Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
-                    active_style,
-                ),
-                highlight,
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+                overlay,
             ),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("[{}]", job.status.badge()),
-            Self::apply_highlight(Self::status_badge_style(job.status), highlight),
         ));
         spans.push(Span::styled(
             " ".to_string(),
@@ -1209,12 +1230,12 @@ impl UiState {
         ));
         if compact {
             spans.push(Span::styled(
-                truncate_label(&job.name, 16),
+                truncate_label(&job.name, 20),
                 Self::apply_highlight(Style::default().add_modifier(Modifier::BOLD), overlay),
             ));
             spans.push(Span::styled(
-                format!(" [{}]", job.stage),
-                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
+                format!(" · {}", truncate_label(&job.stage, 10)),
+                Self::apply_highlight(Style::default().fg(Color::Gray), overlay),
             ));
         } else {
             spans.push(Span::styled(
@@ -1222,17 +1243,13 @@ impl UiState {
                 Self::apply_highlight(Style::default().add_modifier(Modifier::BOLD), overlay),
             ));
             spans.push(Span::styled(
-                format!(" [{}]", job.stage),
-                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
-            ));
-            spans.push(Span::styled(
-                format!(" ({})", job.log_hash),
-                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
+                format!(" · {}", job.stage),
+                Self::apply_highlight(Style::default().fg(Color::Gray), overlay),
             ));
         }
         if job.manual_pending {
             spans.push(Span::styled(
-                " • MANUAL",
+                "  manual",
                 Self::apply_highlight(
                     Style::default()
                         .fg(Color::Yellow)
@@ -1242,17 +1259,12 @@ impl UiState {
             ));
         } else if job.status == UiJobStatus::Pending {
             spans.push(Span::styled(
-                " • WAITING",
-                Self::apply_highlight(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                    overlay,
-                ),
+                "  waiting",
+                Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
             ));
         } else if active {
             spans.push(Span::styled(
-                " • ACTIVE",
+                "  active",
                 Self::apply_highlight(
                     Style::default()
                         .fg(Color::Yellow)
@@ -1274,35 +1286,56 @@ impl UiState {
     }
 
     pub(super) fn help_prompt(&self) -> Paragraph<'static> {
-        Paragraph::new(vec![
-            Line::from(vec![
-                Self::hint_label("Keys", Color::Cyan),
-                key_span_color("?", Color::Yellow),
-                Span::raw(" help  "),
-                key_span_color("Tab", Color::Yellow),
-                Span::raw(" panes  "),
-                key_span_color("q", Color::Yellow),
-                Span::raw(" quit  "),
-                key_span_color("o", Color::Yellow),
-                Span::raw(" log  "),
-                key_span_color("p", Color::Yellow),
-                Span::raw(" plan"),
-            ]),
-            Line::from(vec![
-                Self::hint_label("Run", Color::Green),
-                key_span_color("r", Color::Yellow),
-                Span::raw(" restart  "),
-                key_span_color("m", Color::Yellow),
-                Span::raw(" manual  "),
-                key_span_color("x", Color::Yellow),
-                Span::raw(" cancel  "),
-                key_span_color("0-4", Color::Yellow),
-                Span::raw(format!(" filter:{}  ", self.log_filter.label())),
-                key_span_color("c", Color::Yellow),
-                Span::raw(format!(" density:{}", self.tab_density.label())),
-            ]),
-        ])
-        .wrap(Wrap { trim: false })
+        let lines = if self.focus_is_history() {
+            vec![
+                Line::from(vec![
+                    Self::hint_label("History", Color::Cyan),
+                    key_span_color("↑/↓", Color::Yellow),
+                    Span::raw(" move  "),
+                    key_span_color("←/→", Color::Yellow),
+                    Span::raw(" collapse  "),
+                    key_span_color("Enter", Color::Yellow),
+                    Span::raw(" open"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("Global", Color::Green),
+                    key_span_color("Tab", Color::Yellow),
+                    Span::raw(" switch  "),
+                    key_span_color("?", Color::Yellow),
+                    Span::raw(" help  "),
+                    key_span_color("q", Color::Yellow),
+                    Span::raw(" quit"),
+                ]),
+            ]
+        } else {
+            vec![
+                Line::from(vec![
+                    Self::hint_label("Jobs", Color::Cyan),
+                    key_span_color("j/k", Color::Yellow),
+                    Span::raw(" switch  "),
+                    key_span_color("o", Color::Yellow),
+                    Span::raw(" log  "),
+                    key_span_color("p", Color::Yellow),
+                    Span::raw(" plan"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("Run", Color::Green),
+                    key_span_color("r", Color::Yellow),
+                    Span::raw(" restart  "),
+                    key_span_color("m", Color::Yellow),
+                    Span::raw(" manual  "),
+                    key_span_color("x", Color::Yellow),
+                    Span::raw(" cancel  "),
+                    key_span_color("0-4", Color::Yellow),
+                    Span::raw(format!(" filter:{}  ", self.log_filter.label())),
+                    key_span_color("c", Color::Yellow),
+                    Span::raw(format!(" density:{}", self.tab_density.label())),
+                ]),
+            ]
+        };
+        Paragraph::new(lines)
+            .block(self.pane_block("Shortcuts", self.focus_is_history()))
+            .wrap(Wrap { trim: false })
     }
 
     pub(super) fn plan_text(&self) -> String {
@@ -1779,33 +1812,43 @@ impl UiState {
             Some(job) => job,
             None => {
                 return Paragraph::new(vec![Line::from("No job selected")])
-                    .block(Block::default().borders(Borders::ALL).title("Details"))
+                    .block(self.pane_block("Details", !self.focus_is_history()))
                     .wrap(Wrap { trim: true });
             }
         };
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Pipeline: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Job: ", Style::default().fg(Color::Cyan)),
+                Span::raw(job.name.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
+                Span::raw(job.stage.clone()),
+                Span::raw("  "),
+                Span::styled("Status: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{} ({:.2}s)", job.status.label(), job.display_duration()),
+                    Style::default().fg(job.status.icon().1),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Run: ", Style::default().fg(Color::Cyan)),
                 Span::raw(format!(
                     "{}/{} done  running:{}  failed:{}  pending:{}",
                     summary.done, summary.total, summary.running, summary.failed, summary.pending
                 )),
             ]),
             Line::from(vec![
-                Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
-                Span::raw(job.stage.clone()),
-            ]),
-            Line::from(vec![
                 Span::styled("Log: ", Style::default().fg(Color::Cyan)),
-                Span::raw(job.log_path.display().to_string()),
-            ]),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!(
-                    "{} ({:.2}s)",
-                    job.status.label(),
-                    job.display_duration()
-                )),
+                Span::raw(
+                    job.log_path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_else(|| job.log_path.display().to_string()),
+                ),
+                Span::raw("  "),
+                Span::styled("id ", Style::default().fg(Color::DarkGray)),
+                Span::styled(job.log_hash.clone(), Style::default().fg(Color::DarkGray)),
             ]),
         ];
         if job.manual_pending {
@@ -1816,7 +1859,7 @@ impl UiState {
         }
 
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Details"))
+            .block(self.pane_block("Details", !self.focus_is_history()))
             .wrap(Wrap { trim: true })
     }
 
@@ -1833,16 +1876,17 @@ impl UiState {
             Some(job) => job,
             None => {
                 return Paragraph::new(vec![Line::from("No job selected")])
-                    .block(Block::default().borders(Borders::ALL).title("Logs"))
+                    .block(self.pane_block("Logs", !self.focus_is_history()))
                     .wrap(Wrap { trim: true });
             }
         };
         let mut lines: Vec<Line> = Vec::new();
         let status_span = Span::styled(
             format!(
-                "Status: {} ({:.2}s)  Filter: {}",
+                "{}  {}/{} done  filter:{}",
                 job.status.label(),
-                job.display_duration(),
+                self.pipeline_counts().done,
+                self.pipeline_counts().total,
                 self.log_filter.label(),
             ),
             Style::default().fg(job.status.icon().1),
@@ -1881,12 +1925,18 @@ impl UiState {
         }
 
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(self.pane_block(title, !self.focus_is_history()))
             .wrap(Wrap { trim: false })
     }
 
     pub(super) fn current_log_path(&self) -> Option<PathBuf> {
-        self.active_job().map(|job| job.log_path.clone())
+        self.active_job().and_then(|job| {
+            if job.log_path.exists() {
+                Some(job.log_path.clone())
+            } else {
+                None
+            }
+        })
     }
 
     pub(super) fn restartable_job_name(&self) -> Option<String> {
@@ -2135,31 +2185,6 @@ impl UiState {
         }
         counts.done = counts.success + counts.failed + counts.skipped;
         counts
-    }
-
-    fn status_badge_style(status: UiJobStatus) -> Style {
-        match status {
-            UiJobStatus::Pending => Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            UiJobStatus::Running => Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            UiJobStatus::Success => Style::default()
-                .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            UiJobStatus::Failed => Style::default()
-                .bg(Color::Red)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            UiJobStatus::Skipped => Style::default()
-                .bg(Color::Yellow)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        }
     }
 }
 
@@ -2480,23 +2505,11 @@ struct FileEntryDisplay {
 enum HistoryNodeKey {
     CurrentRun,
     CurrentJob(usize),
-    FinishedRun {
-        run_id: String,
-    },
-    FinishedJob {
-        run_id: String,
-        job_name: String,
-        log_path: Option<PathBuf>,
-    },
-    ResourceDir {
-        title: String,
-        path: PathBuf,
-    },
+    FinishedRun { run_id: String },
+    FinishedJob { run_id: String, job_name: String },
+    ResourceDir { title: String, path: PathBuf },
     ResourceInfo,
-    FileEntry {
-        path: PathBuf,
-        is_dir: bool,
-    },
+    FileEntry { path: PathBuf, is_dir: bool },
 }
 
 struct HistoryRunView {
@@ -2582,16 +2595,6 @@ impl UiJobStatus {
             self,
             UiJobStatus::Success | UiJobStatus::Failed | UiJobStatus::Skipped
         )
-    }
-
-    fn badge(self) -> &'static str {
-        match self {
-            UiJobStatus::Pending => "WAIT",
-            UiJobStatus::Running => "RUN",
-            UiJobStatus::Success => "PASS",
-            UiJobStatus::Failed => "FAIL",
-            UiJobStatus::Skipped => "SKIP",
-        }
     }
 }
 
@@ -3001,6 +3004,13 @@ fn colorize_diff_body(body: &str) -> String {
         format!("{}", format!("+{rest}").green())
     } else if let Some(rest) = body.strip_prefix('-') {
         format!("{}", format!("-{rest}").red())
+    } else if let Some(kind) = semantic_log_color(body) {
+        match kind {
+            SemanticLogColor::Error => format!("{}", body.red().bold()),
+            SemanticLogColor::Warning => format!("{}", body.yellow().bold()),
+            SemanticLogColor::Success => format!("{}", body.green().bold()),
+            SemanticLogColor::Skipped => format!("{}", body.yellow().italic()),
+        }
     } else {
         body.to_string()
     }
@@ -3013,8 +3023,70 @@ fn diff_style(text: &str) -> Option<Style> {
     } else if trimmed.starts_with('-') {
         Some(Style::default().fg(Color::Red))
     } else {
-        None
+        semantic_log_color(trimmed).map(|kind| match kind {
+            SemanticLogColor::Error => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            SemanticLogColor::Warning => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            SemanticLogColor::Success => Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            SemanticLogColor::Skipped => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        })
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SemanticLogColor {
+    Error,
+    Warning,
+    Success,
+    Skipped,
+}
+
+fn semantic_log_color(text: &str) -> Option<SemanticLogColor> {
+    let normalized = text.to_ascii_lowercase();
+    if normalized.contains("...") {
+        let tail = normalized.rsplit("...").next().unwrap_or("").trim();
+        if tail == "ok" || tail.starts_with("ok ") {
+            return Some(SemanticLogColor::Success);
+        }
+        if tail == "failed" || tail.starts_with("failed ") {
+            return Some(SemanticLogColor::Error);
+        }
+        if tail == "ignored"
+            || tail.starts_with("ignored ")
+            || tail == "skipped"
+            || tail.starts_with("skipped ")
+        {
+            return Some(SemanticLogColor::Skipped);
+        }
+    }
+    if normalized.contains("test result: ok")
+        || (normalized.contains("passed") && normalized.contains("0 failed"))
+        || normalized.starts_with("ok")
+        || normalized.contains("success")
+    {
+        return Some(SemanticLogColor::Success);
+    }
+    if normalized.contains("error")
+        || normalized.contains("failed")
+        || normalized.contains("panic")
+        || normalized.contains("panicked")
+        || normalized.contains("exception")
+        || normalized.contains("caused by:")
+    {
+        return Some(SemanticLogColor::Error);
+    }
+    if normalized.contains("warning") || normalized.contains("warn") {
+        return Some(SemanticLogColor::Warning);
+    }
+    if normalized.contains("skipped") || normalized.contains("ignored") {
+        return Some(SemanticLogColor::Skipped);
+    }
+    None
 }
 
 fn apply_line_style(spans: &mut [Span<'static>], style: Style) {
@@ -3040,11 +3112,15 @@ fn rows_for_line(line: &Line<'_>, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        HelpDocument, LogFilter, format_log_entry, is_markdown_path, matches_log_filter,
+        HelpDocument, LogFilter, UiState, format_log_entry, is_markdown_path, matches_log_filter,
         render_markdown_for_pager,
     };
+    use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
+    use crate::ui::types::UiJobInfo;
     use ratatui::style::{Color, Modifier};
+    use std::collections::HashMap;
     use std::path::Path;
+    use tempfile::tempdir;
 
     #[test]
     fn renders_basic_markdown_for_pager() {
@@ -3156,5 +3232,198 @@ mod tests {
         let line = format_log_entry("[11:45:19.541 0068] Downloaded serde");
         assert_eq!(line.spans[1].style.fg, Some(Color::DarkGray));
         assert_eq!(line.spans[3].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn format_log_entry_marks_semantic_errors_red() {
+        let line = format_log_entry("[11:45:19.541 0068] error[E0425]: cannot find value");
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn format_log_entry_marks_semantic_warnings_yellow() {
+        let line = format_log_entry("[11:45:19.541 0068] warning: field is never read");
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn format_log_entry_marks_semantic_success_green() {
+        let line = format_log_entry("[11:45:19.541 0068] test result: ok. 180 passed; 0 failed");
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Green)
+        );
+    }
+
+    #[test]
+    fn format_log_entry_marks_semantic_skips_yellow() {
+        let line = format_log_entry("[11:45:19.541 0068] 3 skipped, 2 ignored");
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn format_log_entry_prefers_test_outcome_over_error_in_test_name() {
+        let line = format_log_entry(
+            "[11:45:19.541 0068] test pipeline::rules::tests::captures_error_for_ambiguous_git_tag_context ... ok",
+        );
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Green)
+        );
+    }
+
+    #[test]
+    fn format_log_entry_marks_failed_test_outcomes_red() {
+        let line = format_log_entry(
+            "[11:45:19.541 0068] test env::tests::expands_env_references ... FAILED",
+        );
+        assert_eq!(
+            line.spans.last().and_then(|span| span.style.fg),
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn current_log_path_ignores_missing_job_logs() {
+        let temp = tempdir().expect("tempdir");
+        let state = UiState::new(
+            vec![UiJobInfo {
+                name: "lint".to_string(),
+                stage: "test".to_string(),
+                log_path: temp.path().join("missing.log"),
+                log_hash: "abc123".to_string(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        assert!(state.current_log_path().is_none());
+    }
+
+    #[test]
+    fn current_log_path_returns_existing_job_log() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("job.log");
+        std::fs::write(&log_path, "hello").expect("write log");
+        let state = UiState::new(
+            vec![UiJobInfo {
+                name: "lint".to_string(),
+                stage: "test".to_string(),
+                log_path: log_path.clone(),
+                log_hash: "abc123".to_string(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        assert_eq!(state.current_log_path(), Some(log_path));
+    }
+
+    #[test]
+    fn view_history_run_loads_first_history_job_preview() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("history-job.log");
+        std::fs::write(&log_path, "from history").expect("write log");
+        let history = vec![HistoryEntry {
+            run_id: "run-2".to_string(),
+            finished_at: "2026-03-27T00:00:00Z".to_string(),
+            status: HistoryStatus::Success,
+            jobs: vec![HistoryJob {
+                name: "unit-tests".to_string(),
+                stage: "test".to_string(),
+                status: HistoryStatus::Success,
+                log_hash: "hash123".to_string(),
+                log_path: Some(log_path.display().to_string()),
+                artifact_dir: None,
+                artifacts: Vec::new(),
+                caches: Vec::new(),
+            }],
+        }];
+        let mut state = UiState::new(
+            Vec::new(),
+            history,
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        state.view_history_run("run-2").expect("view history run");
+
+        let view = state.history_view.as_ref().expect("history view");
+        assert_eq!(view.selected, 0);
+        assert_eq!(view.jobs[0].name, "unit-tests");
+        let preview = state.history_preview.as_ref().expect("history preview");
+        assert!(preview.title.contains("run-2 • unit-tests"));
+        assert!(preview.lines.iter().any(|line| line == "from history"));
+    }
+
+    #[test]
+    fn view_history_job_selects_matching_job() {
+        let temp = tempdir().expect("tempdir");
+        let first_log = temp.path().join("first.log");
+        let second_log = temp.path().join("second.log");
+        std::fs::write(&first_log, "first").expect("write first log");
+        std::fs::write(&second_log, "second").expect("write second log");
+        let history = vec![HistoryEntry {
+            run_id: "run-2".to_string(),
+            finished_at: "2026-03-27T00:00:00Z".to_string(),
+            status: HistoryStatus::Success,
+            jobs: vec![
+                HistoryJob {
+                    name: "lint".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Success,
+                    log_hash: "hash1".to_string(),
+                    log_path: Some(first_log.display().to_string()),
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                },
+                HistoryJob {
+                    name: "unit-tests".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Success,
+                    log_hash: "hash2".to_string(),
+                    log_path: Some(second_log.display().to_string()),
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                },
+            ],
+        }];
+        let mut state = UiState::new(
+            Vec::new(),
+            history,
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        state
+            .view_history_job("run-2", "unit-tests")
+            .expect("view history job");
+
+        let view = state.history_view.as_ref().expect("history view");
+        assert_eq!(view.selected, 1);
+        let preview = state.history_preview.as_ref().expect("history preview");
+        assert!(preview.title.contains("run-2 • unit-tests"));
+        assert!(preview.lines.iter().any(|line| line == "second"));
     }
 }

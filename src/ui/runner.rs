@@ -118,12 +118,12 @@ impl UiRunner {
         self.terminal.draw(|frame| {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(32), Constraint::Min(0)])
+                .constraints([Constraint::Length(36), Constraint::Min(0)])
                 .split(frame.area());
 
             let history_split = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(3)])
+                .constraints([Constraint::Min(0), Constraint::Length(5)])
                 .split(columns[0]);
             let history_area = history_split[0];
             let (history_list, mut history_scrollbar) =
@@ -143,7 +143,7 @@ impl UiRunner {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(tab_height),
-                    Constraint::Length(5),
+                    Constraint::Length(6),
                     Constraint::Min(0),
                 ])
                 .split(columns[1]);
@@ -320,6 +320,17 @@ impl UiRunner {
                             HistoryAction::ViewRun(run_id) => {
                                 if let Err(err) = self.state.view_history_run(&run_id) {
                                     let title = format!("{run_id} • history");
+                                    let empty = PathBuf::new();
+                                    self.state.set_history_preview_message(
+                                        title,
+                                        &empty,
+                                        err.to_string(),
+                                    );
+                                }
+                            }
+                            HistoryAction::ViewHistoryJob { run_id, job_name } => {
+                                if let Err(err) = self.state.view_history_job(&run_id, &job_name) {
+                                    let title = format!("{run_id} • {job_name}");
                                     let empty = PathBuf::new();
                                     self.state.set_history_preview_message(
                                         title,
