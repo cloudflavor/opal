@@ -58,6 +58,18 @@ When `opal plan` runs in an interactive terminal, it now opens in your pager by 
 
 By default, Opal expects `.gitlab-ci.yml` in the current working directory and prepares each job from a snapshot of that current working tree.
 
+Default engine selection:
+
+- macOS: `auto` uses Apple `container`
+- Linux: `auto` uses `podman`
+
+You can override the `auto` default in config with:
+
+```toml
+[engine]
+default = "docker"
+```
+
 Preview the DAG without execution:
 
 ```bash

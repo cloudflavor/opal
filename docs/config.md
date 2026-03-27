@@ -11,6 +11,9 @@ This means project-level `.opal/config.toml` overrides global defaults.
 ## Example
 
 ```toml
+[engine]
+default = "docker"   # override --engine auto for this project or machine
+
 [container]         # applies to the Apple "container" CLI microVMs
 arch = "arm64"       # optional; defaults to x86_64 unless overridden
 cpus = "6"          # defaults to 4 if omitted
@@ -33,6 +36,23 @@ scheme = "https"                       # optional for Apple `container` CLI
 ```
 
 ## Engine settings
+
+You can set a config-level default engine for `--engine auto` with:
+
+- `[engine].default`
+
+Accepted values:
+
+- `container`
+- `docker`
+- `podman`
+- `nerdctl`
+- `orbstack`
+
+CLI behavior still wins over config:
+
+- explicit `--engine docker` beats config
+- config default is used only when the CLI choice is `auto`
 
 Currently only the Apple `container` CLI exposes tunables. You can configure it either via the dedicated `[container]` table (shown above) or the legacy `[engine.container]` table—both are merged, with `[container]` taking precedence.
 

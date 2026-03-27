@@ -8,6 +8,14 @@ cargo install opal
 
 Opal requires Docker, Podman, Apple `container`, or OrbStack for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
 
+Opal wraps those local engine CLIs; it does not bundle its own container runtime. Make sure the engine you want to use is already installed and available on your `PATH`.
+
+For the Apple `container` engine, use the official project:
+
+```text
+https://github.com/apple/container
+```
+
 If you are installing from a local checkout while developing Opal itself, use:
 
 ```bash
@@ -29,6 +37,18 @@ opal run --pipeline .gitlab-ci.yml --workdir .
 Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
 On macOS, the RC-supported local engine set is `container`, `docker`, `orbstack`, and `podman`.
 Add `--job <name>` (repeatable) when you want to run only selected jobs plus their required upstream dependencies.
+
+Default engine selection:
+
+- macOS: `auto` uses Apple `container`
+- Linux: `auto` uses `podman`
+
+You can override the `auto` default in config with:
+
+```toml
+[engine]
+default = "docker"
+```
 
 ## Run Without The TUI
 

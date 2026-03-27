@@ -1,4 +1,4 @@
-use crate::{EngineKind, runtime};
+use crate::{EngineChoice, EngineKind, runtime};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -11,6 +11,7 @@ use std::path::Path;
 pub struct OpalConfig {
     pub container: Option<ContainerEngineConfig>,
     pub jobs: Vec<JobOverrideConfig>,
+    #[serde(alias = "engine")]
     pub engines: EngineSettings,
     #[serde(rename = "registry")]
     pub registries: Vec<RegistryAuth>,
@@ -19,6 +20,7 @@ pub struct OpalConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct EngineSettings {
+    pub default: Option<EngineChoice>,
     pub container: Option<ContainerEngineConfig>,
 }
 
@@ -90,6 +92,10 @@ impl OpalConfig {
         self.engines.container.as_ref()
     }
 
+    pub fn default_engine(&self) -> Option<EngineChoice> {
+        self.engines.default
+    }
+
     pub fn registry_auth_for(&self, engine: EngineKind) -> Result<Vec<ResolvedRegistryAuth>> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -144,6 +150,9 @@ impl OpalConfig {
 
 impl EngineSettings {
     fn merge(&mut self, other: EngineSettings) {
+        if let Some(default) = other.default {
+            self.default = Some(default);
+        }
         if let Some(new_container) = other.container {
             match &mut self.container {
                 Some(existing) => existing.merge(new_container),
@@ -282,5 +291,43 @@ mod tests {
         assert!(resolved.privileged);
         assert_eq!(resolved.cap_add, vec!["NET_ADMIN"]);
         assert_eq!(resolved.cap_drop, vec!["MKNOD"]);
+    }
+
+    #[test]
+    fn parses_default_engine_from_engine_table() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[engine]
+default = "docker"
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(parsed.default_engine(), Some(crate::EngineChoice::Docker));
+    }
+
+    #[test]
+    fn project_level_engine_default_overrides_global() {
+        let mut base = OpalConfig::default();
+        base.merge(
+            toml::from_str(
+                r#"
+[engine]
+default = "docker"
+"#,
+            )
+            .expect("parse global config"),
+        );
+        base.merge(
+            toml::from_str(
+                r#"
+[engine]
+default = "container"
+"#,
+            )
+            .expect("parse project config"),
+        );
+
+        assert_eq!(base.default_engine(), Some(crate::EngineChoice::Container));
     }
 }

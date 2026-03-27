@@ -57,12 +57,13 @@ async fn main() -> Result<()> {
                 gitlab_token,
                 jobs,
             } = args;
-            validate_engine_choice(engine)?;
             let resolved_workdir = workdir.unwrap_or(current_dir);
             let resolved_pipeline =
                 pipeline.unwrap_or_else(|| resolved_workdir.join(".gitlab-ci.yml"));
             let settings = OpalConfig::load(&resolved_workdir)?;
 
+            let engine = resolve_engine_choice(engine, &settings);
+            validate_engine_choice(engine)?;
             let engine_kind = resolve_engine(engine);
             let gitlab = gitlab_token.map(|token| GitLabRemoteConfig {
                 base_url: gitlab_base_url
@@ -311,13 +312,7 @@ fn validate_engine_choice(_: EngineChoice) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn resolve_engine(choice: EngineChoice) -> EngineKind {
     match choice {
-        EngineChoice::Auto => {
-            if detect_orbstack() {
-                EngineKind::Orbstack
-            } else {
-                EngineKind::ContainerCli
-            }
-        }
+        EngineChoice::Auto => EngineKind::ContainerCli,
         EngineChoice::Container => EngineKind::ContainerCli,
         EngineChoice::Docker => EngineKind::Docker,
         EngineChoice::Orbstack => EngineKind::Orbstack,
@@ -326,25 +321,11 @@ fn resolve_engine(choice: EngineChoice) -> EngineKind {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn detect_orbstack() -> bool {
-    if std::env::var_os("ORBSTACK").is_some() {
-        return true;
-    }
-    if let Some(host) = std::env::var_os("DOCKER_HOST")
-        && let Ok(host_str) = host.into_string()
-        && host_str.contains(".orbstack")
-    {
-        return true;
-    }
-    false
-}
-
 #[cfg(target_os = "linux")]
 fn resolve_engine(choice: EngineChoice) -> EngineKind {
     match choice {
-        EngineChoice::Auto | EngineChoice::Docker => EngineKind::Docker,
-        EngineChoice::Podman => EngineKind::Podman,
+        EngineChoice::Auto | EngineChoice::Podman => EngineKind::Podman,
+        EngineChoice::Docker => EngineKind::Docker,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
         EngineChoice::Orbstack => EngineKind::Docker,
         EngineChoice::Container => {
@@ -359,10 +340,19 @@ fn resolve_engine(_: EngineChoice) -> EngineKind {
     EngineKind::Docker
 }
 
+fn resolve_engine_choice(choice: EngineChoice, settings: &OpalConfig) -> EngineChoice {
+    if choice != EngineChoice::Auto {
+        return choice;
+    }
+    settings.default_engine().unwrap_or(EngineChoice::Auto)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rule_context_for_workdir;
+    use super::{resolve_engine_choice, rule_context_for_workdir};
     use anyhow::Result;
+    use opal::EngineChoice;
+    use opal::config::{EngineSettings, OpalConfig};
     use std::fs;
     use tempfile::tempdir;
 
@@ -376,5 +366,37 @@ mod tests {
         let ctx = rule_context_for_workdir(dir.path());
         assert_eq!(ctx.env_value("QUAY_USERNAME"), Some("robot-user"));
         Ok(())
+    }
+
+    #[test]
+    fn explicit_engine_choice_wins_over_config_default() {
+        let settings = OpalConfig {
+            engines: EngineSettings {
+                default: Some(EngineChoice::Docker),
+                container: None,
+            },
+            ..OpalConfig::default()
+        };
+
+        assert_eq!(
+            resolve_engine_choice(EngineChoice::Podman, &settings),
+            EngineChoice::Podman
+        );
+    }
+
+    #[test]
+    fn config_default_engine_is_used_when_cli_is_auto() {
+        let settings = OpalConfig {
+            engines: EngineSettings {
+                default: Some(EngineChoice::Docker),
+                container: None,
+            },
+            ..OpalConfig::default()
+        };
+
+        assert_eq!(
+            resolve_engine_choice(EngineChoice::Auto, &settings),
+            EngineChoice::Docker
+        );
     }
 }

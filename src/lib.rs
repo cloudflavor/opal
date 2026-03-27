@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::str::FromStr;
 use structopt::StructOpt;
@@ -136,7 +137,8 @@ pub struct PlanArgs {
     pub json: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EngineChoice {
     Auto,
     Container,

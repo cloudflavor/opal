@@ -4,14 +4,14 @@
   const demos = [
     {
       title: 'Opal Run',
-      command: 'opal run --workdir . --pipeline .gitlab-ci.yml',
+      command: 'opal run',
       body: 'Use the full TUI when you want to watch jobs live, inspect history, browse artifacts, and step through the pipeline interactively.',
       href: '/docs/quickstart#run-the-pipeline',
       cast: 'LxDIEb87AyDtDM5c'
     },
     {
       title: 'Opal Plan',
-      command: 'opal plan --workdir . --pipeline .gitlab-ci.yml',
+      command: 'opal plan',
       body: 'Print the evaluated DAG, dependencies, gates, and scheduling decisions without starting containers.',
       href: '/docs/plan#preview-the-dag',
       cast: '6rP1p3H4vtA7Orr8'
@@ -46,6 +46,27 @@
       href: '/docs/pipeline'
     }
   ];
+
+  const downloads = [
+    {
+      title: 'macOS · Apple Silicon',
+      target: 'aarch64-apple-silicon',
+      install: 'curl -L <placeholder> | tar xz',
+      href: '#download-placeholder-macos'
+    },
+    {
+      title: 'Linux · ARM64',
+      target: 'aarch64-unknown-linux-gnu',
+      install: 'curl -L <placeholder> | tar xz',
+      href: '#download-placeholder-linux-arm64'
+    },
+    {
+      title: 'Linux · AMD64',
+      target: 'x86_64-unknown-linux-gnu',
+      install: 'curl -L <placeholder> | tar xz',
+      href: '#download-placeholder-linux-amd64'
+    }
+  ];
 </script>
 
 <svelte:head>
@@ -74,6 +95,34 @@
       <strong>run · run --no-tui · plan · view</strong>
       <p>Use interactive runs, plain terminal runs, DAG-only planning, or post-run history browsing depending on the task.</p>
     </div>
+  </div>
+</section>
+
+<section class="section shell">
+  <div class="section-headline">
+    <p class="eyebrow">Install</p>
+    <h2 id="download"><a class="section-anchor" href="#download" aria-label="Link to download">#</a>Download the build that matches your machine.</h2>
+  </div>
+
+  <div class="install-intro">
+    <div>
+      <h3>Install from crates.io</h3>
+      <pre>cargo install opal</pre>
+    </div>
+    <a class="reference-doc-link" href="/docs/install">Open install docs →</a>
+  </div>
+
+  <div class="install-list">
+    {#each downloads as item}
+      <section class="install-row" id={item.href.slice(1)}>
+        <div class="install-main">
+          <h3><a class="section-anchor" href={`#${item.href.slice(1)}`} aria-label={`Link to ${item.title}`}>#</a>{item.title}</h3>
+          <p>{item.target}</p>
+        </div>
+        <pre>{item.install}</pre>
+        <a class="reference-doc-link" href={item.href}>Placeholder link →</a>
+      </section>
+    {/each}
   </div>
 </section>
 
@@ -275,6 +324,24 @@
     display: grid;
     gap: 0;
   }
+  .install-list {
+    display: grid;
+    gap: 0;
+    padding-bottom: 1rem;
+  }
+  .install-intro {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding-bottom: 1.25rem;
+  }
+  .install-intro h3 {
+    margin: 0 0 0.75rem;
+    color: var(--text-strong);
+    font-size: 1.05rem;
+  }
+  .install-row,
   .reference-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(240px, 320px) auto;
@@ -283,14 +350,28 @@
     padding: 1.1rem 0;
     border-top: 1px solid var(--border);
   }
+  .install-row:last-child,
   .reference-row:last-child {
     border-bottom: 1px solid var(--border);
+  }
+  .install-main h3,
+  .install-main p {
+    margin: 0;
+  }
+  .install-main p {
+    color: var(--text-soft);
+    margin-top: 0.35rem;
   }
   @media (max-width: 1100px) {
     .hero,
     .demo-row,
+    .install-row,
     .reference-row {
       grid-template-columns: 1fr;
+    }
+    .install-intro {
+      display: grid;
+      align-items: start;
     }
     .shell {
       padding-left: 1.25rem;

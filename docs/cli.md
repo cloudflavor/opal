@@ -17,7 +17,7 @@ This page documents the current Opal command-line surface directly from the impl
 Example:
 
 ```bash
-opal --log-level debug plan --pipeline .gitlab-ci.yml --workdir .
+opal --log-level debug plan
 ```
 
 ## Commands
@@ -76,9 +76,10 @@ opal run -E CI_* -E 'AWS_ACCESS_KEY_ID' -E 'APP_??'
 
 Notes:
 
-- On macOS, `auto` prefers `orbstack` when detected, otherwise uses Apple `container`.
-- On Linux, `auto` uses `docker`.
+- On macOS, `auto` uses Apple `container`.
+- On Linux, `auto` uses `podman`.
 - On macOS, `nerdctl` is treated as Linux-oriented rather than as a first-class host engine.
+- You can override the `auto` default in config with `[engine].default`.
 
 ##### `--no-tui`
 
@@ -153,7 +154,7 @@ When `opal plan` runs in an interactive terminal, it opens the formatted plan in
 Example:
 
 ```bash
-opal plan --pipeline .gitlab-ci.yml --workdir . --job package-linux
+opal plan --job package-linux
 opal plan --no-pager --job package-linux
 opal plan --json --job package-linux
 ```
@@ -189,7 +190,7 @@ These are not command-line flags, but they change CLI/runtime behavior and are w
 Run the default repo pipeline locally:
 
 ```bash
-opal run --workdir . --pipeline .gitlab-ci.yml
+opal run
 ```
 
 Run one job plus required upstreams:
@@ -201,7 +202,7 @@ opal run --no-tui --job lint
 Preview the evaluated DAG only:
 
 ```bash
-opal plan --workdir . --pipeline .gitlab-ci.yml
+opal plan
 ```
 
 Inspect a subgraph:
