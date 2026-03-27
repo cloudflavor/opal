@@ -32,6 +32,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
 
@@ -191,20 +192,35 @@ impl ExecutorCore {
         } else {
             None
         };
-        let mut command_rx = ui_handle
+        let mut owned_command_rx = if !self.config.enable_tui {
+            let (tx, rx) = mpsc::unbounded_channel();
+            if let Ok(raw) = env::var("OPAL_ABORT_AFTER_SECS")
+                && let Ok(seconds) = raw.parse::<u64>()
+                && seconds > 0
+            {
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+                    let _ = tx.send(crate::ui::UiCommand::AbortPipeline);
+                });
+            }
+            Some(rx)
+        } else {
+            None
+        };
+        let mut ui_command_rx = ui_handle
             .as_ref()
             .and_then(|handle| handle.command_receiver());
+        let command_rx = ui_command_rx.as_mut().or(owned_command_rx.as_mut());
         let ui_bridge = ui_handle.as_ref().map(|handle| Arc::new(handle.bridge()));
 
         let (mut summaries, result) =
-            orchestrator::execute_plan(self, plan.clone(), ui_bridge.clone(), command_rx.as_mut())
-                .await;
+            orchestrator::execute_plan(self, plan.clone(), ui_bridge.clone(), command_rx).await;
 
         if let Some(handle) = &ui_handle {
             handle.pipeline_finished();
         }
 
-        if let Some(commands) = command_rx.as_mut() {
+        if let Some(commands) = ui_command_rx.as_mut() {
             orchestrator::handle_restart_commands(
                 self,
                 plan.clone(),
