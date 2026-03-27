@@ -6,7 +6,21 @@ Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `
 
 ## Demo
 
+### Opal Run
+
 [![asciicast](https://asciinema.org/a/LxDIEb87AyDtDM5c.svg)](https://asciinema.org/a/LxDIEb87AyDtDM5c)
+
+### Opal Plan
+
+[![asciicast](https://asciinema.org/a/6rP1p3H4vtA7Orr8.svg)](https://asciinema.org/a/6rP1p3H4vtA7Orr8)
+
+### Opal Run --no-tui
+
+[![asciicast](https://asciinema.org/a/2Q2mFyHkwXMoI9e0.svg)](https://asciinema.org/a/2Q2mFyHkwXMoI9e0)
+
+### Opal View
+
+[![asciicast](https://asciinema.org/a/3eTpVFphkhQKDZB9.svg)](https://asciinema.org/a/3eTpVFphkhQKDZB9)
 
 ## Features
 
