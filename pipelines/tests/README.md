@@ -10,12 +10,14 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `yaml-merge-parity.gitlab-ci.yml` – Validates YAML merge-key (`<<`) support for merged job mappings and merged `variables` mappings.
 - `inherit-default-parity.gitlab-ci.yml` – Validates full `inherit:default` behavior for the default keys Opal models today.
 - `image-platform-parity.gitlab-ci.yml` – Validates GitLab-style `image:docker:platform` parsing and planner display.
+- `image-platform-parity.gitlab-ci.yml` – Validates GitLab-style `image:entrypoint`, `image:docker:platform`, and `image:docker:user` in planner output and runtime execution.
 - `includes-parity.gitlab-ci.yml` – Exercises local include parity behavior: repository-root `include:local`, wildcard local includes, `include:files`, and parse-time environment expansion in include paths.
 - `include-surface.gitlab-ci.yml` – Exercises additional local include forms: bare string include entries and singular `include:file` entries.
 - `include-remote-unsupported.gitlab-ci.yml` / `include-template-unsupported.gitlab-ci.yml` / `include-component-unsupported.gitlab-ci.yml` – Ensure unsupported non-local include types fail explicitly.
 - `resources-and-services.gitlab-ci.yml` – Validates caches, retries, timeouts, `interruptible`, `resource_group` locking, and job-specific `services` the way `src/gitlab/graph.rs` models them.
 - `resource-group-cross-run.gitlab-ci.yml` – Validates that `resource_group` locking applies across separate local Opal runs, not just within one process.
 - `services-and-tags.gitlab-ci.yml` – Validates service string/mapping forms, multiple aliases, and informational runner tags in planner output.
+- `services-docker-runtime.gitlab-ci.yml` – Validates runtime acceptance of `services:docker:platform` and `services:docker:user` on an engine that exposes Docker-style image options.
 - `services-default-aliases.gitlab-ci.yml` – Validates GitLab-style default service aliases when no explicit alias is provided.
 - `services-network-reachability.gitlab-ci.yml` – Validates that a job can actually reach a service by alias during runtime, which is especially important for the macOS `container` engine.
 - `services-multi-alias-reachability.gitlab-ci.yml` – Validates that all accepted aliases for a service are reachable during runtime.

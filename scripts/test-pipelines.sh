@@ -31,6 +31,7 @@ SCENARIOS_JSON='[
   {"name":"yaml-merge-parity","pipeline":"pipelines/tests/yaml-merge-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"inherit-default-parity","pipeline":"pipelines/tests/inherit-default-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"image-platform-parity","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
+  {"name":"image-platform-runtime","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"services-docker-parity","pipeline":"pipelines/tests/services-docker-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-surface","pipeline":"pipelines/tests/include-surface.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-remote-unsupported","pipeline":"pipelines/tests/include-remote-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:remote is not supported yet","command":"plan","opal_args":""},
@@ -52,6 +53,7 @@ SCENARIOS_JSON='[
   {"name":"services-multi-alias-reachability","pipeline":"pipelines/tests/services-multi-alias-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-network-isolation","pipeline":"pipelines/tests/services-network-isolation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-slow-start","pipeline":"pipelines/tests/services-slow-start.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"services-docker-runtime","pipeline":"pipelines/tests/services-docker-runtime.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"services-variables","pipeline":"pipelines/tests/services-variables.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-invalid-alias","pipeline":"pipelines/tests/services-invalid-alias.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"unsupported characters"},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -280,6 +282,9 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "user: 1000:1000"
       assert_log_contains "${log_file}" "entrypoint: []"
       ;;
+    image-platform-runtime)
+      assert_log_contains "${log_file}" "platform job"
+      ;;
     services-docker-parity)
       assert_log_contains "${log_file}" "service-options"
       assert_log_contains "${log_file}" "services: • docker.io/library/redis:7.2"
@@ -361,6 +366,9 @@ verify_scenario_log() {
       ;;
     services-slow-start)
       assert_log_contains "${log_file}" "service slow start ok"
+      ;;
+    services-docker-runtime)
+      assert_log_contains "${log_file}" "service docker runtime ok"
       ;;
     services-variables)
       assert_log_contains "${log_file}" "service variables ok"

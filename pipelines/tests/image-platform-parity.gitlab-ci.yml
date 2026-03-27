@@ -10,4 +10,5 @@ platform-job:
       platform: linux/arm64/v8
       user: 1000:1000
   script:
+    - test "$(id -u)" = "1000"
     - echo "platform job"
