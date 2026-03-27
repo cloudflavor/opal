@@ -16,6 +16,7 @@ use opal::{
     Cli, Commands, EngineChoice, EngineKind, ExecutorConfig, GitLabRemoteConfig, PlanArgs, RunArgs,
     ViewArgs, runtime,
 };
+use serde::Serialize;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
@@ -167,9 +168,120 @@ fn run_plan(args: PlanArgs) -> Result<()> {
     if !args.jobs.is_empty() {
         plan = plan.select_jobs(&args.jobs)?;
     }
+    if args.json {
+        let payload = plan_json(&plan);
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
     let display = DisplayFormatter::new(terminal::should_use_color());
-    display::print_pipeline_plan(&display, &plan, display::print_line);
+    let text = display::collect_pipeline_plan(&display, &plan).join("\n");
+    if !args.no_pager && io::stdout().is_terminal() {
+        ui::page_text_with_pager(&text)?;
+    } else {
+        println!("{text}");
+    }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct PlanJson {
+    jobs: Vec<PlanJobJson>,
+}
+
+#[derive(Serialize)]
+struct PlanJobJson {
+    name: String,
+    stage: String,
+    when: Option<String>,
+    allow_failure: bool,
+    start_in: Option<String>,
+    dependencies: Vec<String>,
+    needs: Vec<PlanNeedJson>,
+    artifacts: Vec<String>,
+    caches: Vec<String>,
+    image: Option<String>,
+    services: Vec<String>,
+    tags: Vec<String>,
+    environment: Option<String>,
+    resource_group: Option<String>,
+    interruptible: bool,
+    retry_max: u32,
+}
+
+#[derive(Serialize)]
+struct PlanNeedJson {
+    job: String,
+    artifacts: bool,
+    optional: bool,
+    source: String,
+}
+
+fn plan_json(plan: &opal::execution_plan::ExecutionPlan) -> PlanJson {
+    let jobs = plan
+        .ordered
+        .iter()
+        .filter_map(|name| plan.nodes.get(name))
+        .map(|planned| {
+            let job = &planned.instance.job;
+            let when = Some(rule_when_label(planned.instance.rule.when).to_string())
+                .or_else(|| job.when.clone());
+            let start_in = planned
+                .instance
+                .rule
+                .start_in
+                .map(|d| humantime::format_duration(d).to_string());
+            let needs = job
+                .needs
+                .iter()
+                .map(|need| PlanNeedJson {
+                    job: need.job.clone(),
+                    artifacts: need.needs_artifacts,
+                    optional: need.optional,
+                    source: match &need.source {
+                        opal::model::DependencySourceSpec::Local => "local".to_string(),
+                        opal::model::DependencySourceSpec::External(ext) => {
+                            format!("external:{}@{}", ext.project, ext.reference)
+                        }
+                    },
+                })
+                .collect();
+            PlanJobJson {
+                name: job.name.clone(),
+                stage: planned.instance.stage_name.clone(),
+                when,
+                allow_failure: planned.instance.rule.allow_failure,
+                start_in,
+                dependencies: planned.instance.dependencies.clone(),
+                needs,
+                artifacts: job
+                    .artifacts
+                    .paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+                caches: job.cache.iter().map(|cache| cache.key.describe()).collect(),
+                image: job.image.as_ref().map(|image| image.name.clone()),
+                services: job.services.iter().map(|svc| svc.image.clone()).collect(),
+                tags: job.tags.clone(),
+                environment: job.environment.as_ref().map(|env| env.name.clone()),
+                resource_group: planned.instance.resource_group.clone(),
+                interruptible: planned.instance.interruptible,
+                retry_max: planned.instance.retry.max,
+            }
+        })
+        .collect();
+    PlanJson { jobs }
+}
+
+fn rule_when_label(value: opal::pipeline::rules::RuleWhen) -> &'static str {
+    match value {
+        opal::pipeline::rules::RuleWhen::OnSuccess => "on_success",
+        opal::pipeline::rules::RuleWhen::Manual => "manual",
+        opal::pipeline::rules::RuleWhen::Delayed => "delayed",
+        opal::pipeline::rules::RuleWhen::Never => "never",
+        opal::pipeline::rules::RuleWhen::Always => "always",
+        opal::pipeline::rules::RuleWhen::OnFailure => "on_failure",
+    }
 }
 
 fn rule_context_for_workdir(workdir: &Path) -> RuleContext {

@@ -2,8 +2,12 @@
 
 `opal plan` lets you explore the pipeline graph without spinning up containers. It uses the same parser and rule evaluation as `opal run`, so the output is a faithful preview of what will execute when you launch a real run.
 
+In an interactive terminal, Opal Plan opens the formatted output in your pager by default. Use `--no-pager` to print directly, or `--json` to emit a machine-readable plan.
+
 ```
 opal plan --pipeline .gitlab-ci.yml --workdir .
+opal plan --no-pager --job lint
+opal plan --json --job lint
 ```
 
 Use `--job <name>` (repeatable) when you want to inspect only selected jobs plus their required upstream dependency closure.

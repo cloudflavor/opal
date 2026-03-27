@@ -112,7 +112,9 @@ opal run --job package-linux --job deploy-summary
 
 ### `opal plan`
 
-Builds and prints the evaluated execution plan without starting containers.
+Builds the evaluated execution plan without starting containers.
+
+When `opal plan` runs in an interactive terminal, it opens the formatted plan in your pager by default.
 
 #### Options
 
@@ -141,10 +143,21 @@ Builds and prints the evaluated execution plan without starting containers.
 - Repeatable
 - Limits the printed plan to selected jobs plus their required upstream dependency closure
 
+##### `--no-pager`
+
+- Prints the formatted plan directly to stdout instead of opening a pager
+
+##### `--json`
+
+- Emits the execution plan as JSON
+- Disables pager behavior automatically
+
 Example:
 
 ```bash
 opal plan --pipeline .gitlab-ci.yml --workdir . --job package-linux
+opal plan --no-pager --job package-linux
+opal plan --json --job package-linux
 ```
 
 ### `opal view`

@@ -62,3 +62,7 @@ pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
     let _ = tx.send(UiEvent::PipelineFinished);
     runner.run()
 }
+
+pub fn page_text_with_pager(content: &str) -> Result<()> {
+    state::page_text_with_pager(content)
+}

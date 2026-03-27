@@ -40,6 +40,8 @@ opal plan --workdir . --pipeline .gitlab-ci.yml
 opal view
 ```
 
+When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
+
 Preview the DAG without execution:
 
 ```bash

@@ -126,6 +126,14 @@ pub struct PlanArgs {
     #[structopt(long = "job", value_name = "NAME")]
     /// Limit planning to selected jobs plus their required upstream dependencies. Repeat to select multiple jobs.
     pub jobs: Vec<String>,
+
+    #[structopt(long = "no-pager")]
+    /// Print the plan directly instead of opening it in a pager
+    pub no_pager: bool,
+
+    #[structopt(long = "json")]
+    /// Emit the execution plan as JSON
+    pub json: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
