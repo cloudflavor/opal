@@ -32,6 +32,7 @@ This directory contains `.gitlab-ci.yml` snippets that exercise the trickier par
 - `job-overrides-capabilities.gitlab-ci.yml` – Validates `[[jobs]]` runtime overrides for `cap_add` on engines that support Linux capability flags.
 - `job-overrides-arch.gitlab-ci.yml` – Validates `[[jobs]]` runtime arch overrides for exact job-name matches.
 - `retry-parity.gitlab-ci.yml` – Validates retry reruns for both `retry:when: script_failure` and `retry:exit_codes`, using the mounted Opal session directory so the first attempt fails and the retry succeeds.
+- `interruptible-abort.gitlab-ci.yml` – Validates that a local abort cancels running interruptible jobs while allowing non-interruptible jobs to finish, and that no new downstream work starts afterward.
 - `dotenv-reports.gitlab-ci.yml` – Validates `artifacts:reports:dotenv` propagation through both `needs` and `dependencies`, and verifies that `needs:artifacts: false` plus `dependencies: []` block those variables.
 - `control-flow-parity.gitlab-ci.yml` – Validates numeric `parallel`, top-level `image`/`variables`, rule-scoped `variables`, and `when: on_failure` behavior.
 - `rules-compare-to.gitlab-ci.yml` – Validates `rules:changes:compare_to` against a temporary git worktree created by the harness.

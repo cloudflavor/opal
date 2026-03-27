@@ -69,6 +69,7 @@ SCENARIOS_JSON='[
   {"name":"job-overrides-capabilities","pipeline":"pipelines/tests/job-overrides-capabilities.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-cap-workdir","repo_setup":"job_override_caps","command":"run","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
   {"name":"dotenv-reports","pipeline":"pipelines/tests/dotenv-reports.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
+  {"name":"interruptible-abort","pipeline":"pipelines/tests/interruptible-abort.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_ABORT_AFTER_SECS=1"},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"filters-tag","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_TAG=v1.2.0 CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"environment-plan","pipeline":"pipelines/tests/environments.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -303,6 +304,13 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "first exit 137"
       assert_log_contains "${log_file}" "retry-exit-codes-ok"
       assert_log_contains "${log_file}" "retry fixture complete"
+      ;;
+    interruptible-abort)
+      assert_log_contains "${log_file}" "interruptible start"
+      assert_log_contains "${log_file}" "noninterruptible start"
+      assert_log_contains "${log_file}" "noninterruptible done"
+      assert_log_not_contains "${log_file}" '0006] interruptible done'
+      assert_log_not_contains "${log_file}" "should not run after abort"
       ;;
     resources-plan)
       assert_log_contains "${log_file}" "retries 2"
@@ -664,6 +672,53 @@ run_resource_group_cross_run_scenario() {
   return 0
 }
 
+run_interruptible_abort_scenario() {
+  local pipeline_rel="$1"
+  local env_string="$2"
+  local pipeline_path="${REPO_ROOT}/${pipeline_rel}"
+  local log_file="${LOG_DIR}/interruptible-abort.log"
+
+  : > "${log_file}"
+
+  local cmd=("${OPAL_BIN}" "run")
+  if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
+    cmd+=("${OPAL_ARGS[@]}")
+  fi
+  cmd+=("--max-parallel-jobs" "2")
+  cmd+=("--workdir" "${REPO_ROOT}")
+  cmd+=("--pipeline" "${pipeline_path}")
+
+  pushd "${REPO_ROOT}" >/dev/null
+  # shellcheck disable=SC2086
+  env ${env_string} "${cmd[@]}" > "${log_file}" 2>&1 &
+  local run_pid=$!
+
+  local attempt
+  for attempt in {1..30}; do
+    if grep -Fq "noninterruptible start" "${log_file}" 2>/dev/null && grep -Fq "interruptible start" "${log_file}" 2>/dev/null; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  kill -INT ${run_pid} >/dev/null 2>&1 || true
+  wait ${run_pid}
+  local status=$?
+  popd >/dev/null
+
+  if (( status == 0 )); then
+    echo "!! interruptible-abort: expected abort-driven failure exit" >&2
+    echo "    log saved to ${log_file} (verification failed)"
+    return 1
+  fi
+  if ! verify_scenario_log "interruptible-abort" "${log_file}"; then
+    echo "    log saved to ${log_file} (verification failed)"
+    return 1
+  fi
+  echo "    log saved to ${log_file} (expected failure)"
+  return 0
+}
+
 wait_for_seeded_cache() {
   local cache_root="$1"
   local namespace="$2"
@@ -703,6 +758,13 @@ for entry in "${ACTIVE_SCENARIOS[@]}"; do
   if [[ "${name}" == "resource-group-cross-run" ]]; then
     echo "==> ${name}"
     if ! run_resource_group_cross_run_scenario "${pipeline}"; then
+      failures+=("${name}")
+    fi
+    continue
+  fi
+  if [[ "${name}" == "interruptible-abort" ]]; then
+    echo "==> ${name}"
+    if ! run_interruptible_abort_scenario "${pipeline}" "${envs}"; then
       failures+=("${name}")
     fi
     continue

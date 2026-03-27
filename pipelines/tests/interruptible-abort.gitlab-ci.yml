@@ -1,0 +1,29 @@
+stages:
+  - test
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+interruptible-worker:
+  stage: test
+  interruptible: true
+  script:
+    - echo "interruptible start"
+    - sleep 10
+    - echo "interruptible done"
+
+noninterruptible-worker:
+  stage: test
+  interruptible: false
+  script:
+    - echo "noninterruptible start"
+    - sleep 4
+    - echo "noninterruptible done"
+
+after-abort:
+  stage: verify
+  script:
+    - echo "should not run after abort"
