@@ -497,7 +497,16 @@ mod tests {
             ],
             vec![branch_only, tag_only, release_excluded],
         );
-        let branch_ctx = RuleContext::new(Path::new("."));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let branch_ctx = RuleContext::from_env(
+            temp.path(),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+            ]),
+            false,
+        );
 
         let branch_compiled =
             compile_pipeline(&pipeline, Some(&branch_ctx)).expect("branch pipeline compiles");
