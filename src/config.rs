@@ -212,6 +212,16 @@ impl RegistryAuth {
     }
 }
 
+fn engine_name(engine: EngineKind) -> &'static str {
+    match engine {
+        EngineKind::ContainerCli => "container",
+        EngineKind::Docker => "docker",
+        EngineKind::Podman => "podman",
+        EngineKind::Nerdctl => "nerdctl",
+        EngineKind::Orbstack => "orbstack",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig};
@@ -272,15 +282,5 @@ mod tests {
         assert!(resolved.privileged);
         assert_eq!(resolved.cap_add, vec!["NET_ADMIN"]);
         assert_eq!(resolved.cap_drop, vec!["MKNOD"]);
-    }
-}
-
-fn engine_name(engine: EngineKind) -> &'static str {
-    match engine {
-        EngineKind::ContainerCli => "container",
-        EngineKind::Docker => "docker",
-        EngineKind::Podman => "podman",
-        EngineKind::Nerdctl => "nerdctl",
-        EngineKind::Orbstack => "orbstack",
     }
 }

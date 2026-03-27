@@ -1798,7 +1798,7 @@ fn parse_artifact_when(value: Option<&str>, job_name: &str) -> Result<ArtifactWh
 #[serde(untagged)]
 enum RawService {
     Simple(String),
-    Detailed(RawServiceConfig),
+    Detailed(Box<RawServiceConfig>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -3026,14 +3026,14 @@ inherit-some:
             .node_weights()
             .find(|job| job.name == "inherit-none")
             .expect("job present");
-        assert!(none.inherit_default_image == false);
-        assert!(none.inherit_default_before_script == false);
-        assert!(none.inherit_default_after_script == false);
-        assert!(none.inherit_default_cache == false);
-        assert!(none.inherit_default_services == false);
-        assert!(none.inherit_default_timeout == false);
-        assert!(none.inherit_default_retry == false);
-        assert!(none.inherit_default_interruptible == false);
+        assert!(!none.inherit_default_image);
+        assert!(!none.inherit_default_before_script);
+        assert!(!none.inherit_default_after_script);
+        assert!(!none.inherit_default_cache);
+        assert!(!none.inherit_default_services);
+        assert!(!none.inherit_default_timeout);
+        assert!(!none.inherit_default_retry);
+        assert!(!none.inherit_default_interruptible);
         assert!(none.cache.is_empty());
         assert!(none.services.is_empty());
         assert_eq!(none.timeout, None);
@@ -3438,7 +3438,13 @@ test-job:
             Some("rust:slim")
         );
         let test_idx = find_job(&pipeline, "test-job");
-        assert!(pipeline.graph[test_idx].image.is_none());
+        assert_eq!(
+            pipeline.graph[test_idx]
+                .image
+                .as_ref()
+                .map(|image| image.name.as_str()),
+            Some("rust:latest")
+        );
     }
 
     #[test]

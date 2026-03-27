@@ -468,12 +468,12 @@ fn probe_service_ports(
 
     let mut command = Command::new(engine_binary(engine));
     command.arg("run").arg("--rm").arg("--network").arg(network);
-    if matches!(engine, EngineKind::ContainerCli) {
-        if let Some(arch) = default_container_cli_arch(None) {
-            command.arg("--arch").arg(arch);
-        }
+    if matches!(engine, EngineKind::ContainerCli)
+        && let Some(arch) = default_container_cli_arch(None)
+    {
+        command.arg("--arch").arg(arch);
     }
-    let script = format!("{}", checks.join(" && "));
+    let script = checks.join(" && ");
     let status = command
         .arg("docker.io/library/alpine:3.19")
         .arg("sh")

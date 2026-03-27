@@ -10,4 +10,4 @@ cargo build --release
 "$ROOT_DIR/target/release/opal" run \
   --pipeline "$ROOT_DIR/.gitlab-ci.yml" \
   --workdir "$ROOT_DIR" \
-  --base-image "rustlang/rust:nightly"
+  --base-image "docker.io/library/rust:1.90"

@@ -3,11 +3,12 @@ use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result};
-use git2::Repository;
+use git2::{IndexAddOption, Repository, Signature, StatusOptions};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub(super) struct PreparedWorkspace {
     pub host_workdir: PathBuf,
@@ -30,11 +31,75 @@ pub(super) fn prepare_job_workspace(
         .with_context(|| format!("failed to create {}", host_workdir.display()))?;
 
     copy_workspace_contents(&exec.config.workdir, &host_workdir)?;
+    refresh_git_snapshot_state(&host_workdir)?;
 
     Ok(PreparedWorkspace {
         host_workdir,
         mounts: Vec::new(),
     })
+}
+
+fn refresh_git_snapshot_state(workdir: &Path) -> Result<()> {
+    let repo = match Repository::open(workdir) {
+        Ok(repo) => repo,
+        Err(_) => return Ok(()),
+    };
+
+    let mut status_options = StatusOptions::new();
+    status_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
+    let statuses = repo
+        .statuses(Some(&mut status_options))
+        .context("failed to inspect git status for workspace snapshot")?;
+    if statuses.is_empty() {
+        return Ok(());
+    }
+
+    let mut index = repo
+        .index()
+        .context("failed to open git index for workspace snapshot")?;
+    index
+        .add_all(["*"], IndexAddOption::DEFAULT, None)
+        .context("failed to refresh git index for workspace snapshot")?;
+    index
+        .write()
+        .context("failed to write refreshed git index for workspace snapshot")?;
+
+    let tree_id = index
+        .write_tree()
+        .context("failed to write tree for workspace snapshot")?;
+    let tree = repo
+        .find_tree(tree_id)
+        .context("failed to find written tree for workspace snapshot")?;
+    let signature = Signature::now("Opal", "opal@local.invalid")
+        .context("failed to create snapshot git signature")?;
+
+    if let Ok(parent) = repo.head().and_then(|head| head.peel_to_commit()) {
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "opal workspace snapshot",
+            &tree,
+            &[&parent],
+        )
+        .context("failed to commit workspace snapshot state")?;
+    } else {
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "opal workspace snapshot",
+            &tree,
+            &[],
+        )
+        .context("failed to create initial workspace snapshot commit")?;
+    }
+
+    Ok(())
 }
 
 fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
@@ -49,7 +114,7 @@ fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
 
         let src_path = entry.path();
         let dest_path = dest.join(&file_name);
-        copy_entry(&src_path, &dest_path)?;
+        copy_entry(src, repo.as_ref(), &rel, &src_path, &dest_path)?;
     }
     Ok(())
 }
@@ -57,7 +122,18 @@ fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
 fn should_exclude(workspace_root: &Path, rel: &Path, repo: Option<&Repository>) -> bool {
     let hardcoded = matches!(
         rel.file_name().and_then(|name| name.to_str()),
-        Some(".opal" | "target" | "tests-temp")
+        Some(
+            ".opal"
+                | "target"
+                | "tests-temp"
+                | "node_modules"
+                | ".svelte-kit"
+                | ".wrangler"
+                | ".output"
+                | ".vercel"
+                | ".netlify"
+                | "build"
+        )
     );
     if hardcoded {
         return true;
@@ -72,10 +148,29 @@ fn should_exclude(workspace_root: &Path, rel: &Path, repo: Option<&Repository>) 
     let Ok(path) = candidate.strip_prefix(workspace_root) else {
         return false;
     };
-    repo.status_should_ignore(path).unwrap_or(false)
+    is_git_ignored(workspace_root, path)
+        .unwrap_or_else(|| repo.status_should_ignore(path).unwrap_or(false))
 }
 
-fn copy_entry(src: &Path, dest: &Path) -> Result<()> {
+fn is_git_ignored(workspace_root: &Path, rel: &Path) -> Option<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("check-ignore")
+        .arg("-q")
+        .arg(rel)
+        .status()
+        .ok()?;
+    Some(status.success())
+}
+
+fn copy_entry(
+    workspace_root: &Path,
+    repo: Option<&Repository>,
+    rel: &Path,
+    src: &Path,
+    dest: &Path,
+) -> Result<()> {
     let metadata =
         fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
     let file_type = metadata.file_type();
@@ -88,9 +183,14 @@ fn copy_entry(src: &Path, dest: &Path) -> Result<()> {
             fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
         {
             let entry = entry?;
+            let child_name = entry.file_name();
+            let child_rel = rel.join(&child_name);
+            if should_exclude(workspace_root, &child_rel, repo) {
+                continue;
+            }
             let child_src = entry.path();
-            let child_dest = dest.join(entry.file_name());
-            copy_entry(&child_src, &child_dest)?;
+            let child_dest = dest.join(child_name);
+            copy_entry(workspace_root, repo, &child_rel, &child_src, &child_dest)?;
         }
         Ok(())
     } else {
@@ -124,7 +224,8 @@ fn copy_symlink(src: &Path, dest: &Path) -> Result<()> {
     let target =
         fs::read_link(src).with_context(|| format!("failed to read link {}", src.display()))?;
     if target.is_dir() {
-        copy_entry(src, dest)
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        Ok(())
     } else {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
@@ -180,6 +281,73 @@ mod tests {
         assert!(!dest.join(".opal").exists());
         assert!(!dest.join("ignored-dir").exists());
         assert!(!dest.join("ignored.txt").exists());
+
+        let _ = fs::remove_dir_all(src);
+        let _ = fs::remove_dir_all(dest);
+    }
+
+    #[test]
+    fn copy_workspace_contents_respects_nested_gitignore_entries() {
+        let src = temp_path("workspace-src-nested-ignore");
+        let dest = temp_path("workspace-dest-nested-ignore");
+        git2::Repository::init(&src).expect("init repo");
+        fs::create_dir_all(src.join("ui-docs").join("node_modules").join("pkg"))
+            .expect("create nested ignored dir");
+        fs::write(src.join("ui-docs").join(".gitignore"), "node_modules/\n")
+            .expect("write nested gitignore");
+        fs::write(src.join("ui-docs").join("package.json"), "{}").expect("write package file");
+        fs::write(
+            src.join("ui-docs")
+                .join("node_modules")
+                .join("pkg")
+                .join("index.js"),
+            "console.log('ignore')",
+        )
+        .expect("write ignored nested file");
+
+        fs::create_dir_all(&dest).expect("create dest");
+        copy_workspace_contents(&src, &dest).expect("copy workspace");
+
+        assert!(dest.join("ui-docs").join("package.json").exists());
+        assert!(!dest.join("ui-docs").join("node_modules").exists());
+
+        let _ = fs::remove_dir_all(src);
+        let _ = fs::remove_dir_all(dest);
+    }
+
+    #[test]
+    fn copy_workspace_contents_excludes_nested_runtime_heavy_dirs() {
+        let src = temp_path("workspace-src-nested-heavy");
+        let dest = temp_path("workspace-dest-nested-heavy");
+        git2::Repository::init(&src).expect("init repo");
+        fs::create_dir_all(src.join("ui-docs").join("node_modules").join("pkg"))
+            .expect("create nested node_modules");
+        fs::create_dir_all(src.join("ui-docs").join(".svelte-kit").join("generated"))
+            .expect("create nested svelte kit");
+        fs::write(src.join("ui-docs").join("package.json"), "{}").expect("write package file");
+        fs::write(
+            src.join("ui-docs")
+                .join("node_modules")
+                .join("pkg")
+                .join("index.js"),
+            "console.log('ignore')",
+        )
+        .expect("write nested module file");
+        fs::write(
+            src.join("ui-docs")
+                .join(".svelte-kit")
+                .join("generated")
+                .join("root.js"),
+            "export {}",
+        )
+        .expect("write generated file");
+
+        fs::create_dir_all(&dest).expect("create dest");
+        copy_workspace_contents(&src, &dest).expect("copy workspace");
+
+        assert!(dest.join("ui-docs").join("package.json").exists());
+        assert!(!dest.join("ui-docs").join("node_modules").exists());
+        assert!(!dest.join("ui-docs").join(".svelte-kit").exists());
 
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(dest);

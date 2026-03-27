@@ -7,9 +7,8 @@ stages:
   - publish
 
 default:
-  image: docker.io/rustlang/rust:nightly
+  image: docker.io/library/rust:1.90
   before_script:
-    - rustup default nightly
     - rustc --version
     - cargo --version
   cache:
@@ -120,8 +119,12 @@ build-release:
 
 package-crate:
   stage: package
-  needs:
-    - build-release
+  inherit:
+    default: [image, before_script]
+  cache: []
+  variables:
+    CARGO_HOME: "/usr/local/cargo"
+    RUSTUP_HOME: "/usr/local/rustup"
   script:
     - cargo package --locked
   artifacts:

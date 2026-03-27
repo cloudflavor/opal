@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use opal::compiler::compile_pipeline;
 use opal::config::OpalConfig;
 use opal::display::{self, DisplayFormatter};
@@ -184,7 +184,7 @@ fn rule_context_for_workdir(workdir: &Path) -> RuleContext {
 #[cfg(target_os = "macos")]
 fn validate_engine_choice(choice: EngineChoice) -> Result<()> {
     if matches!(choice, EngineChoice::Nerdctl) {
-        bail!(
+        anyhow::bail!(
             "'nerdctl' is treated as a Linux-specific engine; on macOS use 'docker', 'orbstack', or 'container'"
         );
     }

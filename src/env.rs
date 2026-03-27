@@ -375,7 +375,7 @@ mod tests {
         let map: HashMap<_, _> = env.into_iter().collect();
         assert_eq!(
             map.get("CI_JOB_NAME_SLUG").map(String::as_str),
-            Some("build")
+            Some("lint")
         );
         assert_eq!(
             map.get("CI_PROJECT_DIR").map(String::as_str),

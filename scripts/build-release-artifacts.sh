@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 
 HOST_OS="$(uname -s)"
 
-RUST_IMAGE="${RUST_IMAGE:-docker.io/rustlang/rust:nightly}"
+RUST_IMAGE="${RUST_IMAGE:-docker.io/library/rust:1.90}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-4}"
 CONTAINER_MEMORY="${CONTAINER_MEMORY:-2g}"
 HOST_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
