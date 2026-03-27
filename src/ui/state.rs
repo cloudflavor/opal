@@ -756,7 +756,7 @@ impl UiState {
     }
 
     pub(super) fn view_history_run(&mut self, run_id: &str) -> Result<()> {
-        if run_id == self.current_run_id {
+        if self.has_current_run && run_id == self.current_run_id {
             self.close_history_view();
             return Ok(());
         }
@@ -3441,6 +3441,45 @@ mod tests {
         let preview = state.history_preview.as_ref().expect("history preview");
         assert!(preview.title.contains("run-2 • unit-tests"));
         assert!(preview.lines.iter().any(|line| line == "second"));
+    }
+
+    #[test]
+    fn view_mode_can_open_most_recent_history_run_even_when_ids_match() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("latest.log");
+        std::fs::write(&log_path, "latest history").expect("write latest log");
+        let history = vec![HistoryEntry {
+            run_id: "run-latest".to_string(),
+            finished_at: "2026-03-27T00:00:00Z".to_string(),
+            status: HistoryStatus::Success,
+            jobs: vec![HistoryJob {
+                name: "lint".to_string(),
+                stage: "test".to_string(),
+                status: HistoryStatus::Success,
+                log_hash: "hash123".to_string(),
+                log_path: Some(log_path.display().to_string()),
+                artifact_dir: None,
+                artifacts: Vec::new(),
+                caches: Vec::new(),
+            }],
+        }];
+
+        let mut state = UiState::new(
+            Vec::new(),
+            history,
+            "run-latest".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        state
+            .view_history_run("run-latest")
+            .expect("open latest history run");
+
+        assert!(state.history_view.is_some());
+        let preview = state.history_preview.as_ref().expect("history preview");
+        assert!(preview.lines.iter().any(|line| line == "latest history"));
     }
 
     #[test]
