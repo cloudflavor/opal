@@ -6,11 +6,19 @@ description = "Terminal-first GitLab pipeline runner with TUI, history browser, 
 license = "Apache-2.0"
 repository = "https://github.com/cloudflavor/opal"
 homepage = "https://github.com/cloudflavor/opal"
-documentation = "https://github.com/cloudflavor/opal/tree/main/docs"
+documentation = "https://docs.rs/opal"
 readme = "README.md"
 authors = ["Victor Palade <victor@cloudflavor.io>"]
 keywords = ["gitlab", "ci", "tui", "pipeline", "devops"]
 categories = ["command-line-utilities", "development-tools"]
+include = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "LICENSE",
+  "docs/**/*.md",
+  "src/**/*.rs",
+]
 
 [dependencies]
 anyhow = "1.0"
