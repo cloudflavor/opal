@@ -6,6 +6,9 @@
 opal plan --pipeline .gitlab-ci.yml --workdir .
 ```
 
+![`opal plan` in Ghostty](assets/opal-plan-window.png)
+
+
 Use `--job <name>` (repeatable) when you want to inspect only selected jobs plus their required upstream dependency closure.
 
 ## What you see
