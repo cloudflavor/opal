@@ -195,6 +195,7 @@ These features exist in Opal, but they do not match GitLab completely.
 - workspace/source preparation is intentionally local-first.
   GitLab Runner normally prepares job sources through Git operations (`clone` / `fetch` / checkout / clean) and can remove untracked and ignored files depending on runner settings such as `GIT_STRATEGY`, `GIT_CHECKOUT`, and `GIT_CLEAN_FLAGS`.
   Opal intentionally does not force that remote-runner source lifecycle for local development. Instead it snapshots the current working tree so dirty tracked edits and in-progress local source changes are available to jobs.
+  Opal currently copies `.git` into that local snapshot so Git-aware local behavior still works inside jobs and during local ref/tag evaluation.
   Opal still applies Git-aware filtering to avoid copying obvious local junk into the job workspace, including ignored/generated directories such as `target/`, `tests-temp/`, `.opal/`, `node_modules/`, and `.svelte-kit/`.
   This is a deliberate local-development divergence rather than a claim of exact GitLab Runner parity.
 - `inherit:default` is subset-only.

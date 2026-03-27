@@ -41,6 +41,7 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 
 - Opal does not do a fresh Git clone/fetch for every local job the way GitLab Runner normally does.
 - Instead, Opal prepares a per-job workspace snapshot from your current working tree so local development can run against dirty tracked edits and in-progress source changes.
+- The snapshot includes the repository's `.git` directory so Git-aware local behavior still works inside jobs and during local rule/ref evaluation.
 - This is intentional: Opal is meant to help you debug the pipeline you are actively editing, not force a clean remote-style checkout before every job.
 - The snapshot is still Git-aware enough to avoid leaking obvious runtime/build garbage into jobs:
   - top-level and nested Git-ignored paths are excluded

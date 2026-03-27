@@ -1,9 +1,12 @@
 # Opal Configuration
 
-Opal reads a layered `config.toml` to customize runtime behavior and automatically handle container registry authentication. Two locations are checked (earlier entries override later ones):
+Opal reads a layered `config.toml` to customize runtime behavior and automatically handle container registry authentication. Three locations are checked (earlier entries override later ones):
 
 1. `$REPO/.opal/config.toml` – project-specific settings committed alongside your pipeline.
-2. `$XDG_CONFIG_HOME/opal/config.toml` (or `~/Library/Application Support/opal/config.toml` on macOS) – user-wide defaults.
+2. `$OPAL_HOME/config.toml` – machine-local runtime defaults for the selected Opal home.
+3. `$XDG_CONFIG_HOME/opal/config.toml` (or the platform-default XDG config directory) – user-wide defaults.
+
+This means project-level `.opal/config.toml` overrides global defaults.
 
 ## Example
 

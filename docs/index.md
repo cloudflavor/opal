@@ -22,3 +22,5 @@ opal/
 Keep contributor-facing documentation under `docs/`. The help viewer bundles everything in this directory when the binary is built, so end users always have up-to-date references even if they do not clone the repository.
 
 See `docs/quickstart.md` to run your first pipeline, `docs/cli.md` for the command-line surface, and `docs/ui.md` for the complete keyboard reference. Use `docs/plan.md` for a focused walkthrough of Opal Plan, refer to `docs/pipeline.md` for deeper implementation details, and check `docs/gitlab-parity.md` for the current GitLab feature coverage and parity gaps.
+
+For runtime layout and local state, see `docs/storage.md`.
