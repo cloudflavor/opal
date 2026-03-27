@@ -84,6 +84,8 @@ Notes:
 
 - Disables the Ratatui interface and prints plain terminal output instead
 
+[![asciicast](https://asciinema.org/a/vm5ts1eqyAQEiDxk.svg)](https://asciinema.org/a/vm5ts1eqyAQEiDxk)
+
 ##### `--gitlab-base-url <url>`
 
 - Optional GitLab API base URL
