@@ -96,6 +96,7 @@ The script writes logs under `tests-temp/test-pipeline-logs/`. By default it use
 See `docs/` for deeper references:
 
 - `docs/quickstart.md`
+- `docs/cli.md`
 - `docs/ui.md`
 - `docs/plan.md`
 - `docs/pipeline.md`
