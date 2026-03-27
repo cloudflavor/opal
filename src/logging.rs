@@ -36,6 +36,10 @@ impl<'a> LogFormatter<'a> {
         &self.line_prefix
     }
 
+    pub fn use_color(&self) -> bool {
+        self.use_color
+    }
+
     pub fn mask<'b>(&self, text: &'b str) -> Cow<'b, str> {
         if let Some(secrets) = self.secrets {
             secrets.mask_fragment(text)

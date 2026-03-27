@@ -10,6 +10,7 @@ use crate::runner::ExecuteContext;
 use crate::terminal::stream_lines;
 use crate::ui::UiBridge;
 use anyhow::{Context, Result, anyhow};
+use owo_colors::OwoColorize;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -168,7 +169,10 @@ fn capture_output(
             } else {
                 let decorated =
                     formatter.format_masked(&timestamp, display_line_no, masked.as_ref());
-                display::print_prefixed_line(&line_prefix, &decorated);
+                display::print_prefixed_line(
+                    &line_prefix,
+                    &format_console_stream_line(formatter, job_name, &decorated),
+                );
             }
             logging::write_log_line(&mut log_file, &timestamp, display_line_no, masked.as_ref())?;
             display_line_no += 1;
@@ -180,9 +184,30 @@ fn capture_output(
     Ok(emitted)
 }
 
+fn format_console_stream_line(
+    formatter: &LogFormatter<'_>,
+    job_name: &str,
+    decorated: &str,
+) -> String {
+    format!(
+        "{} {}",
+        format_job_label(job_name, formatter.use_color()),
+        decorated
+    )
+}
+
+fn format_job_label(job_name: &str, use_color: bool) -> String {
+    let text = format!("[{}]", job_name);
+    if use_color {
+        format!("{}", text.bold().magenta())
+    } else {
+        text
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{capture_output, validate_engine_security_options};
+    use super::{capture_output, format_console_stream_line, validate_engine_security_options};
     use crate::EngineKind;
     use crate::engine::EngineCommandContext;
     use crate::logging::LogFormatter;
@@ -241,6 +266,14 @@ mod tests {
         assert_eq!(emitted, 0);
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn format_console_stream_line_prefixes_job_name() {
+        let formatter = LogFormatter::new(false);
+        let line = format_console_stream_line(&formatter, "lint", "[12:00:00.000 0001] hello");
+        assert!(line.starts_with("[lint] "));
+        assert!(line.contains("hello"));
     }
 
     #[test]
