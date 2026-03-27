@@ -10,6 +10,8 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 - `inherit:default` can now disable or selectively retain the modeled default-key subset: `image`, `before_script`, `after_script`, `cache`, `services`, `timeout`, `retry`, and `interruptible`.
 - `image` supports string form, `image.name`, `image.entrypoint`, and `image:docker:platform` / `image:docker:user` for local engines that can express those options.
 - `services` supports string form plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, and `services:docker:platform` / `services:docker:user`.
+- Job environments include GitLab-style predefined metadata such as `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
+- `[[jobs]]` runtime overrides from `.opal/config.toml` can target exact job names to adjust local engine behavior like architecture selection or Linux capability flags without editing the pipeline itself.
 - Hidden/template jobs (names beginning with `.`) may be referenced via `extends`. Cycles are detected and reported.
 - `workflow:rules`, `rules`, `only`, and `except` are partially supported. See `docs/gitlab-parity.md` for the exact supported forms and known divergences.
 

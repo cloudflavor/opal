@@ -50,6 +50,9 @@ Job-specific runtime overrides:
 - Engine behavior:
   - `docker`, `podman`, `nerdctl`, `orbstack`: support `privileged`, `cap_add`, and `cap_drop`
   - Apple `container`: supports `arch`, but fails explicitly if `privileged` or capability flags are requested
+- Planning/execution interaction:
+  - `opal plan --job <name>` and `opal run --job <name>` filter the execution plan first.
+  - Any matching `[[jobs]]` override still applies to the selected job instances.
 
 Add more `[engine.<name>]` tables in the future to tune other runtimes.
 

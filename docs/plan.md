@@ -6,6 +6,8 @@
 opal plan --pipeline .gitlab-ci.yml --workdir .
 ```
 
+Use `--job <name>` (repeatable) when you want to inspect only selected jobs plus their required upstream dependency closure.
+
 ## What you see
 
 For each stage (printed in order), Opal lists:

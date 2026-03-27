@@ -16,6 +16,7 @@
    ```
    Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
    On macOS, the RC-supported local engine set is `container`, `docker`, `orbstack`, and `podman`.
+   Add `--job <name>` (repeatable) when you want to run only selected jobs plus their required upstream dependencies.
 
 4. **Drive the UI**
    - Tabs show each job’s status (pending, running, waiting, success, failure).

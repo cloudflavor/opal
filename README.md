@@ -8,6 +8,7 @@ Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `
 - `opal plan` prints a dry-run execution plan without starting containers.
 - `opal view` opens the history/log browser for previous runs.
 - Ratatui UI with help overlays, embedded Markdown docs, and pager integration for plans/logs/files.
+- GitLab-style predefined job metadata is injected into job environments, including `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
 - Supported local engines: `docker`, `podman`, Apple `container`, and `orbstack`.
 - `nerdctl` remains available as a Linux-oriented engine option when the underlying `containerd` environment is actually local and directly usable.
 
