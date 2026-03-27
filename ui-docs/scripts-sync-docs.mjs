@@ -104,7 +104,7 @@ function createRenderer() {
     const text = tokens.map((token) => token.raw).join('');
     const id = slugifyHeading(text);
     const inner = marked.Parser.parseInline(tokens, { renderer });
-    return `<h${depth} id="${id}">${inner}</h${depth}>`;
+    return `<h${depth} id="${id}"><a class="heading-anchor" href="#${id}" aria-label="Link to ${stripInlineMarkdown(text)}">#</a>${inner}</h${depth}>`;
   };
   renderer.code = ({ text, lang }) => dualThemeHtml(text, (lang || 'text').toLowerCase());
   renderer.codespan = ({ text }) => toInlineShiki(text, inferInlineLanguage(text));

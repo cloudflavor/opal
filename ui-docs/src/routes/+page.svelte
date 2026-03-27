@@ -80,15 +80,15 @@
 <section class="section shell">
   <div class="section-headline">
     <p class="eyebrow">Demos</p>
-    <h2>The main ways people actually use Opal.</h2>
+    <h2 id="demos"><a class="section-anchor" href="#demos" aria-label="Link to demos">#</a>The main ways people actually use Opal.</h2>
   </div>
 
   <div class="demo-stack">
     {#each demos as demo}
-      <article class="demo-row">
+      <article class="demo-row" id={demo.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}>
         <div class="demo-text">
           <p class="demo-kicker">Demo</p>
-          <h3>{demo.title}</h3>
+          <h3><a class="section-anchor" href={`#${demo.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} aria-label={`Link to ${demo.title}`}>#</a>{demo.title}</h3>
           <p>{demo.body}</p>
           <pre>{demo.command}</pre>
           <a class="demo-link" href={demo.href}>Open docs →</a>
@@ -104,19 +104,19 @@
 <section class="section shell">
   <div class="section-headline">
     <p class="eyebrow">Reference</p>
-    <h2>Use these docs when you need precision, not just a demo.</h2>
+    <h2 id="reference"><a class="section-anchor" href="#reference" aria-label="Link to reference">#</a>Use these docs when you need precision, not just a demo.</h2>
   </div>
 
   <div class="reference-list">
     {#each references as reference}
-      <a class="reference-row" href={reference.href}>
+      <section class="reference-row" id={reference.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}>
         <div class="reference-main">
-          <h3>{reference.title}</h3>
+          <h3><a class="section-anchor" href={`#${reference.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} aria-label={`Link to ${reference.title}`}>#</a>{reference.title}</h3>
           <p>{reference.body}</p>
         </div>
         <pre>{reference.command}</pre>
-        <span>Open docs →</span>
-      </a>
+        <a class="reference-doc-link" href={reference.href}>Open docs →</a>
+      </section>
     {/each}
   </div>
 </section>
@@ -174,9 +174,22 @@
   }
   .hero-links a:hover,
   .demo-link:hover,
-  .reference-row:hover span {
+  .reference-doc-link:hover {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .section-anchor {
+    display: inline-block;
+    margin-right: 0.55rem;
+    color: var(--accent);
+    text-decoration: none;
+    opacity: 0.28;
+  }
+  .section-headline h2:hover .section-anchor,
+  .demo-text h3:hover .section-anchor,
+  .reference-main h3:hover .section-anchor,
+  .section-anchor:focus {
+    opacity: 1;
   }
   .hero-panel {
     display: grid;
@@ -242,7 +255,7 @@
     font-size: 1.2rem;
   }
   .demo-link,
-  .reference-row span {
+  .reference-doc-link {
     color: var(--accent);
     text-decoration: none;
     font-weight: 700;
@@ -269,8 +282,6 @@
     align-items: center;
     padding: 1.1rem 0;
     border-top: 1px solid var(--border);
-    text-decoration: none;
-    color: inherit;
   }
   .reference-row:last-child {
     border-bottom: 1px solid var(--border);

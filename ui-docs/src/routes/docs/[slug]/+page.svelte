@@ -1,5 +1,25 @@
 <script lang="ts">
+  import { afterNavigate } from '$app/navigation';
+  import { browser } from '$app/environment';
+
   let { data } = $props();
+
+  function scrollToHash() {
+    if (!browser) return;
+    const hash = window.location.hash;
+    if (!hash) return;
+    const id = decodeURIComponent(hash.slice(1));
+    const target = document.getElementById(id);
+    if (target) {
+      target.scrollIntoView({ block: 'start' });
+    }
+  }
+
+  if (browser) {
+    afterNavigate(() => {
+      requestAnimationFrame(() => scrollToHash());
+    });
+  }
 </script>
 
 <svelte:head>
@@ -118,6 +138,20 @@
   :global(article h1), :global(article h2), :global(article h3) {
     color: var(--text-strong);
     scroll-margin-top: 1rem;
+  }
+  :global(article .heading-anchor) {
+    display: inline-block;
+    margin-right: 0.55rem;
+    color: var(--accent);
+    text-decoration: none;
+    opacity: 0.22;
+    transition: opacity 120ms ease;
+  }
+  :global(article h1:hover .heading-anchor),
+  :global(article h2:hover .heading-anchor),
+  :global(article h3:hover .heading-anchor),
+  :global(article .heading-anchor:focus) {
+    opacity: 1;
   }
   :global(article p), :global(article li) { color: var(--text); }
   :global(article h2) { margin-top: 2.5rem; }
