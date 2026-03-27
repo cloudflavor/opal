@@ -123,7 +123,7 @@ impl UiRunner {
 
             let history_split = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(5)])
+                .constraints([Constraint::Min(0), Constraint::Length(6)])
                 .split(columns[0]);
             let history_area = history_split[0];
             let (history_list, mut history_scrollbar) =

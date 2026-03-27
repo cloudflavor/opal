@@ -1230,12 +1230,8 @@ impl UiState {
         ));
         if compact {
             spans.push(Span::styled(
-                truncate_label(&job.name, 20),
+                truncate_label(&job.name, 18),
                 Self::apply_highlight(Style::default().add_modifier(Modifier::BOLD), overlay),
-            ));
-            spans.push(Span::styled(
-                format!(" · {}", truncate_label(&job.stage, 10)),
-                Self::apply_highlight(Style::default().fg(Color::Gray), overlay),
             ));
         } else {
             spans.push(Span::styled(
@@ -1246,10 +1242,14 @@ impl UiState {
                 format!(" · {}", job.stage),
                 Self::apply_highlight(Style::default().fg(Color::Gray), overlay),
             ));
+            spans.push(Span::styled(
+                format!(" · {}", job.status.label()),
+                Self::apply_highlight(Style::default().fg(icon_color), overlay),
+            ));
         }
         if job.manual_pending {
             spans.push(Span::styled(
-                "  manual",
+                if compact { " !" } else { "  manual" },
                 Self::apply_highlight(
                     Style::default()
                         .fg(Color::Yellow)
@@ -1259,12 +1259,12 @@ impl UiState {
             ));
         } else if job.status == UiJobStatus::Pending {
             spans.push(Span::styled(
-                "  waiting",
+                if compact { " …" } else { "  waiting" },
                 Self::apply_highlight(Style::default().fg(Color::DarkGray), overlay),
             ));
         } else if active {
             spans.push(Span::styled(
-                "  active",
+                if compact { " *" } else { "  active" },
                 Self::apply_highlight(
                     Style::default()
                         .fg(Color::Yellow)
@@ -1298,11 +1298,16 @@ impl UiState {
                     Span::raw(" open"),
                 ]),
                 Line::from(vec![
-                    Self::hint_label("Global", Color::Green),
+                    Self::hint_label("Preview", Color::Green),
+                    key_span_color("o", Color::Yellow),
+                    Span::raw(" pager  "),
                     key_span_color("Tab", Color::Yellow),
-                    Span::raw(" switch  "),
+                    Span::raw(" switch"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("Help", Color::Green),
                     key_span_color("?", Color::Yellow),
-                    Span::raw(" help  "),
+                    Span::raw(" docs  "),
                     key_span_color("q", Color::Yellow),
                     Span::raw(" quit"),
                 ]),
@@ -1325,11 +1330,20 @@ impl UiState {
                     key_span_color("m", Color::Yellow),
                     Span::raw(" manual  "),
                     key_span_color("x", Color::Yellow),
-                    Span::raw(" cancel  "),
+                    Span::raw(" cancel"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("Help", Color::Magenta),
+                    key_span_color("?", Color::Yellow),
+                    Span::raw(" docs  "),
+                    key_span_color("Tab", Color::Yellow),
+                    Span::raw(" panes  "),
                     key_span_color("0-4", Color::Yellow),
                     Span::raw(format!(" filter:{}  ", self.log_filter.label())),
                     key_span_color("c", Color::Yellow),
-                    Span::raw(format!(" density:{}", self.tab_density.label())),
+                    Span::raw(format!(" density:{}  ", self.tab_density.label())),
+                    key_span_color("q", Color::Yellow),
+                    Span::raw(" quit"),
                 ]),
             ]
         };
@@ -1530,7 +1544,7 @@ impl UiState {
             spans.push(bullet());
             spans.push(Span::raw("Use "));
             spans.push(key_span_color("←/→", Color::Cyan));
-            spans.push(Span::raw(" to switch docs"));
+            spans.push(Span::raw(" to switch docs/shortcuts"));
             spans.push(Span::raw("  "));
             spans.push(bullet());
             spans.push(Span::raw("Use "));
@@ -1576,8 +1590,11 @@ impl UiState {
         match self.help_view {
             HelpView::Shortcuts => self.open_help_document(0),
             HelpView::Document(idx) => {
-                let next = (idx + 1) % self.help_docs.len();
-                self.open_help_document(next);
+                if idx + 1 >= self.help_docs.len() {
+                    self.show_help_shortcuts();
+                } else {
+                    self.open_help_document(idx + 1);
+                }
             }
         }
     }
@@ -1589,12 +1606,11 @@ impl UiState {
         match self.help_view {
             HelpView::Shortcuts => self.open_help_document(self.help_docs.len().saturating_sub(1)),
             HelpView::Document(idx) => {
-                let prev = if idx == 0 {
-                    self.help_docs.len() - 1
+                if idx == 0 {
+                    self.show_help_shortcuts();
                 } else {
-                    idx - 1
-                };
-                self.open_help_document(prev);
+                    self.open_help_document(idx - 1);
+                }
             }
         }
     }
@@ -3112,8 +3128,8 @@ fn rows_for_line(line: &Line<'_>, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        HelpDocument, LogFilter, UiState, format_log_entry, is_markdown_path, matches_log_filter,
-        render_markdown_for_pager,
+        HelpDocument, HelpView, LogFilter, UiState, format_log_entry, is_markdown_path,
+        matches_log_filter, render_markdown_for_pager,
     };
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
     use crate::ui::types::UiJobInfo;
@@ -3210,7 +3226,7 @@ mod tests {
             LogFilter::Downloads
         ));
         assert!(matches_log_filter(
-            "[11:45:19.541 0068] Compiling opal v0.1.0-alpha",
+            "[11:45:19.541 0068] Compiling opal v0.1.0-rc1",
             LogFilter::Build
         ));
         assert!(matches_log_filter(
@@ -3425,5 +3441,64 @@ mod tests {
         let preview = state.history_preview.as_ref().expect("history preview");
         assert!(preview.title.contains("run-2 • unit-tests"));
         assert!(preview.lines.iter().any(|line| line == "second"));
+    }
+
+    #[test]
+    fn tab_density_compact_and_full_render_differently() {
+        let temp = tempdir().expect("tempdir");
+        let state = UiState::new(
+            vec![UiJobInfo {
+                name: "package-crate".to_string(),
+                stage: "package".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        let job = state.active_jobs().first().expect("job");
+        let compact = state
+            .build_label_spans(job, false, true)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let full = state
+            .build_label_spans(job, false, false)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_ne!(compact, full);
+        assert!(!compact.contains(" · package"));
+        assert!(full.contains(" · package"));
+        assert!(full.contains("pending"));
+    }
+
+    #[test]
+    fn help_navigation_cycles_back_to_shortcuts() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            Vec::new(),
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+        );
+
+        state.toggle_help();
+        state.open_help_document(0);
+        state.previous_help_document();
+        assert!(matches!(state.help_view, HelpView::Shortcuts));
+
+        state.open_help_document(0);
+        while !matches!(state.help_view, HelpView::Shortcuts) {
+            state.next_help_document();
+        }
+        assert!(matches!(state.help_view, HelpView::Shortcuts));
     }
 }
