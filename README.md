@@ -80,20 +80,7 @@ CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push \
   opal run --pipeline pipelines/tests/needs-and-artifacts.gitlab-ci.yml
 ```
 
-Current fixture files:
-
-- `needs-and-artifacts.gitlab-ci.yml`
-- `rules-playground.gitlab-ci.yml`
-- `includes-and-extends.gitlab-ci.yml`
-- `resources-and-services.gitlab-ci.yml`
-- `services-readiness-failure.gitlab-ci.yml`
-- `cache-policies.gitlab-ci.yml`
-- `cache-key-files.gitlab-ci.yml`
-- `cache-fallback.gitlab-ci.yml`
-- `filters.gitlab-ci.yml`
-- `environments.gitlab-ci.yml`
-- `secret-masking.gitlab-ci.yml`
-- `tag-ambiguity.gitlab-ci.yml`
+For the current fixture matrix and scenario descriptions, see `pipelines/tests/README.md`.
 
 Run the suite with representative env permutations:
 
