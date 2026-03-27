@@ -9,6 +9,7 @@
 2. **Prepare a workspace**
    - Place your project in a directory containing `.gitlab-ci.yml`.
    - Optional: add `.opal/env` with key-value files for secrets (each filename becomes a `$NAME` and `$NAME_FILE` inside containers) and set executable scripts under `.opal/hooks`.
+   - Optional: use `--env GLOB` (repeatable) to forward selected host variables into jobs; see `docs/pipeline.md` for the exact glob behavior and examples.
 
 3. **Run the pipeline**
    ```bash

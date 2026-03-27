@@ -102,6 +102,7 @@ See `docs/` for deeper references:
 - `docs/gitlab-parity.md`
 
 Use `docs/gitlab-parity.md` for the exact supported surface and known divergences from GitLab Runner/GitLab CI.
+For exact runtime usage details, especially host env forwarding and repository secrets, see `docs/pipeline.md`.
 
 The `docs/` directory is embedded into the TUI help viewer at build time.
 
