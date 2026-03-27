@@ -24,6 +24,7 @@ pub mod terminal;
 pub mod ui;
 
 #[derive(StructOpt)]
+#[structopt(name = "opal", version = env!("CARGO_PKG_VERSION"))]
 pub struct Cli {
     #[structopt(
         short,
