@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "ui-docs",
+	"name": "opal",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"routes": [
 		{
