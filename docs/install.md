@@ -30,17 +30,23 @@ Current release artifact targets:
 - `aarch64-unknown-linux-gnu`
 - `x86_64-unknown-linux-gnu`
 
-Placeholder examples:
+Release downloads are published under:
+
+```text
+{{github_releases_url}}
+```
+
+Current release examples for `{{release_tag}}`:
 
 ```bash
 # macOS Apple Silicon
-curl -L <placeholder> | tar xz
+curl -L {{release_asset_url_macos_arm64}} | tar xz
 
 # Linux ARM64
-curl -L <placeholder> | tar xz
+curl -L {{release_asset_url_linux_arm64}} | tar xz
 
 # Linux AMD64
-curl -L <placeholder> | tar xz
+curl -L {{release_asset_url_linux_amd64}} | tar xz
 ```
 
 ## Runtime requirements

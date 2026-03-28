@@ -8,19 +8,19 @@ Opal is a terminal-first, AI-capable GitLab pipeline runner for local debugging.
 
 ### Opal Run
 
-[![asciicast](https://asciinema.org/a/LxDIEb87AyDtDM5c.svg)](https://asciinema.org/a/LxDIEb87AyDtDM5c)
+[![asciicast](https://asciinema.org/a/sRnoaxug8FIBIC4b.svg)](https://asciinema.org/a/sRnoaxug8FIBIC4b)
 
 ### Opal Plan
 
-[![asciicast](https://asciinema.org/a/6rP1p3H4vtA7Orr8.svg)](https://asciinema.org/a/6rP1p3H4vtA7Orr8)
+[![asciicast](https://asciinema.org/a/sQJqanuJ2Jj6dejt.svg)](https://asciinema.org/a/sQJqanuJ2Jj6dejt)
 
 ### Opal Run --no-tui
 
-[![asciicast](https://asciinema.org/a/2Q2mFyHkwXMoI9e0.svg)](https://asciinema.org/a/2Q2mFyHkwXMoI9e0)
+[![asciicast](https://asciinema.org/a/5Kr6vJBbkKv1wlhF.svg)](https://asciinema.org/a/5Kr6vJBbkKv1wlhF)
 
 ### Opal View
 
-[![asciicast](https://asciinema.org/a/3eTpVFphkhQKDZB9.svg)](https://asciinema.org/a/3eTpVFphkhQKDZB9)
+[![asciicast](https://asciinema.org/a/GLTgUvewqvfDB7Qz.svg)](https://asciinema.org/a/GLTgUvewqvfDB7Qz)
 
 ### Opal AI Troubleshooting · Codex
 

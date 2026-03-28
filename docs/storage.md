@@ -197,6 +197,28 @@ Each history entry records:
 
 This is what powers `opal view` and the run-history sidebar in the TUI.
 
+## AI analysis output
+
+When AI troubleshooting is enabled and analysis saving is turned on:
+
+```toml
+[ai]
+save_analysis = true
+```
+
+Opal stores saved AI output under:
+
+```text
+$OPAL_HOME/<run-id>/<job-slug>/analysis/
+```
+
+Current backend-specific filenames include:
+
+- `ollama.md`
+- `codex.md`
+
+This is where the final saved analysis text is written after a successful provider run.
+
 ## Runtime object cleanup
 
 By default, Opal cleans up runtime objects after successful job completion:

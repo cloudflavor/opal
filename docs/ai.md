@@ -220,6 +220,8 @@ For the Ollama backend, the first saved filename is:
 ollama.md
 ```
 
+For the general run/session storage layout, see `docs/storage.md`.
+
 ## Prompt preview
 
 The prompt preview exists so you can inspect exactly what Opal is about to send before you rely on the model's diagnosis.

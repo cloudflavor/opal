@@ -4,6 +4,8 @@ This page documents how to configure Opal's AI-assisted job troubleshooting back
 
 ## Example
 
+### Codex
+
 ```toml
 [ai]
 default_provider = "codex"
@@ -17,10 +19,23 @@ job_analysis_file = "prompts/ai/job-analysis.md"
 [ai.codex]
 command = "codex"
 model = "gpt-5-codex"
+```
 
-#[ai.ollama]
-#host = "http://127.0.0.1:11434"
-#model = "qwen3-coder:30b"
+### Ollama
+
+```toml
+[ai]
+default_provider = "ollama"
+tail_lines = 200
+save_analysis = true
+
+[ai.prompts]
+system_file = "prompts/ai/system.md"
+job_analysis_file = "prompts/ai/job-analysis.md"
+
+[ai.ollama]
+host = "http://127.0.0.1:11434"
+model = "qwen3-coder:30b"
 ```
 
 ## Core settings
@@ -133,13 +148,5 @@ model = "gpt-5-codex"
 
 ## Storage
 
-When `save_analysis = true`, Opal stores saved output under:
-
-```text
-$OPAL_HOME/<run-id>/<job-slug>/analysis/
-```
-
-Backend-specific filenames currently include:
-
-- `ollama.md`
-- `codex.md`
+- `[ai].save_analysis` controls whether Opal saves the final analysis into the run session
+- for the on-disk layout and exact saved paths, see `docs/storage.md`

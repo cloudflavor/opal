@@ -113,6 +113,7 @@ AI troubleshooting configuration is documented separately in `docs/ai-config.md`
 Use that page for:
 
 - backend selection (`ollama`, `codex`, planned `claude`)
+- clean backend-specific examples for both Codex and Ollama
 - prompt-template file overrides
 - Ollama host/model settings
 - Codex command/model settings

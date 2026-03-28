@@ -1,5 +1,6 @@
 <script lang="ts">
   import AsciinemaEmbed from '$lib/AsciinemaEmbed.svelte';
+  import release from '$lib/generated/release.json';
 
   const demos = [
     {
@@ -7,28 +8,28 @@
       command: 'opal run',
       body: 'Use the full TUI when you want to watch jobs live, inspect history, browse artifacts, and step through the pipeline interactively.',
       href: '/docs/quickstart#run-the-pipeline',
-      cast: 'LxDIEb87AyDtDM5c'
+      cast: 'sRnoaxug8FIBIC4b'
     },
     {
       title: 'Opal Plan',
       command: 'opal plan',
       body: 'Print the evaluated DAG, dependencies, gates, and scheduling decisions without starting containers.',
       href: '/docs/plan#preview-the-dag',
-      cast: '6rP1p3H4vtA7Orr8'
+      cast: 'sQJqanuJ2Jj6dejt'
     },
     {
       title: 'Opal Run --no-tui',
       command: 'opal run --no-tui',
       body: 'Use plain terminal mode for scriptable local checks, sharable terminal output, and CI-like runs without the interactive interface.',
       href: '/docs/quickstart#run-without-the-tui',
-      cast: '2Q2mFyHkwXMoI9e0'
+      cast: '5Kr6vJBbkKv1wlhF'
     },
     {
       title: 'Opal View',
       command: 'opal view',
       body: 'Open prior run history, logs, artifacts, and cache metadata after the fact.',
       href: '/docs/ui#layout',
-      cast: '3eTpVFphkhQKDZB9'
+      cast: 'GLTgUvewqvfDB7Qz'
     },
     {
       title: 'Opal AI Troubleshooting · Codex',
@@ -77,20 +78,20 @@
     {
       title: 'macOS · Apple Silicon',
       target: 'aarch64-apple-silicon',
-      install: 'curl -L <placeholder> | tar xz',
-      href: '#download-placeholder-macos'
+      install: `curl -L ${release.assets.macosArm64} | tar xz`,
+      href: release.assets.macosArm64
     },
     {
       title: 'Linux · ARM64',
       target: 'aarch64-unknown-linux-gnu',
-      install: 'curl -L <placeholder> | tar xz',
-      href: '#download-placeholder-linux-arm64'
+      install: `curl -L ${release.assets.linuxArm64} | tar xz`,
+      href: release.assets.linuxArm64
     },
     {
       title: 'Linux · AMD64',
       target: 'x86_64-unknown-linux-gnu',
-      install: 'curl -L <placeholder> | tar xz',
-      href: '#download-placeholder-linux-amd64'
+      install: `curl -L ${release.assets.linuxAmd64} | tar xz`,
+      href: release.assets.linuxAmd64
     }
   ];
 </script>
@@ -155,11 +156,11 @@
     {#each downloads as item}
       <section class="install-row" id={item.href.slice(1)}>
         <div class="install-main">
-          <h3><a class="section-anchor" href={`#${item.href.slice(1)}`} aria-label={`Link to ${item.title}`}>#</a>{item.title}</h3>
+          <h3>{item.title}</h3>
           <p>{item.target}</p>
         </div>
         <pre>{item.install}</pre>
-        <a class="reference-doc-link" href={item.href}>Placeholder link →</a>
+        <a class="reference-doc-link" href={item.href}>Download →</a>
       </section>
     {/each}
   </div>

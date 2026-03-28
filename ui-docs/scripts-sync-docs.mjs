@@ -7,8 +7,50 @@ const repoRoot = path.resolve(process.cwd(), '..');
 const docsDir = path.join(repoRoot, 'docs');
 const outputDir = path.join(process.cwd(), 'src', 'lib', 'generated');
 const outputFile = path.join(outputDir, 'docs.json');
+const releaseFile = path.join(outputDir, 'release.json');
 
 const preferredOrder = ['index', 'install', 'quickstart', 'pipeline', 'plan', 'config', 'ai-config', 'ai', 'gitlab-parity', 'ui'];
+
+const cargoToml = await fs.readFile(path.join(repoRoot, 'Cargo.toml'), 'utf8');
+const version = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
+const repository = cargoToml.match(/^repository = "([^"]+)"$/m)?.[1];
+
+if (!version || !repository) {
+  throw new Error('failed to read version/repository from Cargo.toml');
+}
+
+const releaseTag = `v${version}`;
+const releasesBaseUrl = `${repository}/releases/download/${releaseTag}`;
+
+const releaseMeta = {
+  version,
+  tag: releaseTag,
+  repository,
+  releasesUrl: `${repository}/releases`,
+  assets: {
+    macosArm64: `${releasesBaseUrl}/opal-${version}-aarch64-apple-silicon.tar.gz`,
+    linuxArm64: `${releasesBaseUrl}/opal-${version}-aarch64-unknown-linux-gnu.tar.gz`,
+    linuxAmd64: `${releasesBaseUrl}/opal-${version}-x86_64-unknown-linux-gnu.tar.gz`
+  }
+};
+
+const tokenMap = new Map([
+  ['{{release_version}}', version],
+  ['{{release_tag}}', releaseTag],
+  ['{{github_repository_url}}', repository],
+  ['{{github_releases_url}}', releaseMeta.releasesUrl],
+  ['{{release_asset_url_macos_arm64}}', releaseMeta.assets.macosArm64],
+  ['{{release_asset_url_linux_arm64}}', releaseMeta.assets.linuxArm64],
+  ['{{release_asset_url_linux_amd64}}', releaseMeta.assets.linuxAmd64]
+]);
+
+function applyDocTokens(markdown) {
+  let output = markdown;
+  for (const [token, value] of tokenMap) {
+    output = output.split(token).join(value);
+  }
+  return output;
+}
 
 function stripInlineMarkdown(value) {
   return value
@@ -133,7 +175,7 @@ const entries = (await fs.readdir(docsDir))
 const docs = [];
 for (const filename of entries) {
   const filePath = path.join(docsDir, filename);
-  const markdown = await fs.readFile(filePath, 'utf8');
+  const markdown = applyDocTokens(await fs.readFile(filePath, 'utf8'));
   const slug = slugFromFilename(filename);
   const title = titleFromMarkdown(markdown, slug);
   const tokens = marked.lexer(markdown);
@@ -146,4 +188,5 @@ for (const filename of entries) {
 
 await fs.mkdir(outputDir, { recursive: true });
 await fs.writeFile(outputFile, JSON.stringify(docs, null, 2));
+await fs.writeFile(releaseFile, JSON.stringify(releaseMeta, null, 2));
 console.log(`generated ${docs.length} docs into ${path.relative(process.cwd(), outputFile)}`);
