@@ -16,6 +16,7 @@ pub(super) struct HistoryResources {
     pub service_network: Option<String>,
     pub service_containers: Vec<String>,
     pub runtime_summary_path: Option<String>,
+    pub env_vars: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +99,10 @@ impl HistoryStore {
                     runtime_summary_path: resources
                         .get(&summary.name)
                         .and_then(|info| info.runtime_summary_path.clone()),
+                    env_vars: resources
+                        .get(&summary.name)
+                        .map(|info| info.env_vars.clone())
+                        .unwrap_or_default(),
                 })
                 .collect(),
         };
@@ -190,6 +195,7 @@ mod tests {
                 service_network: Some("opal-net-build".into()),
                 service_containers: vec!["opal-svc-build-00".into()],
                 runtime_summary_path: Some("/tmp/runtime/inspect.txt".into()),
+                env_vars: vec!["CARGO_HOME".into(), "CARGO_REGISTRY_TOKEN".into()],
             },
         )]);
 
@@ -215,6 +221,10 @@ mod tests {
             Some("opal-net-build")
         );
         assert_eq!(entry.jobs[0].service_containers, vec!["opal-svc-build-00"]);
+        assert_eq!(
+            entry.jobs[0].env_vars,
+            vec!["CARGO_HOME", "CARGO_REGISTRY_TOKEN"]
+        );
         assert_eq!(store.snapshot().len(), 1);
         assert!(path.exists());
         let _ = std::fs::remove_file(path);

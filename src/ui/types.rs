@@ -50,6 +50,7 @@ pub struct UiJobResources {
     pub service_network: Option<String>,
     pub service_containers: Vec<String>,
     pub runtime_summary_path: Option<String>,
+    pub env_vars: Vec<String>,
 }
 
 impl From<&HistoryJob> for UiJobResources {
@@ -62,6 +63,7 @@ impl From<&HistoryJob> for UiJobResources {
             service_network: job.service_network.clone(),
             service_containers: job.service_containers.clone(),
             runtime_summary_path: job.runtime_summary_path.clone(),
+            env_vars: job.env_vars.clone(),
         }
     }
 }

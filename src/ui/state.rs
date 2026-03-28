@@ -483,6 +483,7 @@ impl UiState {
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
                     label: format!("Container: {container}"),
                     color: Color::Cyan,
+                    preview: None,
                 }),
                 children: Vec::new(),
                 collapsed: false,
@@ -494,6 +495,7 @@ impl UiState {
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
                     label: format!("Service network: {network}"),
                     color: Color::Cyan,
+                    preview: None,
                 }),
                 children: Vec::new(),
                 collapsed: false,
@@ -508,6 +510,7 @@ impl UiState {
                         Self::summarize_list(&resources.service_containers)
                     ),
                     color: Color::Cyan,
+                    preview: Some(resources.service_containers.join("\n")),
                 }),
                 children: Vec::new(),
                 collapsed: false,
@@ -525,6 +528,30 @@ impl UiState {
                     is_dir: false,
                 },
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Directory { title }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
+        if !resources.env_vars.is_empty() {
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!("Env vars: {} loaded", resources.env_vars.len()),
+                    color: Color::Green,
+                    preview: Some(resources.env_vars.join("\n")),
+                }),
+                children: Vec::new(),
+                collapsed: false,
+            });
+        }
+        if !resources.env_vars.is_empty() {
+            nodes.push(HistoryTreeEntry {
+                key: HistoryNodeKey::ResourceInfo,
+                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                    label: format!("Env vars: {} loaded", resources.env_vars.len()),
+                    color: Color::Green,
+                    preview: Some(resources.env_vars.join("\n")),
+                }),
                 children: Vec::new(),
                 collapsed: false,
             });
@@ -560,6 +587,7 @@ impl UiState {
                 display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
                     label: format!("Artifacts: {summary}"),
                     color: Color::DarkGray,
+                    preview: None,
                 }),
                 children: Vec::new(),
                 collapsed: false,
@@ -682,7 +710,7 @@ impl UiState {
                 let symbol = connector.unwrap_or("└─");
                 Self::resource_line(symbol, title, Color::Cyan)
             }
-            HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, color }) => {
+            HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, color, .. }) => {
                 let symbol = connector.unwrap_or("└─");
                 Self::resource_line(symbol, label, *color)
             }
@@ -1078,7 +1106,15 @@ impl UiState {
                 if let HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, .. }) =
                     &nodes[idx].display
                 {
-                    self.load_text_preview("Runtime details".to_string(), label.clone());
+                    let text = match &nodes[idx].display {
+                        HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                            label,
+                            preview,
+                            ..
+                        }) => preview.clone().unwrap_or_else(|| label.clone()),
+                        _ => label.clone(),
+                    };
+                    self.load_text_preview("Runtime details".to_string(), text);
                 }
             }
             _ => {}
@@ -1134,7 +1170,15 @@ impl UiState {
                 if let HistoryNodeDisplay::Resource(ResourceDisplay::Info { label, .. }) =
                     &nodes[idx].display
                 {
-                    self.load_text_preview("Runtime details".to_string(), label.clone());
+                    let text = match &nodes[idx].display {
+                        HistoryNodeDisplay::Resource(ResourceDisplay::Info {
+                            label,
+                            preview,
+                            ..
+                        }) => preview.clone().unwrap_or_else(|| label.clone()),
+                        _ => label.clone(),
+                    };
+                    self.load_text_preview("Runtime details".to_string(), text);
                 }
                 None
             }
@@ -2098,6 +2142,14 @@ impl UiState {
                 Span::styled(
                     format!("{} ({:.2}s)", job.status.label(), job.display_duration()),
                     Style::default().fg(job.status.icon().1),
+                ),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Env: ", Style::default().fg(Color::Cyan)),
+                Span::raw(
+                    self.job_resources
+                        .get(&job.name)
+                        .map(|resources| format!("{} loaded", resources.env_vars.len()))
+                        .unwrap_or_else(|| "0 loaded".to_string()),
                 ),
                 Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("AI: ", Style::default().fg(Color::Cyan)),
@@ -3204,8 +3256,14 @@ struct JobDisplay {
 
 #[derive(Clone)]
 enum ResourceDisplay {
-    Directory { title: String },
-    Info { label: String, color: Color },
+    Directory {
+        title: String,
+    },
+    Info {
+        label: String,
+        color: Color,
+        preview: Option<String>,
+    },
 }
 
 #[derive(Clone)]
@@ -4126,6 +4184,7 @@ mod tests {
                 service_network: None,
                 service_containers: Vec::new(),
                 runtime_summary_path: None,
+                env_vars: Vec::new(),
             }],
         }];
         let mut state = UiState::new(
@@ -4173,6 +4232,7 @@ mod tests {
                     service_network: None,
                     service_containers: Vec::new(),
                     runtime_summary_path: None,
+                    env_vars: Vec::new(),
                 },
                 HistoryJob {
                     name: "unit-tests".to_string(),
@@ -4187,6 +4247,7 @@ mod tests {
                     service_network: None,
                     service_containers: Vec::new(),
                     runtime_summary_path: None,
+                    env_vars: Vec::new(),
                 },
             ],
         }];
@@ -4233,6 +4294,7 @@ mod tests {
                 service_network: None,
                 service_containers: Vec::new(),
                 runtime_summary_path: None,
+                env_vars: Vec::new(),
             }],
         }];
 

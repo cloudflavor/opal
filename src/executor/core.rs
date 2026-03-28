@@ -30,7 +30,7 @@ use crate::terminal::should_use_color;
 use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
 use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,7 @@ struct JobResourceInfo {
     service_network: Option<String>,
     service_containers: Vec<String>,
     runtime_summary_path: Option<String>,
+    env_vars: Vec<String>,
 }
 
 impl ExecutorCore {
@@ -348,6 +349,7 @@ impl ExecutorCore {
                         service_network: None,
                         service_containers: Vec::new(),
                         runtime_summary_path: None,
+                        env_vars: self.visible_job_env_vars(&planned.instance.job),
                     },
                 )
             })
@@ -370,6 +372,7 @@ impl ExecutorCore {
                         service_network: info.service_network.clone(),
                         service_containers: info.service_containers.clone(),
                         runtime_summary_path: info.runtime_summary_path.clone(),
+                        env_vars: info.env_vars.clone(),
                     },
                 )
             })
@@ -407,6 +410,7 @@ impl ExecutorCore {
                             .as_ref()
                             .and_then(|objects| objects.runtime_summary_path.clone())
                             .or_else(|| info.runtime_summary_path.clone()),
+                        env_vars: info.env_vars.clone(),
                     },
                 )
             })
@@ -572,6 +576,16 @@ impl ExecutorCore {
             &self.run_id,
             &self.shared_env,
         )
+    }
+
+    fn visible_job_env_vars(&self, job: &JobSpec) -> Vec<String> {
+        let mut vars = BTreeSet::new();
+        for (key, _) in self.job_env(job) {
+            if is_user_visible_job_env(&key) {
+                vars.insert(key);
+            }
+        }
+        vars.into_iter().collect()
     }
 
     pub(crate) fn expanded_environment(
@@ -906,6 +920,19 @@ impl ExecutorCore {
             ],
         )
     }
+}
+
+fn is_user_visible_job_env(key: &str) -> bool {
+    !(key == "CI"
+        || key == "PATH"
+        || key == "PWD"
+        || key == "SHLVL"
+        || key == "GITLAB_CI"
+        || key == "OPAL_IN_OPAL"
+        || key == "_"
+        || key.starts_with("CI_")
+        || key.starts_with("GITLAB_")
+        || key.starts_with("OPAL_"))
 }
 
 fn empty_execution_plan() -> ExecutionPlan {
