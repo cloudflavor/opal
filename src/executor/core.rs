@@ -14,6 +14,7 @@ use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan, build_execution_plan};
+use crate::executor::container_arch::{container_arch_from_platform, normalize_container_arch};
 use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
 use crate::model::{ArtifactSourceOutcome, CachePolicySpec, JobSpec, PipelineSpec};
@@ -26,7 +27,7 @@ use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
 use crate::terminal::should_use_color;
 use crate::ui::{UiBridge, UiHandle, UiJobInfo, UiJobResources};
-use crate::{ExecutorConfig, runtime};
+use crate::{EngineKind, ExecutorConfig, runtime};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::env;
@@ -175,15 +176,29 @@ impl ExecutorCore {
         let ui_resources = Self::convert_ui_resources(&resource_map);
         let history_snapshot = self.history_store.snapshot();
         let ui_handle = if self.config.enable_tui {
+            let variant_sources: HashMap<String, String> = plan
+                .variants
+                .iter()
+                .flat_map(|(source, variants)| {
+                    variants
+                        .iter()
+                        .map(move |variant| (variant.name.clone(), source.clone()))
+                })
+                .collect();
             let jobs: Vec<UiJobInfo> = plan
                 .ordered
                 .iter()
                 .filter_map(|name| plan.nodes.get(name))
                 .map(|planned| UiJobInfo {
                     name: planned.instance.job.name.clone(),
+                    source_name: variant_sources
+                        .get(&planned.instance.job.name)
+                        .cloned()
+                        .unwrap_or_else(|| planned.instance.job.name.clone()),
                     stage: planned.instance.stage_name.clone(),
                     log_path: planned.log_path.clone(),
                     log_hash: planned.log_hash.clone(),
+                    runner: self.ui_runner_info_for_job(&planned.instance.job),
                 })
                 .collect();
             Some(UiHandle::start(
@@ -193,6 +208,7 @@ impl ExecutorCore {
                 ui_resources,
                 plan_text,
                 self.config.workdir.clone(),
+                self.config.pipeline.clone(),
             )?)
         } else {
             None
@@ -567,6 +583,67 @@ impl ExecutorCore {
 
     fn display(&self) -> DisplayFormatter {
         DisplayFormatter::new(self.use_color)
+    }
+
+    fn ui_runner_info_for_job(&self, job: &JobSpec) -> crate::ui::types::UiRunnerInfo {
+        let engine = match self.config.engine {
+            EngineKind::ContainerCli => "container",
+            EngineKind::Docker => "docker",
+            EngineKind::Podman => "podman",
+            EngineKind::Nerdctl => "nerdctl",
+            EngineKind::Orbstack => "orbstack",
+        }
+        .to_string();
+
+        let job_override = self.config.settings.job_override_for(&job.name);
+        let image_platform = job
+            .image
+            .as_ref()
+            .and_then(|image| image.docker_platform.as_deref());
+        let arch = match self.config.engine {
+            EngineKind::ContainerCli => job_override
+                .as_ref()
+                .and_then(|cfg| cfg.arch.clone())
+                .or_else(|| {
+                    self.config
+                        .settings
+                        .container_settings()
+                        .and_then(|cfg| cfg.arch.clone())
+                })
+                .or_else(|| std::env::var("OPAL_CONTAINER_ARCH").ok())
+                .or_else(|| image_platform.and_then(container_arch_from_platform))
+                .or_else(|| normalize_container_arch(std::env::consts::ARCH)),
+            _ => image_platform
+                .and_then(container_arch_from_platform)
+                .or_else(|| job_override.as_ref().and_then(|cfg| cfg.arch.clone()))
+                .or_else(|| normalize_container_arch(std::env::consts::ARCH)),
+        };
+
+        let (cpus, memory) = match self.config.engine {
+            EngineKind::ContainerCli => {
+                let settings = self.config.settings.container_settings();
+                (
+                    Some(
+                        settings
+                            .and_then(|cfg| cfg.cpus.clone())
+                            .unwrap_or_else(|| "4".to_string()),
+                    ),
+                    Some(
+                        settings
+                            .and_then(|cfg| cfg.memory.clone())
+                            .unwrap_or_else(|| "1638m".to_string()),
+                    ),
+                )
+            }
+            _ => (None, None),
+        };
+
+        crate::ui::types::UiRunnerInfo {
+            engine,
+            arch,
+            cpus,
+            memory,
+        }
     }
 
     fn job_log_info(&self, job: &JobSpec) -> (PathBuf, String) {

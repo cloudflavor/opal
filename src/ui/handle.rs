@@ -27,6 +27,7 @@ impl UiHandle {
         job_resources: HashMap<String, UiJobResources>,
         plan_text: String,
         workdir: PathBuf,
+        pipeline_path: PathBuf,
     ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -39,6 +40,7 @@ impl UiHandle {
                 job_resources,
                 plan_text,
                 workdir,
+                pipeline_path,
                 rx,
                 cmd_tx,
             ) {

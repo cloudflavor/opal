@@ -1,6 +1,6 @@
 use super::types::{
     CURRENT_HISTORY_KEY, HistoryAction, LOG_SCROLL_HALF, LOG_SCROLL_PAGE, LOG_SCROLL_STEP,
-    PaneFocus, UiJobInfo, UiJobResources, UiJobStatus,
+    PaneFocus, UiJobInfo, UiJobResources, UiJobStatus, UiRunnerInfo,
 };
 use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
 use crate::runtime;
@@ -79,8 +79,14 @@ pub(super) struct UiState {
     help_width: u16,
     help_docs: Vec<HelpDocument>,
     job_resources: HashMap<String, UiJobResources>,
+    show_history_pane: bool,
+    show_job_yaml_pane: bool,
+    job_yaml_scroll: u16,
+    job_yaml_map: HashMap<String, String>,
+    job_yaml_error: Option<String>,
     plan_text: String,
     workdir: PathBuf,
+    pipeline_path: PathBuf,
     history_height: u16,
     loaded_dirs: HashSet<PathBuf>,
     has_current_run: bool,
@@ -96,6 +102,7 @@ impl UiState {
         job_resources: HashMap<String, UiJobResources>,
         plan_text: String,
         workdir: PathBuf,
+        pipeline_path: PathBuf,
     ) -> Self {
         let mut order = HashMap::new();
         let job_states: Vec<UiJobState> = jobs
@@ -114,6 +121,9 @@ impl UiState {
         }
 
         let has_current_run = !job_states.is_empty();
+        let (job_yaml_map, job_yaml_error) = load_job_yaml_map(&pipeline_path)
+            .map(|map| (map, None))
+            .unwrap_or_else(|err| (HashMap::new(), Some(err.to_string())));
 
         Self {
             jobs: job_states,
@@ -134,8 +144,14 @@ impl UiState {
             help_width: 1,
             help_docs: HelpDocument::discover(),
             job_resources,
+            show_history_pane: false,
+            show_job_yaml_pane: false,
+            job_yaml_scroll: 0,
+            job_yaml_map,
+            job_yaml_error,
             plan_text,
             workdir,
+            pipeline_path,
             history_height: 0,
             loaded_dirs: HashSet::new(),
             has_current_run,
@@ -302,7 +318,7 @@ impl UiState {
     pub(super) fn history_preview_view(&self, width: u16, height: u16) -> Paragraph<'static> {
         let Some(preview) = &self.history_preview else {
             return Paragraph::new(vec![Line::from("no log loaded")])
-                .block(self.pane_block("Logs", !self.focus_is_history()))
+                .block(self.pane_block("Logs", self.focus_is_jobs()))
                 .wrap(Wrap { trim: false });
         };
 
@@ -322,7 +338,7 @@ impl UiState {
         lines.extend(preview.visible_lines(inner_width, inner_height as usize));
 
         Paragraph::new(lines)
-            .block(self.pane_block("Logs", !self.focus_is_history()))
+            .block(self.pane_block("Logs", self.focus_is_jobs()))
             .wrap(Wrap { trim: false })
     }
 
@@ -784,11 +800,45 @@ impl UiState {
         self.collapsed_nodes.insert(map_key, collapsed);
     }
 
+    pub(super) fn history_pane_visible(&self) -> bool {
+        self.show_history_pane
+    }
+
+    pub(super) fn job_yaml_pane_visible(&self) -> bool {
+        self.show_job_yaml_pane
+    }
+
+    pub(super) fn toggle_history_pane(&mut self) {
+        self.show_history_pane = !self.show_history_pane;
+        if !self.show_history_pane && self.focus == PaneFocus::History {
+            self.focus = PaneFocus::Jobs;
+        }
+    }
+
+    pub(super) fn toggle_job_yaml_pane(&mut self) {
+        self.show_job_yaml_pane = !self.show_job_yaml_pane;
+        if !self.show_job_yaml_pane && self.focus == PaneFocus::JobYaml {
+            self.focus = PaneFocus::Jobs;
+        }
+        if self.show_job_yaml_pane {
+            self.job_yaml_scroll = 0;
+        }
+    }
+
     pub(super) fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            PaneFocus::Jobs => PaneFocus::History,
-            PaneFocus::History => PaneFocus::Jobs,
-        };
+        let mut panes = Vec::new();
+        if self.show_history_pane {
+            panes.push(PaneFocus::History);
+        }
+        panes.push(PaneFocus::Jobs);
+        if self.show_job_yaml_pane {
+            panes.push(PaneFocus::JobYaml);
+        }
+        let current = panes
+            .iter()
+            .position(|pane| *pane == self.focus)
+            .unwrap_or(0);
+        self.focus = panes[(current + 1) % panes.len()];
         if self.focus_is_history() {
             self.history_selection = self
                 .history_selection
@@ -798,6 +848,14 @@ impl UiState {
 
     pub(super) fn focus_is_history(&self) -> bool {
         matches!(self.focus, PaneFocus::History)
+    }
+
+    pub(super) fn focus_is_job_yaml(&self) -> bool {
+        matches!(self.focus, PaneFocus::JobYaml)
+    }
+
+    fn focus_is_jobs(&self) -> bool {
+        matches!(self.focus, PaneFocus::Jobs)
     }
 
     pub(super) fn push_history_entry(&mut self, entry: HistoryEntry) {
@@ -1362,29 +1420,55 @@ impl UiState {
         }
     }
 
-    pub(super) fn help_prompt(&self) -> Paragraph<'static> {
+    pub(super) fn help_prompt(&self, width: u16) -> Paragraph<'static> {
         let lines = if self.focus_is_history() {
             vec![
                 Line::from(vec![
                     Self::hint_label("History", Color::Cyan),
                     key_span_color("↑/↓", Color::Yellow),
-                    Span::raw(" move  "),
+                    Span::raw(" move   │   "),
                     key_span_color("←/→", Color::Yellow),
-                    Span::raw(" collapse  "),
+                    Span::raw(" fold   │   "),
                     key_span_color("Enter", Color::Yellow),
-                    Span::raw(" open"),
-                ]),
-                Line::from(vec![
-                    Self::hint_label("Preview", Color::Green),
+                    Span::raw(" open   │   "),
                     key_span_color("o", Color::Yellow),
-                    Span::raw(" pager  "),
+                    Span::raw(" pager   │   "),
                     key_span_color("Tab", Color::Yellow),
-                    Span::raw(" switch"),
+                    Span::raw(" focus"),
                 ]),
                 Line::from(vec![
-                    Self::hint_label("Help", Color::Green),
+                    Self::hint_label("Panes", Color::Green),
+                    key_span_color("H", Color::Yellow),
+                    Span::raw(" history   │   "),
+                    key_span_color("Y", Color::Yellow),
+                    Span::raw(" yaml   │   "),
                     key_span_color("?", Color::Yellow),
-                    Span::raw(" docs  "),
+                    Span::raw(" docs   │   "),
+                    key_span_color("q", Color::Yellow),
+                    Span::raw(" quit"),
+                ]),
+            ]
+        } else if self.focus_is_job_yaml() {
+            vec![
+                Line::from(vec![
+                    Self::hint_label("YAML", Color::Cyan),
+                    key_span_color("↑/↓", Color::Yellow),
+                    Span::raw(" scroll   │   "),
+                    key_span_color("PgUp/PgDn", Color::Yellow),
+                    Span::raw(" page   │   "),
+                    key_span_color("y", Color::Yellow),
+                    Span::raw(" pager   │   "),
+                    key_span_color("H", Color::Yellow),
+                    Span::raw(" history"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("Panes", Color::Green),
+                    key_span_color("Y", Color::Yellow),
+                    Span::raw(" yaml   │   "),
+                    key_span_color("Tab", Color::Yellow),
+                    Span::raw(" focus   │   "),
+                    key_span_color("?", Color::Yellow),
+                    Span::raw(" docs   │   "),
                     key_span_color("q", Color::Yellow),
                     Span::raw(" quit"),
                 ]),
@@ -1394,39 +1478,66 @@ impl UiState {
                 Line::from(vec![
                     Self::hint_label("Jobs", Color::Cyan),
                     key_span_color("j/k", Color::Yellow),
-                    Span::raw(" switch  "),
+                    Span::raw(" jobs   │   "),
                     key_span_color("o", Color::Yellow),
-                    Span::raw(" log  "),
+                    Span::raw(" log   │   "),
+                    key_span_color("y", Color::Yellow),
+                    Span::raw(" yaml   │   "),
                     key_span_color("p", Color::Yellow),
-                    Span::raw(" plan"),
-                ]),
-                Line::from(vec![
-                    Self::hint_label("Run", Color::Green),
+                    Span::raw(" plan   │   "),
                     key_span_color("r", Color::Yellow),
-                    Span::raw(" restart  "),
+                    Span::raw(" restart   │   "),
                     key_span_color("m", Color::Yellow),
-                    Span::raw(" manual  "),
+                    Span::raw(" manual   │   "),
                     key_span_color("x", Color::Yellow),
                     Span::raw(" cancel"),
                 ]),
                 Line::from(vec![
-                    Self::hint_label("Help", Color::Magenta),
+                    Self::hint_label("View", Color::Magenta),
                     key_span_color("?", Color::Yellow),
-                    Span::raw(" docs  "),
+                    Span::raw(" docs   │   "),
+                    key_span_color("H/Y", Color::Yellow),
+                    Span::raw(" panes   │   "),
                     key_span_color("Tab", Color::Yellow),
-                    Span::raw(" panes  "),
+                    Span::raw(" focus   │   "),
                     key_span_color("0-4", Color::Yellow),
-                    Span::raw(format!(" filter:{}  ", self.log_filter.label())),
+                    Span::raw(format!(" {}   │   ", self.log_filter.label())),
                     key_span_color("c", Color::Yellow),
-                    Span::raw(format!(" density:{}  ", self.tab_density.label())),
+                    Span::raw(format!(" {}   │   ", self.tab_density.label())),
                     key_span_color("q", Color::Yellow),
                     Span::raw(" quit"),
                 ]),
             ]
         };
+        let lines = self.with_footer_brand(lines, width.saturating_sub(2) as usize);
         Paragraph::new(lines)
-            .block(self.pane_block("Shortcuts", self.focus_is_history()))
+            .block(self.pane_block(
+                "Shortcuts",
+                self.focus_is_history() || self.focus_is_job_yaml(),
+            ))
             .wrap(Wrap { trim: false })
+    }
+
+    fn with_footer_brand(&self, mut lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+        let brand = [
+            "opal.cloudflavor.io",
+            concat!("opal ", env!("CARGO_PKG_VERSION")),
+        ];
+        for (idx, text) in brand.into_iter().enumerate() {
+            if let Some(line) = lines.get_mut(idx) {
+                let pad = width.saturating_sub(line.width() + text.len());
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                } else {
+                    line.spans.push(Span::raw("  "));
+                }
+                line.spans.push(Span::styled(
+                    text.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+        lines
     }
 
     pub(super) fn plan_text(&self) -> String {
@@ -1756,11 +1867,17 @@ impl UiState {
                     ("↑/↓/j/k", "move cursor"),
                     ("←/→/h/l", "collapse"),
                     ("Enter/Space", "open run/log"),
+                    ("H", "hide/show history"),
+                    ("Y", "hide/show YAML"),
                     ("Tab", "switch panes"),
                     ("q", "quit"),
                 ],
             ),
-            Self::help_section("Plan", Color::White, &[("p", "open plan in pager")]),
+            Self::help_section(
+                "Plan/YAML",
+                Color::White,
+                &[("p", "open plan in pager"), ("y", "open job YAML in pager")],
+            ),
         ];
 
         let mut lines = Vec::new();
@@ -1899,49 +2016,88 @@ impl UiState {
         )
     }
 
+    pub(super) fn info_panel_height(&self) -> u16 {
+        let extra = self
+            .active_job()
+            .map(|job| u16::from(job.manual_pending))
+            .unwrap_or(0);
+        4 + extra
+    }
+
     pub(super) fn info_panel(&self) -> Paragraph<'_> {
         let summary = self.pipeline_counts();
         let job = match self.active_job() {
             Some(job) => job,
             None => {
                 return Paragraph::new(vec![Line::from("No job selected")])
-                    .block(self.pane_block("Details", !self.focus_is_history()))
+                    .block(self.pane_block("Details", self.focus_is_jobs()))
                     .wrap(Wrap { trim: true });
             }
         };
+        let log_name = job
+            .log_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| job.log_path.display().to_string());
         let mut lines = vec![
             Line::from(vec![
                 Span::styled("Job: ", Style::default().fg(Color::Cyan)),
                 Span::raw(job.name.clone()),
-            ]),
-            Line::from(vec![
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Stage: ", Style::default().fg(Color::Cyan)),
                 Span::raw(job.stage.clone()),
-                Span::raw("  "),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Status: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
                     format!("{} ({:.2}s)", job.status.label(), job.display_duration()),
                     Style::default().fg(job.status.icon().1),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Run: ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!(
-                    "{}/{} done  running:{}  failed:{}  pending:{}",
-                    summary.done, summary.total, summary.running, summary.failed, summary.pending
-                )),
-            ]),
-            Line::from(vec![
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Log: ", Style::default().fg(Color::Cyan)),
-                Span::raw(
-                    job.log_path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().to_string())
-                        .unwrap_or_else(|| job.log_path.display().to_string()),
-                ),
-                Span::raw("  "),
+                Span::raw(log_name),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("id ", Style::default().fg(Color::DarkGray)),
                 Span::styled(job.log_hash.clone(), Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("Runner: ", Style::default().fg(Color::Cyan)),
+                Span::raw(job.runner.engine.clone()),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Arch: ", Style::default().fg(Color::Cyan)),
+                Span::raw(
+                    job.runner
+                        .arch
+                        .clone()
+                        .unwrap_or_else(|| "native/default".to_string()),
+                ),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("vCPU: ", Style::default().fg(Color::Cyan)),
+                Span::raw(
+                    job.runner
+                        .cpus
+                        .clone()
+                        .unwrap_or_else(|| "engine default".to_string()),
+                ),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("RAM: ", Style::default().fg(Color::Cyan)),
+                Span::raw(
+                    job.runner
+                        .memory
+                        .clone()
+                        .unwrap_or_else(|| "engine default".to_string()),
+                ),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Progress: ", Style::default().fg(Color::Cyan)),
+                Span::raw(format!("{}/{}", summary.done, summary.total)),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("running ", Style::default().fg(Color::Cyan)),
+                Span::raw(summary.running.to_string()),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("failed ", Style::default().fg(Color::Cyan)),
+                Span::raw(summary.failed.to_string()),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("pending ", Style::default().fg(Color::Cyan)),
+                Span::raw(summary.pending.to_string()),
             ]),
         ];
         if job.manual_pending {
@@ -1952,8 +2108,64 @@ impl UiState {
         }
 
         Paragraph::new(lines)
-            .block(self.pane_block("Details", !self.focus_is_history()))
+            .block(self.pane_block("Details", self.focus_is_jobs()))
             .wrap(Wrap { trim: true })
+    }
+
+    pub(super) fn job_yaml_panel(&self) -> Paragraph<'_> {
+        let (title, content) = self.active_job_yaml_text();
+        let mut paragraph = Paragraph::new(text_lines(&content))
+            .block(self.pane_block(title, self.focus_is_job_yaml()))
+            .wrap(Wrap { trim: false });
+        if self.job_yaml_scroll > 0 {
+            paragraph = paragraph.scroll((self.job_yaml_scroll, 0));
+        }
+        paragraph
+    }
+
+    pub(super) fn job_yaml_text_for_pager(&self) -> String {
+        self.active_job_yaml_text().1
+    }
+
+    pub(super) fn scroll_job_yaml_line_up(&mut self) {
+        self.job_yaml_scroll = self.job_yaml_scroll.saturating_sub(1);
+    }
+
+    pub(super) fn scroll_job_yaml_line_down(&mut self) {
+        self.job_yaml_scroll = self.job_yaml_scroll.saturating_add(1);
+    }
+
+    pub(super) fn scroll_job_yaml_page_up(&mut self, rows: u16) {
+        self.job_yaml_scroll = self.job_yaml_scroll.saturating_sub(rows.max(1));
+    }
+
+    pub(super) fn scroll_job_yaml_page_down(&mut self, rows: u16) {
+        self.job_yaml_scroll = self.job_yaml_scroll.saturating_add(rows.max(1));
+    }
+
+    fn active_job_yaml_text(&self) -> (String, String) {
+        let Some(job) = self.active_job() else {
+            return ("Job YAML".to_string(), "No job selected".to_string());
+        };
+        let source_name = &job.source_name;
+        let title = if source_name == &job.name {
+            format!("Job YAML • {}", job.name)
+        } else {
+            format!("Job YAML • {} ← {}", job.name, source_name)
+        };
+        if let Some(content) = self.job_yaml_map.get(source_name) {
+            return (title, content.clone());
+        }
+        if let Some(content) = self.job_yaml_map.get(&job.name) {
+            return (title, content.clone());
+        }
+        if let Some(err) = &self.job_yaml_error {
+            return (title, format!("failed to load job YAML: {err}"));
+        }
+        (
+            title,
+            yaml_source_hint(&job.name, source_name, &self.pipeline_path),
+        )
     }
 
     pub(super) fn log_view(
@@ -1969,7 +2181,7 @@ impl UiState {
             Some(job) => job,
             None => {
                 return Paragraph::new(vec![Line::from("No job selected")])
-                    .block(self.pane_block("Logs", !self.focus_is_history()))
+                    .block(self.pane_block("Logs", self.focus_is_jobs()))
                     .wrap(Wrap { trim: true });
             }
         };
@@ -2018,7 +2230,7 @@ impl UiState {
         }
 
         Paragraph::new(lines)
-            .block(self.pane_block(title, !self.focus_is_history()))
+            .block(self.pane_block(title, self.focus_is_jobs()))
             .wrap(Wrap { trim: false })
     }
 
@@ -2356,9 +2568,11 @@ fn strip_log_metadata(line: &str) -> &str {
 
 pub(super) struct UiJobState {
     name: String,
+    source_name: String,
     stage: String,
     log_path: PathBuf,
     log_hash: String,
+    runner: UiRunnerInfo,
     status: UiJobStatus,
     duration: f32,
     start_time: Option<Instant>,
@@ -2373,9 +2587,11 @@ impl UiJobState {
     fn from(info: UiJobInfo) -> Self {
         Self {
             name: info.name,
+            source_name: info.source_name,
             stage: info.stage,
             log_path: info.log_path,
             log_hash: info.log_hash,
+            runner: info.runner,
             status: UiJobStatus::Pending,
             duration: 0.0,
             start_time: None,
@@ -2395,9 +2611,11 @@ impl UiJobState {
             .unwrap_or_else(|| runtime::logs_dir(run_id).join(format!("{}.log", job.log_hash)));
         Self {
             name: job.name.clone(),
+            source_name: job.name.clone(),
             stage: job.stage.clone(),
             log_path,
             log_hash: job.log_hash.clone(),
+            runner: UiRunnerInfo::default(),
             status: UiJobStatus::from_history(job.status),
             duration: 0.0,
             start_time: None,
@@ -3189,6 +3407,57 @@ fn apply_line_style(spans: &mut [Span<'static>], style: Style) {
     }
 }
 
+fn text_lines(content: &str) -> Vec<Line<'static>> {
+    if content.is_empty() {
+        return vec![Line::from("(empty)")];
+    }
+    content
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect()
+}
+
+fn load_job_yaml_map(path: &Path) -> Result<HashMap<String, String>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read pipeline file {}", path.display()))?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let Some(mapping) = yaml.as_mapping() else {
+        return Ok(HashMap::new());
+    };
+    let mut jobs = HashMap::new();
+    for (key, value) in mapping {
+        let Some(name) = key.as_str() else {
+            continue;
+        };
+        let mut root = serde_yaml::Mapping::new();
+        root.insert(serde_yaml::Value::String(name.to_string()), value.clone());
+        let rendered = serde_yaml::to_string(&serde_yaml::Value::Mapping(root))?;
+        jobs.insert(name.to_string(), rendered);
+    }
+    Ok(jobs)
+}
+
+fn yaml_source_hint(job_name: &str, source_name: &str, pipeline_path: &Path) -> String {
+    if job_name == source_name {
+        format!(
+            "job definition for '{}' is not available in {}",
+            job_name,
+            pipeline_path.display()
+        )
+    } else {
+        format!(
+            "job definition for '{}' (source job '{}') is not available in {}",
+            job_name,
+            source_name,
+            pipeline_path.display()
+        )
+    }
+}
+
 fn total_rows(lines: &[Line<'_>], width: usize) -> usize {
     lines.iter().map(|line| rows_for_line(line, width)).sum()
 }
@@ -3210,7 +3479,7 @@ mod tests {
         matches_log_filter, render_markdown_for_pager,
     };
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
-    use crate::ui::types::UiJobInfo;
+    use crate::ui::types::{UiJobInfo, UiRunnerInfo};
     use ratatui::style::{Color, Modifier};
     use std::collections::HashMap;
     use std::path::Path;
@@ -3392,15 +3661,18 @@ mod tests {
         let state = UiState::new(
             vec![UiJobInfo {
                 name: "lint".to_string(),
+                source_name: "lint".to_string(),
                 stage: "test".to_string(),
                 log_path: temp.path().join("missing.log"),
                 log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
             }],
             Vec::new(),
             "run-1".to_string(),
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         assert!(state.current_log_path().is_none());
@@ -3414,15 +3686,18 @@ mod tests {
         let state = UiState::new(
             vec![UiJobInfo {
                 name: "lint".to_string(),
+                source_name: "lint".to_string(),
                 stage: "test".to_string(),
                 log_path: log_path.clone(),
                 log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
             }],
             Vec::new(),
             "run-1".to_string(),
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         assert_eq!(state.current_log_path(), Some(log_path));
@@ -3459,6 +3734,7 @@ mod tests {
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         state.view_history_run("run-2").expect("view history run");
@@ -3520,6 +3796,7 @@ mod tests {
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         state
@@ -3565,6 +3842,7 @@ mod tests {
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         state
@@ -3582,15 +3860,18 @@ mod tests {
         let state = UiState::new(
             vec![UiJobInfo {
                 name: "package-crate".to_string(),
+                source_name: "package-crate".to_string(),
                 stage: "package".to_string(),
                 log_path: temp.path().join("job.log"),
                 log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
             }],
             Vec::new(),
             "run-1".to_string(),
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         let job = state.active_jobs().first().expect("job");
@@ -3621,6 +3902,7 @@ mod tests {
             HashMap::new(),
             String::new(),
             temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
         );
 
         state.toggle_help();
@@ -3633,5 +3915,118 @@ mod tests {
             state.next_help_document();
         }
         assert!(matches!(state.help_view, HelpView::Shortcuts));
+    }
+
+    #[test]
+    fn pane_focus_skips_hidden_panes() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            vec![UiJobInfo {
+                name: "lint: [linux]".to_string(),
+                source_name: "lint".to_string(),
+                stage: "test".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        state.toggle_history_pane();
+        state.toggle_job_yaml_pane();
+        state.toggle_focus();
+        assert!(state.focus_is_job_yaml());
+
+        state.toggle_job_yaml_pane();
+        assert!(matches!(state.focus, crate::ui::types::PaneFocus::Jobs));
+        state.toggle_focus();
+        assert!(matches!(state.focus, crate::ui::types::PaneFocus::History));
+    }
+
+    #[test]
+    fn history_pane_is_hidden_by_default() {
+        let temp = tempdir().expect("tempdir");
+        let state = UiState::new(
+            Vec::new(),
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        assert!(!state.history_pane_visible());
+        assert!(matches!(state.focus, crate::ui::types::PaneFocus::Jobs));
+    }
+
+    #[test]
+    fn job_yaml_panel_uses_source_job_name_lookup() {
+        let temp = tempdir().expect("tempdir");
+        let pipeline_path = temp.path().join(".gitlab-ci.yml");
+        std::fs::write(
+            &pipeline_path,
+            "stages: [test]\nlint:\n  stage: test\n  script:\n    - cargo fmt --check\n",
+        )
+        .expect("write pipeline");
+
+        let state = UiState::new(
+            vec![UiJobInfo {
+                name: "lint: [linux]".to_string(),
+                source_name: "lint".to_string(),
+                stage: "test".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            pipeline_path,
+        );
+
+        let yaml = state.job_yaml_text_for_pager();
+        assert!(yaml.contains("lint:"));
+        assert!(yaml.contains("cargo fmt --check"));
+    }
+
+    #[test]
+    fn details_panel_shows_runner_info() {
+        let temp = tempdir().expect("tempdir");
+        let state = UiState::new(
+            vec![UiJobInfo {
+                name: "build".to_string(),
+                source_name: "build".to_string(),
+                stage: "build".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo {
+                    engine: "container".to_string(),
+                    arch: Some("arm64".to_string()),
+                    cpus: Some("6".to_string()),
+                    memory: Some("3g".to_string()),
+                },
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        let _ = state.info_panel();
+        let job = state.active_job().expect("active job");
+        assert_eq!(job.runner.engine, "container");
+        assert_eq!(job.runner.arch.as_deref(), Some("arm64"));
+        assert_eq!(job.runner.cpus.as_deref(), Some("6"));
+        assert_eq!(job.runner.memory.as_deref(), Some("3g"));
     }
 }

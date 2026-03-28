@@ -21,6 +21,7 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
     let workdir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let pipeline_path = workdir.join(".gitlab-ci.yml");
     let runner = runner::UiRunner::new(
         Vec::new(),
         history,
@@ -28,6 +29,7 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
         HashMap::new(),
         String::new(),
         workdir,
+        pipeline_path,
         rx,
         cmd_tx,
     )?;
@@ -49,6 +51,7 @@ pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
     let workdir = env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    let pipeline_path = workdir.join(".gitlab-ci.yml");
     let runner = runner::UiRunner::new(
         Vec::new(),
         history,
@@ -56,6 +59,7 @@ pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
         HashMap::new(),
         String::new(),
         workdir,
+        pipeline_path,
         rx,
         cmd_tx,
     )?;

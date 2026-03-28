@@ -10,6 +10,7 @@ pub const CURRENT_HISTORY_KEY: &str = "__current_run__";
 pub enum PaneFocus {
     History,
     Jobs,
+    JobYaml,
 }
 
 #[derive(Clone)]
@@ -25,9 +26,19 @@ pub enum HistoryAction {
 #[derive(Clone)]
 pub struct UiJobInfo {
     pub name: String,
+    pub source_name: String,
     pub stage: String,
     pub log_path: PathBuf,
     pub log_hash: String,
+    pub runner: UiRunnerInfo,
+}
+
+#[derive(Clone, Default)]
+pub struct UiRunnerInfo {
+    pub engine: String,
+    pub arch: Option<String>,
+    pub cpus: Option<String>,
+    pub memory: Option<String>,
 }
 
 #[derive(Clone, Default)]

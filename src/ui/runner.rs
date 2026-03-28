@@ -45,6 +45,7 @@ impl UiRunner {
         job_resources: HashMap<String, UiJobResources>,
         plan_text: String,
         workdir: PathBuf,
+        pipeline_path: PathBuf,
         rx: UnboundedReceiver<UiEvent>,
         commands: UnboundedSender<UiCommand>,
     ) -> Result<Self> {
@@ -62,6 +63,7 @@ impl UiRunner {
                 job_resources,
                 plan_text,
                 workdir,
+                pipeline_path,
             ),
             pipeline_finished: false,
             exit_requested: false,
@@ -116,37 +118,49 @@ impl UiRunner {
     fn draw(&mut self) -> Result<()> {
         // TODO: does too much - refactor
         self.terminal.draw(|frame| {
+            let mut constraints = Vec::new();
+            let mut history_idx = None;
+            let mut yaml_idx = None;
+            if self.state.history_pane_visible() {
+                history_idx = Some(constraints.len());
+                constraints.push(Constraint::Length(36));
+            }
+            let main_idx = constraints.len();
+            constraints.push(Constraint::Min(0));
+            if self.state.job_yaml_pane_visible() {
+                yaml_idx = Some(constraints.len());
+                constraints.push(Constraint::Length(52));
+            }
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(36), Constraint::Min(0)])
+                .constraints(constraints)
                 .split(frame.area());
 
-            let history_split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(6)])
-                .split(columns[0]);
-            let history_area = history_split[0];
-            let (history_list, mut history_scrollbar) =
-                self.state.history_widget(history_area.height);
-            frame.render_widget(history_list, history_area);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
-                history_area,
-                &mut history_scrollbar,
-            );
-            frame.render_widget(self.state.help_prompt(), history_split[1]);
+            if let Some(idx) = history_idx {
+                let history_area = columns[idx];
+                let (history_list, mut history_scrollbar) =
+                    self.state.history_widget(history_area.height);
+                frame.render_widget(history_list, history_area);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    history_area,
+                    &mut history_scrollbar,
+                );
+            }
 
-            let tab_width = columns[1].width.saturating_sub(2).max(1);
+            let main_area = columns[main_idx];
+            let tab_width = main_area.width.saturating_sub(2).max(1);
             let (tabs, tab_height) = self.state.tabs(tab_width);
 
             let layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(tab_height),
-                    Constraint::Length(6),
+                    Constraint::Length(self.state.info_panel_height()),
                     Constraint::Min(0),
+                    Constraint::Length(4),
                 ])
-                .split(columns[1]);
+                .split(main_area);
 
             frame.render_widget(tabs, layout[0]);
 
@@ -157,6 +171,11 @@ impl UiRunner {
                 self.state
                     .log_view(self.pipeline_finished, layout[2].width, layout[2].height);
             frame.render_widget(log_widget, layout[2]);
+            frame.render_widget(self.state.help_prompt(layout[3].width), layout[3]);
+
+            if let Some(idx) = yaml_idx {
+                frame.render_widget(self.state.job_yaml_panel(), columns[idx]);
+            }
 
             if self.state.help_visible() {
                 let area = centered_rect(60, 80, frame.area());
@@ -289,6 +308,14 @@ impl UiRunner {
                 self.view_plan()?;
                 return Ok(());
             }
+            KeyCode::Char('H') => {
+                self.state.toggle_history_pane();
+                return Ok(());
+            }
+            KeyCode::Char('Y') => {
+                self.state.toggle_job_yaml_pane();
+                return Ok(());
+            }
             _ => {}
         }
 
@@ -371,6 +398,22 @@ impl UiRunner {
             return Ok(());
         }
 
+        if self.state.focus_is_job_yaml() {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    self.state.scroll_job_yaml_line_down()
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                    self.state.scroll_job_yaml_line_up()
+                }
+                KeyCode::PageDown => self.state.scroll_job_yaml_page_down(24),
+                KeyCode::PageUp => self.state.scroll_job_yaml_page_up(24),
+                KeyCode::Char('y') => self.view_current_job_yaml()?,
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Char('J') => self.state.next_job(),
             KeyCode::Char('k') | KeyCode::Char('K') => self.state.previous_job(),
@@ -441,6 +484,9 @@ impl UiRunner {
             KeyCode::Char('o') => {
                 self.view_current_log()?;
             }
+            KeyCode::Char('y') => {
+                self.view_current_job_yaml()?;
+            }
             KeyCode::Char('0') => self.state.set_log_filter(LogFilter::All),
             KeyCode::Char('1') => self.state.set_log_filter(LogFilter::Errors),
             KeyCode::Char('2') => self.state.set_log_filter(LogFilter::Warnings),
@@ -467,6 +513,8 @@ impl UiRunner {
             MouseEventKind::ScrollUp => {
                 if self.state.focus_is_history() {
                     self.state.history_move_up();
+                } else if self.state.focus_is_job_yaml() {
+                    self.state.scroll_job_yaml_line_up();
                 } else {
                     self.state.scroll_logs_mouse_up();
                 }
@@ -474,6 +522,8 @@ impl UiRunner {
             MouseEventKind::ScrollDown => {
                 if self.state.focus_is_history() {
                     self.state.history_move_down();
+                } else if self.state.focus_is_job_yaml() {
+                    self.state.scroll_job_yaml_line_down();
                 } else {
                     self.state.scroll_logs_mouse_down();
                 }
@@ -493,6 +543,11 @@ impl UiRunner {
     fn view_plan(&mut self) -> Result<()> {
         let plan = self.state.plan_text();
         self.suspend_terminal(|| page_text_with_pager(&plan))
+    }
+
+    fn view_current_job_yaml(&mut self) -> Result<()> {
+        let yaml = self.state.job_yaml_text_for_pager();
+        self.suspend_terminal(|| page_text_with_pager(&yaml))
     }
 
     fn suspend_terminal<F>(&mut self, action: F) -> Result<()>

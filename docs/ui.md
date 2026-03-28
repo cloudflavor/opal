@@ -6,16 +6,18 @@ The documentation files under `docs/` are embedded into the Opal binary at build
 
 ## Layout
 
-1. **Runs sidebar** – Shows the current run plus history. Collapse/expand with `←/→/h/l`. Press `Enter` to load a past run’s jobs and logs into the main view.
+1. **Runs sidebar** – Shows the current run plus history. It starts hidden by default; press `H` to show or hide it. Collapse/expand tree nodes with `←/→/h/l`. Press `Enter` to load a past run’s jobs and logs into the main view.
 2. **Job tabs** – Each tab represents a job or a job variant. Use `j/k` or the arrow keys to change tabs. Colors indicate status:
    - Cyan: waiting on dependencies
    - Yellow: running
    - Green: success
    - Red: failed
-3. **Info panel** – Displays metadata for the selected job (stage, image, runtime, error message, and manual/needs state).
-4. **Plan pane** – Shows the pipeline plan that Opal evaluated for this run (stage order, dependencies, manual/delayed gates, artifact summaries). Scroll with `[` / `]`, page with `{` / `}`, jump to top/bottom with `\` / `|`, and press `p` to open the full plan in your pager when you need more context.
-5. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the full log in your pager.
-6. **Job resources** – When you expand a run in the history sidebar, each job now lists its artifacts and caches. Press `Enter` on any artifact or cache directory to render a tree in the preview pane, or press `Enter` on an artifact file to read it directly.
+3. **Info panel** – Displays metadata for the selected job (stage, image, runtime, error message, manual/needs state, and runner details such as engine, architecture, plus CPU and memory when Opal controls them).
+4. **Job YAML pane** – Shows the selected job definition from `.gitlab-ci.yml`. Use `Tab` to focus it, `↑/↓` or `PgUp/PgDn` to scroll, `y` to open it in your pager, and `Y` to hide or restore the pane.
+5. **Plan pane** – Shows the pipeline plan that Opal evaluated for this run (stage order, dependencies, manual/delayed gates, artifact summaries). Scroll with `[` / `]`, page with `{` / `}`, jump to top/bottom with `\` / `|`, and press `p` to open the full plan in your pager when you need more context.
+6. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the full log in your pager.
+7. **Shortcuts footer** – The bottom footer stays under the main pane so the active shortcuts remain visible even when the history sidebar is hidden.
+8. **Job resources** – When you expand a run in the history sidebar, each job now lists its artifacts and caches. Press `Enter` on any artifact or cache directory to render a tree in the preview pane, or press `Enter` on an artifact file to read it directly.
    When runtime-object preservation is enabled, this section also surfaces the recorded job container, service network, service container names, and a generated runtime summary file for inspection. Press `Enter` on the summary file or runtime info rows to load the full text into the preview pane.
 
 ## Help overlay
