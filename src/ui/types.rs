@@ -71,6 +71,8 @@ pub enum UiCommand {
     RestartJob { name: String },
     StartManual { name: String },
     CancelJob { name: String },
+    AnalyzeJob { name: String, source_name: String },
+    PreviewAiPrompt { name: String, source_name: String },
     AbortPipeline,
 }
 
@@ -97,6 +99,23 @@ pub enum UiEvent {
     },
     HistoryUpdated {
         entry: HistoryEntry,
+    },
+    AnalysisStarted {
+        name: String,
+        provider: String,
+    },
+    AnalysisChunk {
+        name: String,
+        delta: String,
+    },
+    AnalysisFinished {
+        name: String,
+        saved_path: Option<PathBuf>,
+        error: Option<String>,
+    },
+    AiPromptReady {
+        name: String,
+        prompt: String,
     },
     PipelineFinished,
 }

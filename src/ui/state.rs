@@ -1408,6 +1408,22 @@ impl UiState {
                 ),
             ));
         }
+        if job.analysis_running {
+            spans.push(Span::styled(
+                if compact { " ai…" } else { "  ai…" },
+                Self::apply_highlight(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                    overlay,
+                ),
+            ));
+        } else if !job.analysis_text.is_empty() || job.analysis_error.is_some() {
+            spans.push(Span::styled(
+                if compact { " ai" } else { "  ai" },
+                Self::apply_highlight(Style::default().fg(Color::Magenta), overlay),
+            ));
+        }
 
         spans
     }
@@ -1485,15 +1501,19 @@ impl UiState {
                     Span::raw(" yaml   │   "),
                     key_span_color("p", Color::Yellow),
                     Span::raw(" plan   │   "),
+                    key_span_color("a", Color::Yellow),
+                    Span::raw(" ai   │   "),
+                    key_span_color("A", Color::Yellow),
+                    Span::raw(" prompt"),
+                ]),
+                Line::from(vec![
+                    Self::hint_label("View", Color::Magenta),
                     key_span_color("r", Color::Yellow),
                     Span::raw(" restart   │   "),
                     key_span_color("m", Color::Yellow),
                     Span::raw(" manual   │   "),
                     key_span_color("x", Color::Yellow),
-                    Span::raw(" cancel"),
-                ]),
-                Line::from(vec![
-                    Self::hint_label("View", Color::Magenta),
+                    Span::raw(" cancel   │   "),
                     key_span_color("?", Color::Yellow),
                     Span::raw(" docs   │   "),
                     key_span_color("H/Y", Color::Yellow),
@@ -1874,9 +1894,14 @@ impl UiState {
                 ],
             ),
             Self::help_section(
-                "Plan/YAML",
+                "Plan/YAML/AI",
                 Color::White,
-                &[("p", "open plan in pager"), ("y", "open job YAML in pager")],
+                &[
+                    ("p", "open plan in pager"),
+                    ("y", "open job YAML in pager"),
+                    ("a", "analyze selected job"),
+                    ("A", "preview rendered AI prompt"),
+                ],
             ),
         ];
 
@@ -2053,6 +2078,28 @@ impl UiState {
                     Style::default().fg(job.status.icon().1),
                 ),
                 Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("AI: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    if job.analysis_running {
+                        "running"
+                    } else if job.analysis_error.is_some() {
+                        "error"
+                    } else if !job.analysis_text.is_empty() {
+                        "ready"
+                    } else {
+                        "idle"
+                    },
+                    Style::default().fg(if job.analysis_running {
+                        Color::Magenta
+                    } else if job.analysis_error.is_some() {
+                        Color::Red
+                    } else if !job.analysis_text.is_empty() {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                ),
+                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Log: ", Style::default().fg(Color::Cyan)),
                 Span::raw(log_name),
                 Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
@@ -2186,18 +2233,57 @@ impl UiState {
             }
         };
         let mut lines: Vec<Line> = Vec::new();
-        let status_span = Span::styled(
-            format!(
-                "{}  {}/{} done  filter:{}",
-                job.status.label(),
-                self.pipeline_counts().done,
-                self.pipeline_counts().total,
-                self.log_filter.label(),
-            ),
-            Style::default().fg(job.status.icon().1),
-        );
+        let status_span = if job.show_analysis {
+            let provider = job.analysis_provider.as_deref().unwrap_or("analysis");
+            let state = if job.analysis_running {
+                "running"
+            } else if job.analysis_error.is_some() {
+                "failed"
+            } else {
+                "complete"
+            };
+            Span::styled(
+                format!(
+                    "{}  {}/{} done  provider:{}",
+                    state,
+                    self.pipeline_counts().done,
+                    self.pipeline_counts().total,
+                    provider,
+                ),
+                Style::default().fg(if job.analysis_error.is_some() {
+                    Color::Red
+                } else if job.analysis_running {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                }),
+            )
+        } else {
+            Span::styled(
+                format!(
+                    "{}  {}/{} done  filter:{}",
+                    job.status.label(),
+                    self.pipeline_counts().done,
+                    self.pipeline_counts().total,
+                    self.log_filter.label(),
+                ),
+                Style::default().fg(job.status.icon().1),
+            )
+        };
         lines.push(Line::from(status_span));
-        if let Some(err) = &job.error {
+        if job.show_analysis {
+            if let Some(err) = &job.analysis_error {
+                lines.push(Line::from(Span::styled(
+                    format!("Error: {}", err),
+                    Style::default().fg(Color::Red),
+                )));
+            } else if let Some(path) = &job.analysis_saved_path {
+                lines.push(Line::from(Span::styled(
+                    format!("Saved: {}", path.display()),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        } else if let Some(err) = &job.error {
             lines.push(Line::from(Span::styled(
                 format!("Error: {}", err),
                 Style::default().fg(Color::Red),
@@ -2219,14 +2305,30 @@ impl UiState {
         let inner_width = width.saturating_sub(2).max(1) as usize;
         let header_rows = total_rows(&lines, inner_width);
         let available_rows = inner_height.saturating_sub(header_rows as u16) as usize;
-        lines.extend(job.visible_logs(inner_width, available_rows, self.log_filter));
-
-        let mut title = "Logs".to_string();
-        if job.status.is_done() {
-            title.push_str(" (complete)");
+        if job.show_analysis {
+            lines.extend(job.visible_analysis(inner_width, available_rows));
+        } else {
+            lines.extend(job.visible_logs(inner_width, available_rows, self.log_filter));
         }
-        if self.log_filter != LogFilter::All {
-            title.push_str(&format!(" [{}]", self.log_filter.label()));
+
+        let mut title = if job.show_analysis {
+            "AI Analysis".to_string()
+        } else {
+            "Logs".to_string()
+        };
+        if job.show_analysis {
+            if job.analysis_running {
+                title.push_str(" (running)");
+            } else {
+                title.push_str(" (complete)");
+            }
+        } else {
+            if job.status.is_done() {
+                title.push_str(" (complete)");
+            }
+            if self.log_filter != LogFilter::All {
+                title.push_str(&format!(" [{}]", self.log_filter.label()));
+            }
         }
 
         Paragraph::new(lines)
@@ -2235,6 +2337,9 @@ impl UiState {
     }
 
     pub(super) fn current_log_path(&self) -> Option<PathBuf> {
+        if self.active_job().is_some_and(|job| job.show_analysis) {
+            return None;
+        }
         self.active_job().and_then(|job| {
             if job.log_path.exists() {
                 Some(job.log_path.clone())
@@ -2242,6 +2347,91 @@ impl UiState {
                 None
             }
         })
+    }
+
+    pub(super) fn current_analysis_text(&self) -> Option<String> {
+        let job = self.active_job()?;
+        if !job.show_analysis {
+            return None;
+        }
+        let mut text = String::new();
+        if let Some(provider) = &job.analysis_provider {
+            text.push_str(&format!("provider: {provider}\n\n"));
+        }
+        text.push_str(&job.analysis_text);
+        if let Some(error) = &job.analysis_error {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str("error: ");
+            text.push_str(error);
+        }
+        Some(text)
+    }
+
+    pub(super) fn ai_prompt_preview_request(&self) -> Option<(String, String)> {
+        if self.history_view.is_some() {
+            return None;
+        }
+        let job = self.jobs.get(self.selected)?;
+        Some((job.name.clone(), job.source_name.clone()))
+    }
+
+    pub(super) fn toggle_ai_prompt_preview(&mut self) -> bool {
+        let Some(preview) = &self.history_preview else {
+            return false;
+        };
+        if preview.title.starts_with("AI Prompt • ") {
+            self.clear_history_preview();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn analysis_action_request(&mut self) -> Option<(String, String)> {
+        if self.history_view.is_some() {
+            return None;
+        }
+        let job = self.jobs.get_mut(self.selected)?;
+        if job.analysis_running || !job.analysis_text.is_empty() || job.analysis_error.is_some() {
+            job.show_analysis = !job.show_analysis;
+            job.scroll_offset = 0;
+            job.follow_logs = true;
+            return None;
+        }
+        job.start_analysis("ollama".to_string());
+        Some((job.name.clone(), job.source_name.clone()))
+    }
+
+    pub(super) fn analysis_started(&mut self, name: &str, provider: &str) {
+        if let Some(job) = self.job_by_name_mut(name) {
+            job.start_analysis(provider.to_string());
+        }
+    }
+
+    pub(super) fn analysis_chunk(&mut self, name: &str, delta: &str) {
+        if let Some(job) = self.job_by_name_mut(name) {
+            job.append_analysis(delta);
+        }
+    }
+
+    pub(super) fn analysis_finished(
+        &mut self,
+        name: &str,
+        saved_path: Option<PathBuf>,
+        error: Option<String>,
+    ) {
+        if let Some(job) = self.job_by_name_mut(name) {
+            job.finish_analysis(saved_path, error);
+        }
+    }
+
+    pub(super) fn ai_prompt_ready(&mut self, name: &str, prompt: String) {
+        if self.active_job().is_some_and(|job| job.name == name) {
+            self.load_text_preview(format!("AI Prompt • {name}"), prompt);
+            self.scroll_history_preview_to_top();
+        }
     }
 
     pub(super) fn restartable_job_name(&self) -> Option<String> {
@@ -2269,6 +2459,10 @@ impl UiState {
         self.jobs
             .get(self.selected)
             .and_then(|job| job.manual_pending.then(|| job.name.clone()))
+    }
+
+    fn job_by_name_mut(&mut self, name: &str) -> Option<&mut UiJobState> {
+        self.jobs.iter_mut().find(|job| job.name == name)
     }
 
     pub(super) fn restart_job(&mut self, name: &str) {
@@ -2578,6 +2772,12 @@ pub(super) struct UiJobState {
     start_time: Option<Instant>,
     error: Option<String>,
     logs: Vec<String>,
+    analysis_text: String,
+    analysis_provider: Option<String>,
+    analysis_error: Option<String>,
+    analysis_saved_path: Option<PathBuf>,
+    analysis_running: bool,
+    show_analysis: bool,
     scroll_offset: usize,
     follow_logs: bool,
     manual_pending: bool,
@@ -2597,6 +2797,12 @@ impl UiJobState {
             start_time: None,
             error: None,
             logs: Vec::new(),
+            analysis_text: String::new(),
+            analysis_provider: None,
+            analysis_error: None,
+            analysis_saved_path: None,
+            analysis_running: false,
+            show_analysis: false,
             scroll_offset: 0,
             follow_logs: true,
             manual_pending: false,
@@ -2621,6 +2827,12 @@ impl UiJobState {
             start_time: None,
             error: None,
             logs: Vec::new(),
+            analysis_text: String::new(),
+            analysis_provider: None,
+            analysis_error: None,
+            analysis_saved_path: None,
+            analysis_running: false,
+            show_analysis: false,
             scroll_offset: 0,
             follow_logs: true,
             manual_pending: false,
@@ -2634,6 +2846,31 @@ impl UiJobState {
         }
     }
 
+    fn start_analysis(&mut self, provider: String) {
+        self.analysis_text.clear();
+        self.analysis_provider = Some(provider);
+        self.analysis_error = None;
+        self.analysis_saved_path = None;
+        self.analysis_running = true;
+        self.show_analysis = true;
+        self.scroll_offset = 0;
+        self.follow_logs = true;
+    }
+
+    fn append_analysis(&mut self, delta: &str) {
+        self.analysis_text.push_str(delta);
+        if self.follow_logs {
+            self.scroll_offset = 0;
+        }
+    }
+
+    fn finish_analysis(&mut self, saved_path: Option<PathBuf>, error: Option<String>) {
+        self.analysis_saved_path = saved_path;
+        self.analysis_error = error;
+        self.analysis_running = false;
+        self.show_analysis = true;
+    }
+
     fn auto_follow(&mut self) {
         self.scroll_offset = 0;
         self.follow_logs = true;
@@ -2645,6 +2882,12 @@ impl UiJobState {
         self.start_time = None;
         self.error = None;
         self.logs.clear();
+        self.analysis_text.clear();
+        self.analysis_provider = None;
+        self.analysis_error = None;
+        self.analysis_saved_path = None;
+        self.analysis_running = false;
+        self.show_analysis = false;
         self.scroll_offset = 0;
         self.follow_logs = true;
     }
@@ -2658,12 +2901,17 @@ impl UiJobState {
     }
 
     fn scroll_by(&mut self, lines: usize, direction: ScrollDirection) {
-        if self.logs.is_empty() || lines == 0 {
+        let line_count = if self.show_analysis {
+            self.analysis_text.lines().count()
+        } else {
+            self.logs.len()
+        };
+        if line_count == 0 || lines == 0 {
             return;
         }
         match direction {
             ScrollDirection::Up => {
-                let max_scroll = self.logs.len().saturating_sub(1);
+                let max_scroll = line_count.saturating_sub(1);
                 self.scroll_offset = (self.scroll_offset + lines).min(max_scroll);
                 self.follow_logs = false;
             }
@@ -2677,7 +2925,12 @@ impl UiJobState {
     }
 
     fn scroll_to_top(&mut self) {
-        self.scroll_offset = self.logs.len().saturating_sub(1);
+        let line_count = if self.show_analysis {
+            self.analysis_text.lines().count()
+        } else {
+            self.logs.len()
+        };
+        self.scroll_offset = line_count.saturating_sub(1);
         if self.scroll_offset > 0 {
             self.follow_logs = false;
         }
@@ -2724,6 +2977,48 @@ impl UiJobState {
         while end > 0 {
             let idx = end - 1;
             let line = format_log_entry(filtered[idx]);
+            let line_rows = rows_for_line(&line, wrap_width);
+            if line_rows > remaining_rows && !collected.is_empty() {
+                break;
+            }
+            let consumed = line_rows.min(remaining_rows);
+            collected.push(line);
+            remaining_rows = remaining_rows.saturating_sub(consumed);
+            end -= 1;
+            if remaining_rows == 0 {
+                break;
+            }
+        }
+
+        collected.reverse();
+        collected
+    }
+
+    fn visible_analysis(&self, wrap_width: usize, max_rows: usize) -> Vec<Line<'static>> {
+        let lines: Vec<&str> = self.analysis_text.lines().collect();
+        if lines.is_empty() {
+            if self.analysis_running {
+                return vec![Line::from("(waiting for model output)")];
+            }
+            if self.analysis_error.is_some() {
+                return vec![Line::from("(analysis failed)")];
+            }
+            return vec![Line::from("(no analysis yet)")];
+        }
+
+        let wrap_width = wrap_width.max(1);
+        let mut remaining_rows = max_rows.max(1);
+        let total = lines.len();
+        let offset = self.scroll_offset.min(total.saturating_sub(1));
+        let mut end = total.saturating_sub(offset);
+        if end == 0 {
+            end = total;
+        }
+
+        let mut collected = Vec::new();
+        while end > 0 {
+            let idx = end - 1;
+            let line = Line::from(lines[idx].to_string());
             let line_rows = rows_for_line(&line, wrap_width);
             if line_rows > remaining_rows && !collected.is_empty() {
                 break;
@@ -4028,5 +4323,54 @@ mod tests {
         assert_eq!(job.runner.arch.as_deref(), Some("arm64"));
         assert_eq!(job.runner.cpus.as_deref(), Some("6"));
         assert_eq!(job.runner.memory.as_deref(), Some("3g"));
+    }
+
+    #[test]
+    fn tab_label_shows_ai_indicator_when_analysis_is_running() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            vec![UiJobInfo {
+                name: "build".to_string(),
+                source_name: "build".to_string(),
+                stage: "build".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        state.analysis_started("build", "ollama");
+        let job = state.active_jobs().first().expect("job");
+        let rendered = state
+            .build_label_spans(job, false, false)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("ai…"));
+    }
+
+    #[test]
+    fn ai_prompt_preview_toggle_closes_existing_prompt_preview() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            Vec::new(),
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        state.load_text_preview("AI Prompt • build".to_string(), "hello".to_string());
+        assert!(state.toggle_ai_prompt_preview());
+        assert!(state.history_preview.is_none());
     }
 }

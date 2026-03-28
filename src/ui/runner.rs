@@ -223,6 +223,18 @@ impl UiRunner {
                 } => self.state.finish_job(&name, status, duration, error),
                 UiEvent::JobManual { name } => self.state.set_manual_pending(&name, true),
                 UiEvent::HistoryUpdated { entry } => self.state.push_history_entry(entry),
+                UiEvent::AnalysisStarted { name, provider } => {
+                    self.state.analysis_started(&name, &provider)
+                }
+                UiEvent::AnalysisChunk { name, delta } => self.state.analysis_chunk(&name, &delta),
+                UiEvent::AnalysisFinished {
+                    name,
+                    saved_path,
+                    error,
+                } => self.state.analysis_finished(&name, saved_path, error),
+                UiEvent::AiPromptReady { name, prompt } => {
+                    self.state.ai_prompt_ready(&name, prompt)
+                }
                 UiEvent::PipelineFinished => self.pipeline_finished = true,
             }
         }
@@ -484,6 +496,23 @@ impl UiRunner {
             KeyCode::Char('o') => {
                 self.view_current_log()?;
             }
+            KeyCode::Char('a') => {
+                if let Some((name, source_name)) = self.state.analysis_action_request() {
+                    let _ = self
+                        .commands
+                        .send(UiCommand::AnalyzeJob { name, source_name });
+                }
+            }
+            KeyCode::Char('A') => {
+                if self.state.toggle_ai_prompt_preview() {
+                    return Ok(());
+                }
+                if let Some((name, source_name)) = self.state.ai_prompt_preview_request() {
+                    let _ = self
+                        .commands
+                        .send(UiCommand::PreviewAiPrompt { name, source_name });
+                }
+            }
             KeyCode::Char('y') => {
                 self.view_current_job_yaml()?;
             }
@@ -533,6 +562,9 @@ impl UiRunner {
     }
 
     fn view_current_log(&mut self) -> Result<()> {
+        if let Some(text) = self.state.current_analysis_text() {
+            return self.suspend_terminal(|| page_text_with_pager(&text));
+        }
         if let Some(path) = self.state.current_log_path() {
             self.suspend_terminal(|| page_log_with_colors(&path))
         } else {

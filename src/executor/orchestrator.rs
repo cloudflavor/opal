@@ -438,6 +438,12 @@ pub(crate) async fn execute_plan(
                 UiCommand::CancelJob { name } => {
                     exec.cancel_running_job(&name);
                 }
+                UiCommand::AnalyzeJob { name, source_name } => {
+                    spawn_analysis(exec.clone(), plan.clone(), ui.clone(), name, source_name);
+                }
+                UiCommand::PreviewAiPrompt { name, source_name } => {
+                    spawn_prompt_preview(exec.clone(), plan.clone(), ui.clone(), name, source_name);
+                }
                 UiCommand::AbortPipeline => {
                     abort_requested = true;
                     pipeline_failed = true;
@@ -747,12 +753,58 @@ pub(crate) async fn handle_restart_commands(
                 .context("job restart task failed")?;
                 update_summaries_from_event(exec, plan.as_ref(), event, summaries);
             }
+            UiCommand::AnalyzeJob { name, source_name } => {
+                spawn_analysis(
+                    Arc::new(exec.clone()),
+                    plan.clone(),
+                    ui.clone(),
+                    name,
+                    source_name,
+                );
+            }
+            UiCommand::PreviewAiPrompt { name, source_name } => {
+                spawn_prompt_preview(
+                    Arc::new(exec.clone()),
+                    plan.clone(),
+                    ui.clone(),
+                    name,
+                    source_name,
+                );
+            }
             UiCommand::StartManual { .. } => {}
             UiCommand::CancelJob { .. } => {}
             UiCommand::AbortPipeline => break,
         }
     }
     Ok(())
+}
+
+fn spawn_analysis(
+    exec: Arc<ExecutorCore>,
+    plan: Arc<ExecutionPlan>,
+    ui: Option<Arc<UiBridge>>,
+    name: String,
+    source_name: String,
+) {
+    tokio::task::spawn_blocking(move || {
+        exec.analyze_job_with_default_provider(&plan, &name, &source_name, ui.as_deref());
+    });
+}
+
+fn spawn_prompt_preview(
+    exec: Arc<ExecutorCore>,
+    plan: Arc<ExecutionPlan>,
+    ui: Option<Arc<UiBridge>>,
+    name: String,
+    source_name: String,
+) {
+    tokio::task::spawn_blocking(move || {
+        if let Some(ui) = ui.as_deref()
+            && let Ok(prompt) = exec.render_ai_prompt(&plan, &name, &source_name)
+        {
+            ui.ai_prompt_ready(&name, prompt);
+        }
+    });
 }
 
 fn update_summaries_from_event(

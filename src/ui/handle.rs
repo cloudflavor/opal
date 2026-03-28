@@ -127,4 +127,38 @@ impl UiBridge {
             name: name.to_string(),
         });
     }
+
+    pub fn analysis_started(&self, name: &str, provider: &str) {
+        let _ = self.sender.send(UiEvent::AnalysisStarted {
+            name: name.to_string(),
+            provider: provider.to_string(),
+        });
+    }
+
+    pub fn analysis_chunk(&self, name: &str, delta: &str) {
+        let _ = self.sender.send(UiEvent::AnalysisChunk {
+            name: name.to_string(),
+            delta: delta.to_string(),
+        });
+    }
+
+    pub fn analysis_finished(
+        &self,
+        name: &str,
+        saved_path: Option<PathBuf>,
+        error: Option<String>,
+    ) {
+        let _ = self.sender.send(UiEvent::AnalysisFinished {
+            name: name.to_string(),
+            saved_path,
+            error,
+        });
+    }
+
+    pub fn ai_prompt_ready(&self, name: &str, prompt: String) {
+        let _ = self.sender.send(UiEvent::AiPromptReady {
+            name: name.to_string(),
+            prompt,
+        });
+    }
 }

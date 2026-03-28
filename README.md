@@ -156,6 +156,7 @@ Key references in the repo docs set:
 - `docs/quickstart.md`
 - `docs/cli.md`
 - `docs/ui.md`
+- `docs/ai.md`
 - `docs/plan.md`
 - `docs/pipeline.md`
 - `docs/gitlab-parity.md`
