@@ -82,7 +82,7 @@ Limit planning or execution to specific jobs plus their required upstream depend
 
 ```bash
 opal plan --workdir . --pipeline .gitlab-ci.yml --job package-linux
-opal run --workdir . --pipeline .gitlab-ci.yml --job lint
+opal run --job rust-checks
 ```
 
 The full user-facing command surface, engine behavior, and runtime usage now live in the docs set rather than in this README.

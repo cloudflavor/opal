@@ -107,7 +107,7 @@ Notes:
 Examples:
 
 ```bash
-opal run --job lint
+opal run --job rust-checks
 opal run --job package-linux --job deploy-summary
 ```
 
@@ -198,7 +198,7 @@ opal run
 Run one job plus required upstreams:
 
 ```bash
-opal run --no-tui --job lint
+opal run --no-tui --job rust-checks
 ```
 
 Preview the evaluated DAG only:

@@ -6,8 +6,8 @@ In an interactive terminal, Opal Plan opens the formatted output in your pager b
 
 ```
 opal plan
-opal plan --no-pager --job lint
-opal plan --json --job lint
+opal plan --no-pager --job rust-checks
+opal plan --json --job rust-checks
 ```
 
 Use `--job <name>` (repeatable) when you want to inspect only selected jobs plus their required upstream dependency closure.
