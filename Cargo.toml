@@ -1,6 +1,6 @@
 [package]
 name = "opal-cli"
-version = "0.1.0-rc5"
+version = "0.1.0-rc6"
 edition = "2024"
 description = "Terminal-first GitLab pipeline runner with TUI, history browser, and embedded docs."
 license = "Apache-2.0"
