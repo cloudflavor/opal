@@ -157,25 +157,15 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
 
     for dep_name in &job.dependencies {
         if let Some(dep_planned) = plan.nodes.get(dep_name) {
-            if !dep_planned
-                .instance
-                .job
-                .artifacts
-                .when
-                .includes(completed_jobs.get(dep_name).copied())
-            {
-                continue;
-            }
-            for relative in &dep_planned.instance.job.artifacts.paths {
-                let host =
-                    artifacts.job_artifact_host_path(&dep_planned.instance.job.name, relative);
-                if !host.exists() {
-                    warn!(job = dep_planned.instance.job.name, path = %relative.display(), "artifact missing");
-                    continue;
-                }
+            for (host, relative) in artifacts.dependency_mount_specs(
+                &dep_planned.instance.job.name,
+                Some(&dep_planned.instance.job),
+                completed_jobs.get(dep_name).copied(),
+                false,
+            ) {
                 dependency_mounts.push(DependencyMount {
                     host,
-                    relative: relative.clone(),
+                    relative,
                     exclude: dep_planned.instance.job.artifacts.exclude.clone(),
                 });
             }
@@ -186,22 +176,15 @@ pub fn collect_volume_mounts(ctx: VolumeMountContext<'_>) -> Result<Vec<VolumeMo
             warn!(job = dep_name, "dependency not present in pipeline graph");
             continue;
         };
-        if !dep_job
-            .artifacts
-            .when
-            .includes(completed_jobs.get(dep_name).copied())
-        {
-            continue;
-        }
-        for relative in &dep_job.artifacts.paths {
-            let host = artifacts.job_artifact_host_path(&dep_job.name, relative);
-            if !host.exists() {
-                warn!(job = dep_name, path = %relative.display(), "artifact missing");
-                continue;
-            }
+        for (host, relative) in artifacts.dependency_mount_specs(
+            &dep_job.name,
+            Some(dep_job),
+            completed_jobs.get(dep_name).copied(),
+            false,
+        ) {
             dependency_mounts.push(DependencyMount {
                 host,
-                relative: relative.clone(),
+                relative,
                 exclude: dep_job.artifacts.exclude.clone(),
             });
         }

@@ -97,15 +97,19 @@ impl ArtifactManager {
         container_root: &Path,
     ) -> Result<()> {
         let exclude = build_exclude_matcher(&job.artifacts.exclude)?;
+        let mut collected = Vec::new();
         for relative in &job.artifacts.paths {
-            let src = resolve_artifact_source(workspace, mounts, container_root, relative);
-            if !src.exists() {
-                continue;
+            for (src, matched_relative) in
+                resolve_declared_artifact_sources(workspace, mounts, container_root, relative)?
+            {
+                let dest = self.job_artifact_host_path(&job.name, &matched_relative);
+                copy_declared_path(&src, &dest, &matched_relative, exclude.as_ref())?;
+                collected.push(matched_relative);
             }
-            let dest = self.job_artifact_host_path(&job.name, relative);
-            copy_declared_path(&src, &dest, relative, exclude.as_ref())?;
         }
-        Ok(())
+        collected.sort();
+        collected.dedup();
+        self.write_declared_manifest(&job.name, &collected)
     }
 
     pub fn dependency_mount_specs(
@@ -119,7 +123,13 @@ impl ArtifactManager {
             return Vec::new();
         };
         let mut specs = Vec::new();
-        for relative in &dep_job.artifacts.paths {
+        let declared = self.read_declared_manifest(job_name);
+        let declared_paths: Vec<PathBuf> = if declared.is_empty() {
+            dep_job.artifacts.paths.clone()
+        } else {
+            declared
+        };
+        for relative in &declared_paths {
             let host = self.job_artifact_host_path(job_name, relative);
             if !host.exists() {
                 if !optional {
@@ -226,6 +236,39 @@ impl ArtifactManager {
         self.write_untracked_manifest(&job.name, &collected)
     }
 
+    fn write_declared_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
+        let manifest = self.job_declared_manifest_path(job_name);
+        if let Some(parent) = manifest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let content = if paths.is_empty() {
+            String::new()
+        } else {
+            let mut body = paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            body.push('\n');
+            body
+        };
+        fs::write(&manifest, content)
+            .with_context(|| format!("failed to write {}", manifest.display()))
+    }
+
+    fn read_declared_manifest(&self, job_name: &str) -> Vec<PathBuf> {
+        let manifest = self.job_declared_manifest_path(job_name);
+        let Ok(contents) = fs::read_to_string(&manifest) else {
+            return Vec::new();
+        };
+        contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
     fn write_untracked_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
         let manifest = self.job_untracked_manifest_path(job_name);
         if let Some(parent) = manifest.parent() {
@@ -263,6 +306,12 @@ impl ArtifactManager {
         self.root
             .join(job_name_slug(job_name))
             .join("untracked-manifest.txt")
+    }
+
+    fn job_declared_manifest_path(&self, job_name: &str) -> PathBuf {
+        self.root
+            .join(job_name_slug(job_name))
+            .join("declared-manifest.txt")
     }
 }
 
@@ -304,6 +353,71 @@ fn resolve_artifact_source(
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, path)| path)
         .unwrap_or_else(|| workspace.join(relative))
+}
+
+fn resolve_declared_artifact_sources(
+    workspace: &Path,
+    mounts: &[VolumeMount],
+    container_root: &Path,
+    relative: &Path,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
+    if !path_contains_glob(relative) {
+        let src = resolve_artifact_source(workspace, mounts, container_root, relative);
+        if src.exists() {
+            return Ok(vec![(src, relative.to_path_buf())]);
+        }
+        return Ok(Vec::new());
+    }
+
+    let base_relative = glob_search_base(relative);
+    let base_source = resolve_artifact_source(workspace, mounts, container_root, &base_relative);
+    if !base_source.exists() {
+        return Ok(Vec::new());
+    }
+
+    let matcher = Glob::new(&relative.to_string_lossy())
+        .with_context(|| format!("invalid artifact glob {}", relative.display()))?
+        .compile_matcher();
+    let mut matches = Vec::new();
+    for entry in walkdir::WalkDir::new(&base_source)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let stripped = path.strip_prefix(&base_source).unwrap_or(path);
+        let candidate = if stripped.as_os_str().is_empty() {
+            base_relative.clone()
+        } else {
+            base_relative.join(stripped)
+        };
+        if matcher.is_match(&candidate) {
+            matches.push((path.to_path_buf(), candidate));
+        }
+    }
+    matches.sort_by(|a, b| a.1.cmp(&b.1));
+    matches.dedup_by(|a, b| a.1 == b.1);
+    Ok(matches)
+}
+
+fn path_contains_glob(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.contains('*') || text.contains('?') || text.contains('[') || text.contains('{')
+}
+
+fn glob_search_base(path: &Path) -> PathBuf {
+    let mut base = PathBuf::new();
+    for component in path.components() {
+        let text = component.as_os_str().to_string_lossy();
+        if text.contains('*') || text.contains('?') || text.contains('[') || text.contains('{') {
+            break;
+        }
+        base.push(component.as_os_str());
+    }
+    if base.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        base
+    }
 }
 
 fn resolve_mount_source(mount: &VolumeMount, container_path: &Path) -> Option<(usize, PathBuf)> {
@@ -393,15 +507,20 @@ fn should_exclude(path: &Path, exclude: Option<&GlobSet>) -> bool {
 }
 
 fn path_is_covered_by_explicit_artifacts(path: &Path, explicit_paths: &[PathBuf]) -> bool {
-    explicit_paths
-        .iter()
-        .any(|artifact| match artifact_kind(artifact) {
+    explicit_paths.iter().any(|artifact| {
+        if path_contains_glob(artifact) {
+            return Glob::new(&artifact.to_string_lossy())
+                .map(|glob| glob.compile_matcher().is_match(path))
+                .unwrap_or(false);
+        }
+        match artifact_kind(artifact) {
             ArtifactPathKind::Directory => {
                 let base = artifact_relative_path(artifact);
                 path == base || path.starts_with(&base)
             }
             ArtifactPathKind::File => path == artifact_relative_path(artifact),
-        })
+        }
+    })
 }
 
 fn copy_untracked_entry(
@@ -778,6 +897,67 @@ mod tests {
     }
 
     #[test]
+    fn collect_declared_supports_globbed_artifact_paths() {
+        let root = temp_path("artifact-glob-collect");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join("releases")).expect("create releases dir");
+        fs::write(
+            workspace.join("releases/opal-aarch64.tar.gz"),
+            "archive-aarch64",
+        )
+        .expect("write archive");
+        fs::write(
+            workspace.join("releases/opal-amd64.tar.gz"),
+            "archive-amd64",
+        )
+        .expect("write archive");
+        fs::write(workspace.join("releases/notes.txt"), "notes").expect("write notes");
+
+        let manager = ArtifactManager::new(root.join("artifacts"));
+        let job = job(
+            "build",
+            vec![PathBuf::from("releases/*.tar.gz")],
+            Vec::new(),
+            false,
+            ArtifactWhenSpec::OnSuccess,
+        );
+
+        manager
+            .collect_declared(&job, &workspace, &[], Path::new("/builds/opal"))
+            .expect("collect declared artifacts");
+
+        let declared = manager.read_declared_manifest("build");
+        assert_eq!(
+            declared,
+            vec![
+                PathBuf::from("releases/opal-aarch64.tar.gz"),
+                PathBuf::from("releases/opal-amd64.tar.gz")
+            ]
+        );
+        assert!(
+            manager
+                .job_artifact_host_path("build", Path::new("releases/opal-aarch64.tar.gz"))
+                .exists()
+        );
+        assert!(
+            manager
+                .job_artifact_host_path("build", Path::new("releases/opal-amd64.tar.gz"))
+                .exists()
+        );
+        assert!(
+            !manager
+                .job_artifact_host_path("build", Path::new("releases/notes.txt"))
+                .exists()
+        );
+
+        let specs = manager.dependency_mount_specs("build", Some(&job), None, false);
+        let mounted: Vec<PathBuf> = specs.into_iter().map(|(_, relative)| relative).collect();
+        assert_eq!(mounted, declared);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn path_is_covered_by_explicit_artifacts_matches_directory_and_file_paths() {
         assert!(path_is_covered_by_explicit_artifacts(
             Path::new("tests-temp/build/linux.txt"),
@@ -790,6 +970,10 @@ mod tests {
         assert!(!path_is_covered_by_explicit_artifacts(
             Path::new("other.txt"),
             &[PathBuf::from("output/report.txt")]
+        ));
+        assert!(path_is_covered_by_explicit_artifacts(
+            Path::new("releases/opal-aarch64.tar.gz"),
+            &[PathBuf::from("releases/*.tar.gz")]
         ));
     }
 

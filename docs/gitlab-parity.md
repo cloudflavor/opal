@@ -242,6 +242,11 @@ These features exist in Opal, but they do not match GitLab completely.
   - `public`
   - `access`
   - artifact reports other than `reports:dotenv`
+  Artifact path behavior that now matches common GitLab usage:
+  - directory artifact paths
+  - file artifact paths
+  - wildcard/glob artifact paths in `artifacts:paths`
+  - wildcard-matched artifact files are collected and passed downstream through `needs` / `dependencies`
 - `cache` is subset-only.
   Opal models only:
   - `key`

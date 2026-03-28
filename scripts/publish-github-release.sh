@@ -42,6 +42,7 @@ REPO="${GITHUB_REPOSITORY#*/}"
 
 prepare_release_notes() {
   local candidate extension release_notes_path
+  mkdir -p releases
   for candidate in \
     "release/notes/${TAG}.md" \
     "release/notes/${VERSION}.md" \
