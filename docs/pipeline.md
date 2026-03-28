@@ -16,6 +16,33 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
 - Hidden/template jobs (names beginning with `.`) may be referenced via `extends`. Cycles are detected and reported.
 - `workflow:rules`, `rules`, `only`, and `except` are partially supported. See `docs/gitlab-parity.md` for the exact supported forms and known divergences.
 
+## Local ref context
+
+Opal chooses local branch/tag context conservatively.
+
+- plain `opal run` and `opal plan` behave like a normal local push/branch pipeline
+- Opal does not infer `CI_COMMIT_TAG` just because `HEAD` happens to be tagged
+- this matches GitLab's model more closely: branch pipelines and tag pipelines are different pipeline contexts for the same commit
+
+If you want local tag-pipeline behavior, set it explicitly:
+
+```bash
+CI_COMMIT_TAG=v0.1.0-rc3 opal run --no-tui
+```
+
+or:
+
+```bash
+GIT_COMMIT_TAG=v0.1.0-rc3 opal plan --no-pager
+```
+
+Behavior summary:
+
+- explicit `CI_COMMIT_TAG` wins
+- `GIT_COMMIT_TAG` is mapped into `CI_COMMIT_TAG` when present
+- if no explicit tag variable is set, Opal uses branch context instead of guessing from local tags on `HEAD`
+- if you explicitly request tag context and local git state is ambiguous, Opal fails fast instead of guessing
+
 ## Graph construction
 
 - Each job becomes a node in a DAG.
