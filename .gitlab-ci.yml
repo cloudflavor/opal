@@ -12,6 +12,7 @@ default:
     - rustc --version
     - cargo --version
     - rustup component add rustfmt clippy
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
@@ -21,7 +22,6 @@ default:
 variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
   CARGO_BUILD_JOBS: "1"
 
 fetch-sources:
@@ -32,11 +32,12 @@ fetch-sources:
 rust-checks:
   stage: test
   needs:
-    - fetch-sources
+    - job: fetch-sources
+      artifacts: false
   script:
     - cargo check
     - cargo fmt --all -- --check
-    - cargo clippy --workspace --all-targets -- -D warnings
+    - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
 
 ui-docs-check:
   stage: test
@@ -55,26 +56,27 @@ ui-docs-check:
 unit-tests:
   stage: test
   needs:
-    - fetch-sources
-    - rust-checks
+    - job: fetch-sources
+      artifacts: false
+    - job: rust-checks
+      artifacts: false
   script:
     - cargo test --all --all-targets --locked
-  artifacts:
-    when: always
-    paths:
-      - target/debug/deps/
 
 extended-tests:
   stage: test
   needs:
-    - fetch-sources
-    - rust-checks
-    - unit-tests
+    - job: fetch-sources
+      artifacts: false
+    - job: rust-checks
+      artifacts: false
+    - job: unit-tests
+      artifacts: false
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
     - cargo build --release --locked
-    - export OPAL_BIN=target/release/opal
+    - export OPAL_BIN="$CARGO_TARGET_DIR/release/opal"
     - >
       ./scripts/test-pipelines.sh
       needs-branch
@@ -96,14 +98,17 @@ extended-tests:
 e2e-tests:
   stage: test
   needs:
-    - fetch-sources
-    - rust-checks
-    - unit-tests
+    - job: fetch-sources
+      artifacts: false
+    - job: rust-checks
+      artifacts: false
+    - job: unit-tests
+      artifacts: false
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
     - cargo build --release --locked
-    - export OPAL_BIN=target/release/opal
+    - export OPAL_BIN="$CARGO_TARGET_DIR/release/opal"
     - >
       ./scripts/test-pipelines.sh
       resources-services

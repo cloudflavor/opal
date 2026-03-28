@@ -16,7 +16,7 @@ HOST_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 mkdir -p "${HOST_CARGO_HOME}" "${HOST_RUSTUP_HOME}" "${REPO_ROOT}/target" "${REPO_ROOT}/releases"
 HOST_CARGO_HOME="$(cd "${HOST_CARGO_HOME}" && pwd)"
 HOST_RUSTUP_HOME="$(cd "${HOST_RUSTUP_HOME}" && pwd)"
-export CARGO_TARGET_DIR="${REPO_ROOT}/target"
+export CARGO_TARGET_DIR="${REPO_ROOT}/target/${CI_JOB_NAME_SLUG:-release-artifacts}"
 
 TARGET_MATRIX=(
   "aarch64-apple-darwin:local:aarch64-apple-silicon"
@@ -77,7 +77,7 @@ ensure_container_helper() {
 set -euo pipefail
 
 TARGET_TRIPLE="${TARGET_TRIPLE:?missing target triple}"
-export CARGO_TARGET_DIR=/work/target
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/work/target}"
 
 ensure_toolchain() {
   rustup target add "${TARGET_TRIPLE}" >/dev/null
@@ -159,6 +159,7 @@ run_container_build() {
         --memory "${CONTAINER_MEMORY}" \
         --env "CARGO_HOME=/cargo-home" \
         --env "RUSTUP_HOME=/rustup-home" \
+        --env "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
         --env "TARGET_TRIPLE=${target}" \
         --volume "${REPO_ROOT}:/work" \
         --volume "${HOST_CARGO_HOME}:/cargo-home" \
@@ -182,6 +183,7 @@ run_container_build() {
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
+        -e "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
         -e "TARGET_TRIPLE=${target}" \
         -v "${REPO_ROOT}:/work" \
         -v "${HOST_CARGO_HOME}:/cargo-home" \
@@ -195,6 +197,7 @@ run_container_build() {
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
+        -e "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
         -e "TARGET_TRIPLE=${target}" \
         -v "${REPO_ROOT}:/work" \
         -v "${HOST_CARGO_HOME}:/cargo-home" \
@@ -233,7 +236,7 @@ build_linux_target() {
 package_artifact() {
   local target="$1"
   local platform_label="$2"
-  local binary_dir="${REPO_ROOT}/target/${target}/release"
+  local binary_dir="${CARGO_TARGET_DIR}/${target}/release"
   local binary_path="${binary_dir}/opal"
   if [[ ! -f "${binary_path}" ]]; then
     die "expected binary ${binary_path} not found"

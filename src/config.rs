@@ -436,6 +436,7 @@ fn engine_name(engine: EngineKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig};
+    use std::path::Path;
 
     #[test]
     fn container_config_merge_overrides_arch() {
