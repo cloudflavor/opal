@@ -319,8 +319,8 @@ mod tests {
     #[test]
     fn completion_result_prefers_cancelled_state() {
         let log_path = temp_path("job-run-cancelled").join("job.log");
-        let result = completion_result(Ok(()), true, &log_path)
-            .expect_err("cancelled job should fail");
+        let result =
+            completion_result(Ok(()), true, &log_path).expect_err("cancelled job should fail");
         assert_eq!(result.to_string(), "job cancelled by user");
     }
 

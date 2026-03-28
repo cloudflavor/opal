@@ -11,6 +11,7 @@ default:
   before_script:
     - rustc --version
     - cargo --version
+    - rustup component add rustfmt clippy
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
@@ -21,11 +22,11 @@ variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
+  CARGO_BUILD_JOBS: "1"
 
 fetch-sources:
   stage: deps
   script:
-    - rustup component add rustfmt clippy
     - cargo fetch --locked
 
 lint:
