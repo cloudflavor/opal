@@ -5,6 +5,7 @@ notes/
 *.opal*
 .opal/env/
 tests-temp/
+releases/
 .codex
 opal-plan
 *.cast

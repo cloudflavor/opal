@@ -149,6 +149,12 @@ Build release artifacts with:
 bash ./scripts/build-release-artifacts.sh
 ```
 
+To build just the macOS Apple Silicon release tarball locally and print its checksum for manual upload:
+
+```bash
+CI_COMMIT_TAG=v0.1.0-rc6 bash ./scripts/build-macos-release-asset.sh
+```
+
 Artifacts are written under `releases/`.
 
 Tag-driven release publishing expectations:
