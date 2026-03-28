@@ -88,9 +88,9 @@ pub(crate) fn run_planned_job(
         {
             runtime.cleanup();
         }
-        exec.collect_declared_artifacts(&job, &prepared.host_workdir)?;
+        exec.collect_declared_artifacts(&job, &prepared.host_workdir, &prepared.mounts)?;
         exec.collect_untracked_artifacts(&job, &prepared.host_workdir)?;
-        exec.collect_dotenv_artifacts(&job, &prepared.host_workdir)?;
+        exec.collect_dotenv_artifacts(&job, &prepared.host_workdir, &prepared.mounts)?;
         exec_result?;
         exec.print_job_completion(
             &stage_name,

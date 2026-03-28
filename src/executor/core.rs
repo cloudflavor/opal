@@ -454,12 +454,24 @@ impl ExecutorCore {
         self.artifacts.collect_untracked(job, workspace)
     }
 
-    pub(crate) fn collect_declared_artifacts(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
-        self.artifacts.collect_declared(job, workspace)
+    pub(crate) fn collect_declared_artifacts(
+        &self,
+        job: &JobSpec,
+        workspace: &Path,
+        mounts: &[crate::pipeline::VolumeMount],
+    ) -> Result<()> {
+        self.artifacts
+            .collect_declared(job, workspace, mounts, &self.container_workdir)
     }
 
-    pub(crate) fn collect_dotenv_artifacts(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
-        self.artifacts.collect_dotenv_report(job, workspace)
+    pub(crate) fn collect_dotenv_artifacts(
+        &self,
+        job: &JobSpec,
+        workspace: &Path,
+        mounts: &[crate::pipeline::VolumeMount],
+    ) -> Result<()> {
+        self.artifacts
+            .collect_dotenv_report(job, workspace, mounts, &self.container_workdir)
     }
 
     pub(crate) fn clear_running_container(&self, job_name: &str) {

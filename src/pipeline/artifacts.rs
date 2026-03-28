@@ -1,6 +1,7 @@
 use crate::git;
 use crate::model::{ArtifactSourceOutcome, JobSpec};
 use crate::naming::{job_name_slug, project_slug};
+use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashMap;
@@ -88,10 +89,16 @@ impl ArtifactManager {
         specs
     }
 
-    pub fn collect_declared(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+    pub fn collect_declared(
+        &self,
+        job: &JobSpec,
+        workspace: &Path,
+        mounts: &[VolumeMount],
+        container_root: &Path,
+    ) -> Result<()> {
         let exclude = build_exclude_matcher(&job.artifacts.exclude)?;
         for relative in &job.artifacts.paths {
-            let src = workspace.join(relative);
+            let src = resolve_artifact_source(workspace, mounts, container_root, relative);
             if !src.exists() {
                 continue;
             }
@@ -146,11 +153,17 @@ impl ArtifactManager {
             .join(artifact_relative_path(artifact))
     }
 
-    pub fn collect_dotenv_report(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+    pub fn collect_dotenv_report(
+        &self,
+        job: &JobSpec,
+        workspace: &Path,
+        mounts: &[VolumeMount],
+        container_root: &Path,
+    ) -> Result<()> {
         let Some(relative) = &job.artifacts.report_dotenv else {
             return Ok(());
         };
-        let src = workspace.join(relative);
+        let src = resolve_artifact_source(workspace, mounts, container_root, relative);
         if !src.exists() {
             return Ok(());
         }
@@ -276,6 +289,35 @@ fn artifact_relative_path(artifact: &Path) -> PathBuf {
         rel.push("artifact");
     }
     rel
+}
+
+fn resolve_artifact_source(
+    workspace: &Path,
+    mounts: &[VolumeMount],
+    container_root: &Path,
+    relative: &Path,
+) -> PathBuf {
+    let container_path = container_root.join(relative);
+    mounts
+        .iter()
+        .filter_map(|mount| resolve_mount_source(mount, &container_path))
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| workspace.join(relative))
+}
+
+fn resolve_mount_source(mount: &VolumeMount, container_path: &Path) -> Option<(usize, PathBuf)> {
+    if container_path == mount.container {
+        return Some((mount.container.components().count(), mount.host.clone()));
+    }
+    if mount.host.is_dir() && container_path.starts_with(&mount.container) {
+        let relative = container_path.strip_prefix(&mount.container).ok()?;
+        return Some((
+            mount.container.components().count(),
+            mount.host.join(relative),
+        ));
+    }
+    None
 }
 
 fn copy_declared_path(
@@ -575,11 +617,12 @@ fn sanitize_reference(reference: &str) -> String {
 mod tests {
     use super::{
         ArtifactManager, ArtifactPathKind, artifact_kind, artifact_path_has_content,
-        path_is_covered_by_explicit_artifacts,
+        path_is_covered_by_explicit_artifacts, resolve_artifact_source,
     };
     use crate::model::{
         ArtifactSourceOutcome, ArtifactSpec, ArtifactWhenSpec, JobSpec, RetryPolicySpec,
     };
+    use crate::pipeline::VolumeMount;
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -696,6 +739,40 @@ mod tests {
                 .job_artifact_host_path("build", Path::new("tests-temp/generated.txt"))
                 .exists()
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_artifact_source_prefers_more_specific_mount_over_workspace_root() {
+        let root = temp_path("artifact-mounted-source");
+        let workspace = root.join("workspace");
+        let cache_host = root.join("cache-target");
+        fs::create_dir_all(workspace.join("target/release")).expect("create workspace target");
+        fs::create_dir_all(cache_host.join("release")).expect("create cache target");
+        fs::write(cache_host.join("release/opal"), "binary").expect("write cached binary");
+
+        let mounts = vec![
+            VolumeMount {
+                host: workspace.clone(),
+                container: PathBuf::from("/builds/opal"),
+                read_only: false,
+            },
+            VolumeMount {
+                host: cache_host.clone(),
+                container: PathBuf::from("/builds/opal/target"),
+                read_only: false,
+            },
+        ];
+
+        let resolved = resolve_artifact_source(
+            &workspace,
+            &mounts,
+            Path::new("/builds/opal"),
+            Path::new("target/release/opal"),
+        );
+
+        assert_eq!(resolved, cache_host.join("release/opal"));
 
         let _ = fs::remove_dir_all(root);
     }
