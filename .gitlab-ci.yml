@@ -168,16 +168,43 @@ package-crate:
     paths:
       - target/package/
 
-release-artifacts:
+release-artifacts:arm64:
   stage: release
   needs:
     - build-release
+  image:
+    name: docker.io/library/rust:1.90
+    docker:
+      platform: linux/arm64
+  variables:
+    RELEASE_TARGETS: "aarch64-unknown-linux-gnu"
   rules:
     - if: "$CI_COMMIT_TAG"
       when: on_success
     - when: never
   script:
-    - ./scripts/build-release-artifacts.sh
+    - bash ./scripts/build-release-artifacts.sh
+  artifacts:
+    paths:
+      - releases/*.tar.gz
+      - releases/release-notes-*.txt
+
+release-artifacts:amd64:
+  stage: release
+  needs:
+    - build-release
+  image:
+    name: docker.io/library/rust:1.90
+    docker:
+      platform: linux/amd64
+  variables:
+    RELEASE_TARGETS: "x86_64-unknown-linux-gnu"
+  rules:
+    - if: "$CI_COMMIT_TAG"
+      when: on_success
+    - when: never
+  script:
+    - bash ./scripts/build-release-artifacts.sh
   artifacts:
     paths:
       - releases/*.tar.gz
@@ -187,11 +214,30 @@ publish-crate:
   stage: publish
   needs:
     - package-crate
-    - release-artifacts
+    - release-artifacts:arm64
+    - release-artifacts:amd64
   rules:
     - if: "$CI_COMMIT_TAG && $CARGO_REGISTRY_TOKEN"
-      when: manual
+      when: on_success
     - when: never
   script:
-    - echo "publishing opal $CI_COMMIT_SHA"
+    - bash ./scripts/check-release-tag-version.sh
+    - echo "publishing opal $CI_COMMIT_TAG"
     - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+
+publish-github-release:
+  stage: publish
+  image: docker.io/library/debian:bookworm-slim
+  before_script: []
+  needs:
+    - release-artifacts:arm64
+    - release-artifacts:amd64
+  rules:
+    - if: "$CI_COMMIT_TAG && $GITHUB_TOKEN && $GITHUB_REPOSITORY"
+      when: on_success
+    - when: never
+  script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends bash ca-certificates curl jq
+    - bash ./scripts/check-release-tag-version.sh
+    - bash ./scripts/publish-github-release.sh

@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
 HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
 
 RUST_IMAGE="${RUST_IMAGE:-docker.io/library/rust:1.90}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-4}"
@@ -23,6 +24,27 @@ TARGET_MATRIX=(
   "x86_64-unknown-linux-gnu:linux:x86_64-unknown-linux-gnu"
 )
 
+target_selected() {
+  local target="$1"
+  local label="$2"
+  if [[ -z "${RELEASE_TARGETS:-}" ]]; then
+    return 0
+  fi
+
+  local filter
+  IFS=',' read -r -a filters <<<"${RELEASE_TARGETS}"
+  for filter in "${filters[@]}"; do
+    filter="${filter//[[:space:]]/}"
+    if [[ -z "${filter}" ]]; then
+      continue
+    fi
+    if [[ "${filter}" == "${target}" || "${filter}" == "${label}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 log() {
   printf '==> %s\n' "$*"
 }
@@ -30,17 +52,6 @@ log() {
 die() {
   echo "error: $*" >&2
   exit 1
-}
-
-require_tag() {
-  local version="${CI_COMMIT_TAG:-}"
-  if [[ -z "${version}" ]]; then
-    version="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-  fi
-  if [[ -z "${version}" ]]; then
-    die "release artifacts can only be built from a tagged commit"
-  fi
-  echo "${version}"
 }
 
 detect_container_cli() {
@@ -212,6 +223,8 @@ build_linux_target() {
   else
     if [[ "${target}" == "aarch64-unknown-linux-gnu" ]]; then
       ensure_package gcc-aarch64-linux-gnu
+    elif [[ "${target}" == "x86_64-unknown-linux-gnu" && "${HOST_ARCH}" != "x86_64" ]]; then
+      ensure_package gcc-x86-64-linux-gnu
     fi
     build_local_target "${target}"
   fi
@@ -244,7 +257,7 @@ EOF
   log "Wrote ${archive} (${platform_label})"
 }
 
-VERSION="$(require_tag)"
+VERSION="$(bash "${SCRIPT_DIR}/check-release-tag-version.sh" --print-version)"
 log "Building release artifacts for ${VERSION}"
 
 RELEASE_DIR="${REPO_ROOT}/releases"
@@ -253,6 +266,9 @@ BUILT_TARGETS=()
 
 for entry in "${TARGET_MATRIX[@]}"; do
   IFS=":" read -r target mode label <<<"${entry}"
+  if ! target_selected "${target}" "${label}"; then
+    continue
+  fi
   case "${mode}" in
     local)
       if [[ "${HOST_OS}" != "Darwin" ]]; then
