@@ -275,7 +275,8 @@ impl ExecutorCore {
     }
 
     fn plan_jobs(&self) -> Result<ExecutionPlan> {
-        let ctx = RuleContext::new(&self.config.workdir);
+        let run_manual = env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
+        let ctx = RuleContext::from_env(&self.config.workdir, self.shared_env.clone(), run_manual);
         ctx.ensure_valid_tag_context()?;
         if !pipeline::rules::filters_allow(&self.pipeline.filters, &ctx) {
             return Ok(empty_execution_plan());
