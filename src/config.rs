@@ -9,6 +9,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct OpalConfig {
+    pub ai: AiSettingsConfig,
     pub container: Option<ContainerEngineConfig>,
     pub jobs: Vec<JobOverrideConfig>,
     #[serde(alias = "engine")]
@@ -23,6 +24,93 @@ pub struct EngineSettings {
     pub default: Option<EngineChoice>,
     pub container: Option<ContainerEngineConfig>,
     pub preserve_runtime_objects: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiSettingsConfig {
+    pub default_provider: Option<AiProviderConfig>,
+    pub tail_lines: usize,
+    pub save_analysis: bool,
+    pub prompts: AiPromptConfig,
+    pub ollama: OllamaAiConfig,
+    save_analysis_override: Option<bool>,
+}
+
+impl Default for AiSettingsConfig {
+    fn default() -> Self {
+        Self {
+            default_provider: None,
+            tail_lines: 200,
+            save_analysis: true,
+            prompts: AiPromptConfig::default(),
+            ollama: OllamaAiConfig::default(),
+            save_analysis_override: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AiSettingsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct RawAiSettingsConfig {
+            default_provider: Option<AiProviderConfig>,
+            tail_lines: usize,
+            save_analysis: Option<bool>,
+            prompts: AiPromptConfig,
+            ollama: OllamaAiConfig,
+        }
+
+        let raw = RawAiSettingsConfig::deserialize(deserializer)?;
+        let mut settings = AiSettingsConfig::default();
+        settings.default_provider = raw.default_provider;
+        if raw.tail_lines != 0 {
+            settings.tail_lines = raw.tail_lines;
+        }
+        if let Some(value) = raw.save_analysis {
+            settings.save_analysis = value;
+            settings.save_analysis_override = Some(value);
+        }
+        settings.prompts = raw.prompts;
+        settings.ollama = raw.ollama;
+        Ok(settings)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AiPromptConfig {
+    pub system_file: Option<String>,
+    pub job_analysis_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProviderConfig {
+    Ollama,
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OllamaAiConfig {
+    pub host: String,
+    pub model: String,
+    pub system: Option<String>,
+}
+
+impl Default for OllamaAiConfig {
+    fn default() -> Self {
+        Self {
+            host: "http://127.0.0.1:11434".to_string(),
+            model: String::new(),
+            system: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -101,6 +189,10 @@ impl OpalConfig {
         self.engines.preserve_runtime_objects
     }
 
+    pub fn ai_settings(&self) -> &AiSettingsConfig {
+        &self.ai
+    }
+
     pub fn registry_auth_for(&self, engine: EngineKind) -> Result<Vec<ResolvedRegistryAuth>> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -141,6 +233,7 @@ impl OpalConfig {
     }
 
     fn merge(&mut self, mut other: OpalConfig) {
+        self.ai.merge(other.ai);
         if let Some(new_container) = other.container.take() {
             match &mut self.container {
                 Some(existing) => existing.merge(new_container),
@@ -150,6 +243,48 @@ impl OpalConfig {
         self.engines.merge(other.engines);
         self.jobs.extend(other.jobs);
         self.registries.extend(other.registries);
+    }
+}
+
+impl AiSettingsConfig {
+    fn merge(&mut self, other: AiSettingsConfig) {
+        if let Some(provider) = other.default_provider {
+            self.default_provider = Some(provider);
+        }
+        if other.tail_lines != 0 {
+            self.tail_lines = other.tail_lines;
+        }
+        if let Some(value) = other.save_analysis_override {
+            self.save_analysis = value;
+            self.save_analysis_override = Some(value);
+        }
+        self.prompts.merge(other.prompts);
+        self.ollama.merge(other.ollama);
+    }
+}
+
+impl AiPromptConfig {
+    fn merge(&mut self, other: AiPromptConfig) {
+        if other.system_file.is_some() {
+            self.system_file = other.system_file;
+        }
+        if other.job_analysis_file.is_some() {
+            self.job_analysis_file = other.job_analysis_file;
+        }
+    }
+}
+
+impl OllamaAiConfig {
+    fn merge(&mut self, other: OllamaAiConfig) {
+        if !other.host.is_empty() {
+            self.host = other.host;
+        }
+        if !other.model.is_empty() {
+            self.model = other.model;
+        }
+        if other.system.is_some() {
+            self.system = other.system;
+        }
     }
 }
 
@@ -349,5 +484,14 @@ preserve_runtime_objects = true
         .expect("parse config");
 
         assert!(parsed.preserve_runtime_objects());
+    }
+
+    #[test]
+    fn ai_settings_default_to_ollama_friendly_values() {
+        let settings = OpalConfig::default();
+        assert_eq!(settings.ai.tail_lines, 200);
+        assert!(settings.ai.save_analysis);
+        assert_eq!(settings.ai.ollama.host, "http://127.0.0.1:11434");
+        assert!(settings.ai.ollama.model.is_empty());
     }
 }

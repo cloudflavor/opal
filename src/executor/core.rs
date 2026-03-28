@@ -10,6 +10,7 @@ mod stage_tracker;
 mod workspace;
 
 use super::{orchestrator, paths};
+use crate::ai::{self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt};
 use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
@@ -18,7 +19,7 @@ use crate::executor::container_arch::{container_arch_from_platform, normalize_co
 use crate::history::{HistoryCache, HistoryEntry};
 use crate::logging;
 use crate::model::{ArtifactSourceOutcome, CachePolicySpec, JobSpec, PipelineSpec};
-use crate::naming::generate_run_id;
+use crate::naming::{generate_run_id, job_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
     RuleContext,
@@ -583,6 +584,229 @@ impl ExecutorCore {
 
     fn display(&self) -> DisplayFormatter {
         DisplayFormatter::new(self.use_color)
+    }
+
+    pub(crate) fn analyze_job_with_default_provider(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+        ui: Option<&UiBridge>,
+    ) {
+        let provider = self
+            .config
+            .settings
+            .ai_settings()
+            .default_provider
+            .unwrap_or(crate::config::AiProviderConfig::Ollama);
+        let provider_kind = match provider {
+            crate::config::AiProviderConfig::Ollama => AiProviderKind::Ollama,
+            crate::config::AiProviderConfig::Claude => AiProviderKind::Claude,
+            crate::config::AiProviderConfig::Codex => AiProviderKind::Codex,
+        };
+        let provider_label = match provider_kind {
+            AiProviderKind::Ollama => "ollama",
+            AiProviderKind::Claude => "claude",
+            AiProviderKind::Codex => "codex",
+        };
+        if let Some(ui) = ui {
+            ui.analysis_started(job_name, provider_label);
+        }
+
+        let outcome = (|| -> Result<Option<PathBuf>> {
+            if provider_kind == AiProviderKind::Ollama {
+                if self
+                    .config
+                    .settings
+                    .ai_settings()
+                    .ollama
+                    .model
+                    .trim()
+                    .is_empty()
+                {
+                    anyhow::bail!(
+                        "Ollama analysis requires [ai.ollama].model in config; Opal does not choose a default model for you"
+                    );
+                }
+            }
+            let rendered = self.render_ai_prompt_parts(plan, job_name, source_name)?;
+            let prompt = self.secrets.mask_fragment(&rendered.prompt);
+            let system = rendered
+                .system
+                .as_deref()
+                .map(|text| self.secrets.mask_fragment(text).into_owned());
+
+            let save_path = self.config.settings.ai_settings().save_analysis.then(|| {
+                self.session_dir
+                    .join(job_name_slug(job_name))
+                    .join("analysis")
+                    .join(format!("{provider_label}.md"))
+            });
+
+            let request = AiRequest {
+                provider: provider_kind,
+                prompt: prompt.into_owned(),
+                system,
+                host: Some(self.config.settings.ai_settings().ollama.host.clone()),
+                model: Some(self.config.settings.ai_settings().ollama.model.clone()),
+                save_path: save_path.clone(),
+            };
+
+            let result = ai::analyze_with_default_provider(&request, |chunk| {
+                if let (Some(ui), ai::AiChunk::Text(text)) = (ui, chunk) {
+                    ui.analysis_chunk(job_name, &text);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+
+            if let Some(path) = &save_path {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, result.text)?;
+            }
+
+            Ok(save_path)
+        })();
+
+        if let Some(ui) = ui {
+            match outcome {
+                Ok(saved_path) => ui.analysis_finished(job_name, saved_path, None),
+                Err(err) => ui.analysis_finished(job_name, None, Some(err.to_string())),
+            }
+        }
+    }
+
+    pub(crate) fn render_ai_prompt(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+    ) -> Result<String> {
+        let rendered = self.render_ai_prompt_parts(plan, job_name, source_name)?;
+        let mut text = String::new();
+        if let Some(system) = rendered.system {
+            text.push_str("# System\n\n");
+            text.push_str(system.trim());
+            text.push_str("\n\n");
+        }
+        text.push_str("# Prompt\n\n");
+        text.push_str(rendered.prompt.trim());
+        text.push('\n');
+        Ok(text)
+    }
+
+    fn render_ai_prompt_parts(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+    ) -> Result<crate::ai::RenderedPrompt> {
+        let context = self.build_ai_context(plan, job_name, source_name)?;
+        render_job_analysis_prompt(
+            &self.config.workdir,
+            self.config.settings.ai_settings(),
+            &context,
+        )
+    }
+
+    fn build_ai_context(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+    ) -> Result<AiContext> {
+        let planned = plan
+            .nodes
+            .get(job_name)
+            .with_context(|| format!("selected job '{job_name}' not found in execution plan"))?;
+        let runner = self.ui_runner_info_for_job(&planned.instance.job);
+        let runner_summary = format!(
+            "engine={} arch={} vcpu={} ram={}",
+            runner.engine,
+            runner.arch.unwrap_or_else(|| "native/default".to_string()),
+            runner.cpus.unwrap_or_else(|| "engine default".to_string()),
+            runner
+                .memory
+                .unwrap_or_else(|| "engine default".to_string())
+        );
+        let job_yaml = self.load_job_yaml_fragment(source_name)?;
+        let pipeline_summary = format!(
+            "dependencies: {}\nneeds: {}\nallow_failure: {}\ninterruptible: {}",
+            if planned.instance.dependencies.is_empty() {
+                "none".to_string()
+            } else {
+                planned.instance.dependencies.join(", ")
+            },
+            if planned.instance.job.needs.is_empty() {
+                "none".to_string()
+            } else {
+                planned
+                    .instance
+                    .job
+                    .needs
+                    .iter()
+                    .map(|need| {
+                        if need.needs_artifacts {
+                            format!("{} (artifacts)", need.job)
+                        } else {
+                            need.job.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            planned.instance.rule.allow_failure,
+            planned.instance.interruptible,
+        );
+        let runtime_summary = self
+            .runtime_state
+            .runtime_objects(job_name)
+            .and_then(|objects| objects.runtime_summary_path)
+            .and_then(|path| fs::read_to_string(path).ok());
+        let log_excerpt = self.read_job_log_excerpt(&planned.log_path)?;
+
+        Ok(AiContext {
+            job_name: job_name.to_string(),
+            source_name: source_name.to_string(),
+            stage: planned.instance.stage_name.clone(),
+            job_yaml,
+            runner_summary,
+            pipeline_summary,
+            runtime_summary,
+            log_excerpt,
+            failure_hint: None,
+        })
+    }
+
+    fn load_job_yaml_fragment(&self, source_name: &str) -> Result<String> {
+        let content = fs::read_to_string(&self.config.pipeline)
+            .with_context(|| format!("failed to read {}", self.config.pipeline.display()))?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+            .with_context(|| format!("failed to parse {}", self.config.pipeline.display()))?;
+        let Some(mapping) = yaml.as_mapping() else {
+            return Ok(format!("# job '{source_name}' not found"));
+        };
+        for (key, value) in mapping {
+            if key.as_str() == Some(source_name) {
+                let mut root = serde_yaml::Mapping::new();
+                root.insert(
+                    serde_yaml::Value::String(source_name.to_string()),
+                    value.clone(),
+                );
+                return Ok(serde_yaml::to_string(&serde_yaml::Value::Mapping(root))?);
+            }
+        }
+        Ok(format!("# job '{source_name}' not found"))
+    }
+
+    fn read_job_log_excerpt(&self, path: &Path) -> Result<String> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read log {}", path.display()))?;
+        let tail_lines = self.config.settings.ai_settings().tail_lines.max(50);
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(tail_lines);
+        Ok(lines[start..].join("\n"))
     }
 
     fn ui_runner_info_for_job(&self, job: &JobSpec) -> crate::ui::types::UiRunnerInfo {

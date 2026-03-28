@@ -15,6 +15,20 @@ This means project-level `.opal/config.toml` overrides global defaults.
 default = "docker"   # override --engine auto for this project or machine
 preserve_runtime_objects = true
 
+[ai]
+default_provider = "ollama"
+tail_lines = 200
+save_analysis = true
+
+[ai.prompts]
+system_file = ".opal/prompts/ai/system.md"
+job_analysis_file = ".opal/prompts/ai/job-analysis.md"
+
+[ai.ollama]
+host = "http://127.0.0.1:11434"
+model = "qwen3-coder:30b"
+system = "optional system prompt"
+
 [container]         # applies to the Apple "container" CLI microVMs
 arch = "arm64"       # optional; defaults to x86_64 unless overridden
 cpus = "6"          # defaults to 4 if omitted
@@ -91,6 +105,44 @@ Job-specific runtime overrides:
   - Any matching `[[jobs]]` override still applies to the selected job instances.
 
 Add more `[engine.<name>]` tables in the future to tune other runtimes.
+
+## AI settings
+
+Opal can analyze a selected TUI job with an AI backend.
+
+Current implementation status:
+
+- `ollama`: implemented
+- `claude`: planned
+- `codex`: planned
+
+Supported keys today:
+
+- `[ai].default_provider`
+  - accepted values: `ollama`, `claude`, `codex`
+  - the first implemented backend is `ollama`
+  - when unset, Opal currently falls back to `ollama`
+- `[ai].tail_lines`
+  - number of trailing log lines to send in the troubleshooting context
+- `[ai].save_analysis`
+  - when `true`, save the final analysis into the run session
+- `[ai.prompts].system_file`
+  - optional path to a system-prompt template file
+  - when set, overrides the embedded default system prompt
+  - relative paths are resolved from the current project workdir
+- `[ai.prompts].job_analysis_file`
+  - optional path to a job-analysis prompt template file
+  - when set, overrides the embedded default analysis prompt
+  - relative paths are resolved from the current project workdir
+- `[ai.ollama].host`
+  - default: `http://127.0.0.1:11434`
+- `[ai.ollama].model`
+  - required when using the `ollama` provider
+  - Opal does not choose a default Ollama model for you
+- `[ai.ollama].system`
+  - optional provider-level system prompt override; prompt template files are the preferred long-form customization path
+
+The current prompt-template placeholders are documented in `docs/ai.md`.
 
 ## Registry authentication
 

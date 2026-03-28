@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use structopt::StructOpt;
 
+pub mod ai;
 pub mod compiler;
 pub mod config;
 pub mod display;
