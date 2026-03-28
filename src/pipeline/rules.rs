@@ -146,7 +146,9 @@ impl RuleContext {
         {
             env.insert("CI_COMMIT_BRANCH".into(), branch);
         }
-        if env.get("CI_COMMIT_TAG").is_none_or(|tag| tag.is_empty()) {
+        if env.contains_key("CI_COMMIT_TAG")
+            && env.get("CI_COMMIT_TAG").is_none_or(|tag| tag.is_empty())
+        {
             match git::current_tag(workspace) {
                 Ok(tag) => {
                     env.insert("CI_COMMIT_TAG".into(), tag);
@@ -508,13 +510,13 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn infers_commit_tag_from_repo_when_env_is_missing() -> Result<()> {
+    fn does_not_infer_commit_tag_from_repo_when_env_is_missing() -> Result<()> {
         let dir = init_repo_with_commit_and_tag("v1.2.3")?;
 
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
-        assert_eq!(ctx.env_value("CI_COMMIT_TAG"), Some("v1.2.3"));
-        assert_eq!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
+        assert!(ctx.env_value("CI_COMMIT_TAG").is_none());
+        assert_ne!(ctx.env_value("CI_COMMIT_REF_NAME"), Some("v1.2.3"));
         Ok(())
     }
 
@@ -545,10 +547,7 @@ mod tests {
         let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
 
         assert!(ctx.env_value("CI_COMMIT_TAG").is_none());
-        assert!(
-            ctx.tag_resolution_error()
-                .is_some_and(|err| err.contains("multiple tags point at HEAD"))
-        );
+        assert!(ctx.tag_resolution_error().is_none());
         Ok(())
     }
 
@@ -589,7 +588,11 @@ mod tests {
     #[test]
     fn ensure_valid_tag_context_errors_for_ambiguous_git_tags() -> Result<()> {
         let dir = init_repo_with_commit_and_tags(&["v0.1.2", "v0.1.3"])?;
-        let ctx = RuleContext::from_env(dir.path(), HashMap::new(), false);
+        let ctx = RuleContext::from_env(
+            dir.path(),
+            HashMap::from([("CI_COMMIT_TAG".into(), String::new())]),
+            false,
+        );
 
         let err = ctx
             .ensure_valid_tag_context()

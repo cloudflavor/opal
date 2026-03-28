@@ -51,6 +51,7 @@ mod tests {
     };
     use crate::pipeline::rules::RuleContext;
     use crate::pipeline::rules::RuleEvaluation;
+    use std::collections::HashMap;
     use std::path::Path;
 
     #[test]
@@ -188,7 +189,16 @@ mod tests {
             "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
         ))
         .expect("pipeline loads");
-        let ctx = RuleContext::new(Path::new("."));
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ]),
+            false,
+        );
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds");
@@ -227,7 +237,16 @@ mod tests {
             "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
         ))
         .expect("pipeline loads");
-        let ctx = RuleContext::new(Path::new("."));
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ]),
+            false,
+        );
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds");

@@ -327,8 +327,8 @@ These features exist in Opal, but they do not match GitLab completely.
   - executor-specific service options outside `docker:platform` / `docker:user`
 - `workflow` support is limited to `workflow:rules`.
   The broader workflow surface from GitLab is not implemented.
-- tag trigger source is inferred locally.
-  GitLab pipelines are created by a single explicit ref event. Opal may infer tag context from local git state; when multiple tags point to `HEAD`, Opal now requires an explicit `CI_COMMIT_TAG` or `GIT_COMMIT_TAG` and fails fast instead of picking one implicitly.
+- tag trigger source is now explicit-only.
+  GitLab pipelines are created by a single explicit ref event. Opal no longer infers tag context from local tags on `HEAD` during ordinary local runs. Tag-pipeline behavior now requires an explicit `CI_COMMIT_TAG` or `GIT_COMMIT_TAG`, and ambiguous explicit tag resolution still fails fast instead of guessing.
 
 ## Best Fit For Local Development
 

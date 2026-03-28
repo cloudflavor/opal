@@ -387,6 +387,7 @@ mod tests {
         StageSpec,
     };
     use crate::pipeline::rules::RuleContext;
+    use std::collections::HashMap;
     use std::path::Path;
 
     #[test]
@@ -419,7 +420,17 @@ mod tests {
             ],
             vec![included, excluded],
         );
-        let ctx = RuleContext::new(Path::new("."));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = RuleContext::from_env(
+            temp.path(),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ]),
+            false,
+        );
 
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
 
@@ -443,7 +454,16 @@ mod tests {
             "pipelines/tests/needs-and-artifacts.gitlab-ci.yml",
         ))
         .expect("pipeline loads");
-        let ctx = RuleContext::new(Path::new("."));
+        let ctx = RuleContext::from_env(
+            Path::new("."),
+            HashMap::from([
+                ("CI_PIPELINE_SOURCE".into(), "push".into()),
+                ("CI_COMMIT_BRANCH".into(), "main".into()),
+                ("CI_COMMIT_REF_NAME".into(), "main".into()),
+                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+            ]),
+            false,
+        );
 
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
 
@@ -544,8 +564,9 @@ mod tests {
             }],
         );
 
-        let compiled = compile_pipeline(&pipeline, Some(&RuleContext::new(Path::new("."))))
-            .expect("pipeline compiles");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = RuleContext::from_env(temp.path(), HashMap::new(), false);
+        let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
 
         let stop_review = compiled.jobs.get("stop-review").expect("job exists");
         assert_eq!(stop_review.rule.when, crate::pipeline::RuleWhen::Manual);
