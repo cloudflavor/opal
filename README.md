@@ -40,6 +40,7 @@ Opal is a terminal-first, AI-capable GitLab pipeline runner for local debugging.
 - GitLab-style predefined job metadata is injected into job environments, including `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
 - Supported local engines: `docker`, `podman`, Apple `container`, and `orbstack`.
 - `nerdctl` remains available as a Linux-oriented engine option when the underlying `containerd` environment is directly usable.
+- On macOS, Apple `container` is a strong default for Opal because it runs each container in its own lightweight VM instead of routing all containers through one shared Linux VM, which improves per-job isolation while keeping a lightweight local workflow.
 
 ## Quick Start
 
