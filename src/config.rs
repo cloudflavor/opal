@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -32,6 +32,7 @@ pub struct AiSettingsConfig {
     pub tail_lines: usize,
     pub save_analysis: bool,
     pub prompts: AiPromptConfig,
+    pub codex: CodexAiConfig,
     pub ollama: OllamaAiConfig,
     save_analysis_override: Option<bool>,
 }
@@ -43,6 +44,7 @@ impl Default for AiSettingsConfig {
             tail_lines: 200,
             save_analysis: true,
             prompts: AiPromptConfig::default(),
+            codex: CodexAiConfig::default(),
             ollama: OllamaAiConfig::default(),
             save_analysis_override: None,
         }
@@ -61,12 +63,18 @@ impl<'de> Deserialize<'de> for AiSettingsConfig {
             tail_lines: usize,
             save_analysis: Option<bool>,
             prompts: AiPromptConfig,
+            codex: CodexAiConfig,
             ollama: OllamaAiConfig,
         }
 
         let raw = RawAiSettingsConfig::deserialize(deserializer)?;
-        let mut settings = AiSettingsConfig::default();
-        settings.default_provider = raw.default_provider;
+        let mut settings = AiSettingsConfig {
+            default_provider: raw.default_provider,
+            prompts: raw.prompts,
+            codex: raw.codex,
+            ollama: raw.ollama,
+            ..AiSettingsConfig::default()
+        };
         if raw.tail_lines != 0 {
             settings.tail_lines = raw.tail_lines;
         }
@@ -74,8 +82,6 @@ impl<'de> Deserialize<'de> for AiSettingsConfig {
             settings.save_analysis = value;
             settings.save_analysis_override = Some(value);
         }
-        settings.prompts = raw.prompts;
-        settings.ollama = raw.ollama;
         Ok(settings)
     }
 }
@@ -101,6 +107,22 @@ pub struct OllamaAiConfig {
     pub host: String,
     pub model: String,
     pub system: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CodexAiConfig {
+    pub command: String,
+    pub model: Option<String>,
+}
+
+impl Default for CodexAiConfig {
+    fn default() -> Self {
+        Self {
+            command: "codex".to_string(),
+            model: None,
+        }
+    }
 }
 
 impl Default for OllamaAiConfig {
@@ -166,8 +188,9 @@ impl OpalConfig {
             if path.exists() {
                 let contents = fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
-                let parsed: OpalConfig = toml::from_str(&contents)
+                let mut parsed: OpalConfig = toml::from_str(&contents)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
+                parsed.resolve_relative_paths(&path);
                 merged.merge(parsed);
             }
         }
@@ -244,6 +267,10 @@ impl OpalConfig {
         self.jobs.extend(other.jobs);
         self.registries.extend(other.registries);
     }
+
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        self.ai.prompts.resolve_relative_paths(config_path);
+    }
 }
 
 impl AiSettingsConfig {
@@ -259,7 +286,19 @@ impl AiSettingsConfig {
             self.save_analysis_override = Some(value);
         }
         self.prompts.merge(other.prompts);
+        self.codex.merge(other.codex);
         self.ollama.merge(other.ollama);
+    }
+}
+
+impl CodexAiConfig {
+    fn merge(&mut self, other: CodexAiConfig) {
+        if !other.command.is_empty() {
+            self.command = other.command;
+        }
+        if other.model.is_some() {
+            self.model = other.model;
+        }
     }
 }
 
@@ -271,6 +310,27 @@ impl AiPromptConfig {
         if other.job_analysis_file.is_some() {
             self.job_analysis_file = other.job_analysis_file;
         }
+    }
+
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        let Some(base_dir) = config_path.parent() else {
+            return;
+        };
+        if let Some(path) = &mut self.system_file {
+            *path = resolve_path_string(base_dir, path);
+        }
+        if let Some(path) = &mut self.job_analysis_file {
+            *path = resolve_path_string(base_dir, path);
+        }
+    }
+}
+
+fn resolve_path_string(base_dir: &Path, value: &str) -> String {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path.display().to_string()
+    } else {
+        base_dir.join(path).display().to_string()
     }
 }
 
@@ -491,7 +551,32 @@ preserve_runtime_objects = true
         let settings = OpalConfig::default();
         assert_eq!(settings.ai.tail_lines, 200);
         assert!(settings.ai.save_analysis);
+        assert_eq!(settings.ai.codex.command, "codex");
+        assert!(settings.ai.codex.model.is_none());
         assert_eq!(settings.ai.ollama.host, "http://127.0.0.1:11434");
         assert!(settings.ai.ollama.model.is_empty());
+    }
+
+    #[test]
+    fn ai_prompt_paths_resolve_relative_to_config_file_directory() {
+        let mut parsed: OpalConfig = toml::from_str(
+            r#"
+[ai.prompts]
+system_file = "prompts/ai/system.md"
+job_analysis_file = "prompts/ai/job-analysis.md"
+"#,
+        )
+        .expect("parse config");
+
+        parsed.resolve_relative_paths(Path::new("/tmp/project/.opal/config.toml"));
+
+        assert_eq!(
+            parsed.ai.prompts.system_file.as_deref(),
+            Some("/tmp/project/.opal/prompts/ai/system.md")
+        );
+        assert_eq!(
+            parsed.ai.prompts.job_analysis_file.as_deref(),
+            Some("/tmp/project/.opal/prompts/ai/job-analysis.md")
+        );
     }
 }

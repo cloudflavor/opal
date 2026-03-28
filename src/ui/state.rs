@@ -94,6 +94,20 @@ pub(super) struct UiState {
     log_filter: LogFilter,
 }
 
+#[derive(Clone)]
+pub(super) struct AiAnalysisSnapshot {
+    pub run_id: String,
+    pub job_name: String,
+    pub source_name: String,
+    pub stage: String,
+    pub job_yaml: String,
+    pub runner_summary: String,
+    pub pipeline_summary: String,
+    pub runtime_summary: Option<String>,
+    pub log_excerpt: String,
+    pub failure_hint: Option<String>,
+}
+
 impl UiState {
     pub(super) fn new(
         jobs: Vec<UiJobInfo>,
@@ -236,6 +250,14 @@ impl UiState {
 
     pub(super) fn active_job(&self) -> Option<&UiJobState> {
         self.active_jobs().get(self.active_selected_index())
+    }
+
+    pub(super) fn history_view_active(&self) -> bool {
+        self.history_view.is_some()
+    }
+
+    pub(super) fn workdir(&self) -> &Path {
+        &self.workdir
     }
 
     pub(super) fn active_job_mut(&mut self) -> Option<&mut UiJobState> {
@@ -1502,7 +1524,7 @@ impl UiState {
                     key_span_color("p", Color::Yellow),
                     Span::raw(" plan   │   "),
                     key_span_color("a", Color::Yellow),
-                    Span::raw(" ai   │   "),
+                    Span::raw(" analyze   │   "),
                     key_span_color("A", Color::Yellow),
                     Span::raw(" prompt"),
                 ]),
@@ -2080,6 +2102,11 @@ impl UiState {
                 Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("AI: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
+                    job.analysis_provider.as_deref().unwrap_or("none"),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::styled(" ", Style::default()),
+                Span::styled(
                     if job.analysis_running {
                         "running"
                     } else if job.analysis_error.is_some() {
@@ -2370,11 +2397,81 @@ impl UiState {
     }
 
     pub(super) fn ai_prompt_preview_request(&self) -> Option<(String, String)> {
-        if self.history_view.is_some() {
-            return None;
-        }
         let job = self.jobs.get(self.selected)?;
         Some((job.name.clone(), job.source_name.clone()))
+    }
+
+    pub(super) fn analysis_snapshot(&self) -> Option<AiAnalysisSnapshot> {
+        let job = self.active_job()?;
+        let run_id = self
+            .history_view
+            .as_ref()
+            .map(|view| view.run_id.clone())
+            .unwrap_or_else(|| self.current_run_id.clone());
+
+        let runtime_summary_path = if let Some(view) = &self.history_view {
+            self.history
+                .iter()
+                .find(|entry| entry.run_id == view.run_id)
+                .and_then(|entry| {
+                    entry
+                        .jobs
+                        .iter()
+                        .find(|history_job| history_job.name == job.name)
+                })
+                .and_then(|history_job| history_job.runtime_summary_path.clone())
+        } else {
+            self.job_resources
+                .get(&job.name)
+                .and_then(|resources| resources.runtime_summary_path.clone())
+        };
+
+        let runtime_summary = runtime_summary_path
+            .as_deref()
+            .and_then(|path| fs::read_to_string(path).ok());
+        let log_excerpt = fs::read_to_string(&job.log_path)
+            .ok()
+            .map(|content| {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                lines[start..].join("\n")
+            })
+            .unwrap_or_default();
+        let pipeline_summary = if self.plan_text.is_empty() {
+            "plan unavailable in this view".to_string()
+        } else {
+            self.plan_text.clone()
+        };
+        let runner_summary = format!(
+            "engine={} arch={} vcpu={} ram={}",
+            job.runner.engine,
+            job.runner
+                .arch
+                .clone()
+                .unwrap_or_else(|| "native/default".to_string()),
+            job.runner
+                .cpus
+                .clone()
+                .unwrap_or_else(|| "engine default".to_string()),
+            job.runner
+                .memory
+                .clone()
+                .unwrap_or_else(|| "engine default".to_string())
+        );
+        let (_, job_yaml) = self.active_job_yaml_text();
+
+        Some(AiAnalysisSnapshot {
+            run_id,
+            job_name: job.name.clone(),
+            source_name: job.source_name.clone(),
+            stage: job.stage.clone(),
+            job_yaml,
+            runner_summary,
+            pipeline_summary,
+            runtime_summary,
+            log_excerpt,
+            failure_hint: job.error.clone(),
+        })
     }
 
     pub(super) fn toggle_ai_prompt_preview(&mut self) -> bool {
@@ -2419,11 +2516,12 @@ impl UiState {
     pub(super) fn analysis_finished(
         &mut self,
         name: &str,
+        final_text: String,
         saved_path: Option<PathBuf>,
         error: Option<String>,
     ) {
         if let Some(job) = self.job_by_name_mut(name) {
-            job.finish_analysis(saved_path, error);
+            job.finish_analysis(final_text, saved_path, error);
         }
     }
 
@@ -2864,7 +2962,15 @@ impl UiJobState {
         }
     }
 
-    fn finish_analysis(&mut self, saved_path: Option<PathBuf>, error: Option<String>) {
+    fn finish_analysis(
+        &mut self,
+        final_text: String,
+        saved_path: Option<PathBuf>,
+        error: Option<String>,
+    ) {
+        if !final_text.trim().is_empty() {
+            self.analysis_text = final_text;
+        }
         self.analysis_saved_path = saved_path;
         self.analysis_error = error;
         self.analysis_running = false;
@@ -4372,5 +4478,39 @@ mod tests {
         state.load_text_preview("AI Prompt • build".to_string(), "hello".to_string());
         assert!(state.toggle_ai_prompt_preview());
         assert!(state.history_preview.is_none());
+    }
+
+    #[test]
+    fn analysis_finished_loads_final_text_into_analysis_view() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            vec![UiJobInfo {
+                name: "build".to_string(),
+                source_name: "build".to_string(),
+                stage: "build".to_string(),
+                log_path: temp.path().join("job.log"),
+                log_hash: "abc123".to_string(),
+                runner: UiRunnerInfo::default(),
+            }],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        state.analysis_started("build", "codex");
+        state.analysis_finished(
+            "build",
+            "Root cause\n\nSomething broke".to_string(),
+            None,
+            None,
+        );
+
+        let text = state.current_analysis_text().expect("analysis text");
+        assert!(text.contains("provider: codex"));
+        assert!(text.contains("Root cause"));
+        assert!(text.contains("Something broke"));
     }
 }

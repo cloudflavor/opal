@@ -1,3 +1,5 @@
+mod claude;
+mod codex;
 mod context;
 mod ollama;
 mod prompt;

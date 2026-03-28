@@ -14,6 +14,9 @@ pub struct AiRequest {
     pub system: Option<String>,
     pub host: Option<String>,
     pub model: Option<String>,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub workdir: Option<PathBuf>,
     pub save_path: Option<PathBuf>,
 }
 

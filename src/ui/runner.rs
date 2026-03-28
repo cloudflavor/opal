@@ -19,6 +19,7 @@ use ratatui::widgets::{Block, Borders, Clear, Scrollbar, ScrollbarOrientation};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::history::HistoryEntry;
+use crate::{ai, config::OpalConfig, naming::job_name_slug, runtime, secrets::SecretsStore};
 
 use super::state::{
     LogFilter, UiState, page_file_with_pager, page_log_with_colors, page_text_with_pager,
@@ -26,6 +27,7 @@ use super::state::{
 use super::types::{HistoryAction, UiCommand, UiEvent, UiJobInfo, UiJobResources};
 
 pub(super) struct UiRunner {
+    tx: UnboundedSender<UiEvent>,
     rx: UnboundedReceiver<UiEvent>,
     commands: UnboundedSender<UiCommand>,
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -46,6 +48,7 @@ impl UiRunner {
         plan_text: String,
         workdir: PathBuf,
         pipeline_path: PathBuf,
+        tx: UnboundedSender<UiEvent>,
         rx: UnboundedReceiver<UiEvent>,
         commands: UnboundedSender<UiCommand>,
     ) -> Result<Self> {
@@ -53,6 +56,7 @@ impl UiRunner {
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("failed to create terminal")?;
         Ok(Self {
+            tx,
             rx,
             commands,
             terminal,
@@ -229,9 +233,12 @@ impl UiRunner {
                 UiEvent::AnalysisChunk { name, delta } => self.state.analysis_chunk(&name, &delta),
                 UiEvent::AnalysisFinished {
                     name,
+                    final_text,
                     saved_path,
                     error,
-                } => self.state.analysis_finished(&name, saved_path, error),
+                } => self
+                    .state
+                    .analysis_finished(&name, final_text, saved_path, error),
                 UiEvent::AiPromptReady { name, prompt } => {
                     self.state.ai_prompt_ready(&name, prompt)
                 }
@@ -498,9 +505,15 @@ impl UiRunner {
             }
             KeyCode::Char('a') => {
                 if let Some((name, source_name)) = self.state.analysis_action_request() {
-                    let _ = self
-                        .commands
-                        .send(UiCommand::AnalyzeJob { name, source_name });
+                    if self.state.history_view_active() {
+                        if let Some(snapshot) = self.state.analysis_snapshot() {
+                            self.spawn_local_analysis(snapshot, false);
+                        }
+                    } else {
+                        let _ = self
+                            .commands
+                            .send(UiCommand::AnalyzeJob { name, source_name });
+                    }
                 }
             }
             KeyCode::Char('A') => {
@@ -508,9 +521,15 @@ impl UiRunner {
                     return Ok(());
                 }
                 if let Some((name, source_name)) = self.state.ai_prompt_preview_request() {
-                    let _ = self
-                        .commands
-                        .send(UiCommand::PreviewAiPrompt { name, source_name });
+                    if self.state.history_view_active() {
+                        if let Some(snapshot) = self.state.analysis_snapshot() {
+                            self.spawn_local_analysis(snapshot, true);
+                        }
+                    } else {
+                        let _ = self
+                            .commands
+                            .send(UiCommand::PreviewAiPrompt { name, source_name });
+                    }
                 }
             }
             KeyCode::Char('y') => {
@@ -580,6 +599,126 @@ impl UiRunner {
     fn view_current_job_yaml(&mut self) -> Result<()> {
         let yaml = self.state.job_yaml_text_for_pager();
         self.suspend_terminal(|| page_text_with_pager(&yaml))
+    }
+
+    fn spawn_local_analysis(&self, snapshot: super::state::AiAnalysisSnapshot, preview_only: bool) {
+        let tx = self.tx.clone();
+        let workdir = self.state.workdir().to_path_buf();
+        std::thread::spawn(move || {
+            let job_name = snapshot.job_name.clone();
+            let result = (|| -> Result<()> {
+                let settings = OpalConfig::load(&workdir)?;
+                let secrets = SecretsStore::load(&workdir)?;
+                let provider = settings
+                    .ai_settings()
+                    .default_provider
+                    .unwrap_or(crate::config::AiProviderConfig::Ollama);
+                let provider_kind = match provider {
+                    crate::config::AiProviderConfig::Ollama => ai::AiProviderKind::Ollama,
+                    crate::config::AiProviderConfig::Claude => ai::AiProviderKind::Claude,
+                    crate::config::AiProviderConfig::Codex => ai::AiProviderKind::Codex,
+                };
+                let provider_label = match provider_kind {
+                    ai::AiProviderKind::Ollama => "ollama",
+                    ai::AiProviderKind::Claude => "claude",
+                    ai::AiProviderKind::Codex => "codex",
+                };
+                let context = ai::AiContext {
+                    job_name: snapshot.job_name.clone(),
+                    source_name: snapshot.source_name.clone(),
+                    stage: snapshot.stage.clone(),
+                    job_yaml: snapshot.job_yaml,
+                    runner_summary: snapshot.runner_summary,
+                    pipeline_summary: snapshot.pipeline_summary,
+                    runtime_summary: snapshot.runtime_summary,
+                    log_excerpt: snapshot.log_excerpt,
+                    failure_hint: snapshot.failure_hint,
+                };
+                let rendered =
+                    ai::render_job_analysis_prompt(&workdir, settings.ai_settings(), &context)?;
+                if preview_only {
+                    let mut text = String::new();
+                    if let Some(system) = rendered.system {
+                        text.push_str("# System\n\n");
+                        text.push_str(system.trim());
+                        text.push_str("\n\n");
+                    }
+                    text.push_str("# Prompt\n\n");
+                    text.push_str(rendered.prompt.trim());
+                    let _ = tx.send(UiEvent::AiPromptReady {
+                        name: snapshot.job_name,
+                        prompt: text,
+                    });
+                    return Ok(());
+                }
+
+                let prompt = secrets.mask_fragment(&rendered.prompt).into_owned();
+                let system = rendered
+                    .system
+                    .as_deref()
+                    .map(|text| secrets.mask_fragment(text).into_owned());
+                let save_path = settings.ai_settings().save_analysis.then(|| {
+                    runtime::session_dir(&snapshot.run_id)
+                        .join(job_name_slug(&snapshot.job_name))
+                        .join("analysis")
+                        .join(format!("{provider_label}.md"))
+                });
+                let _ = tx.send(UiEvent::AnalysisStarted {
+                    name: snapshot.job_name.clone(),
+                    provider: provider_label.to_string(),
+                });
+                let request = ai::AiRequest {
+                    provider: provider_kind,
+                    prompt,
+                    system,
+                    host: (provider_kind == ai::AiProviderKind::Ollama)
+                        .then(|| settings.ai_settings().ollama.host.clone()),
+                    model: match provider_kind {
+                        ai::AiProviderKind::Ollama => {
+                            Some(settings.ai_settings().ollama.model.clone())
+                        }
+                        ai::AiProviderKind::Codex => settings.ai_settings().codex.model.clone(),
+                        ai::AiProviderKind::Claude => None,
+                    },
+                    command: (provider_kind == ai::AiProviderKind::Codex)
+                        .then(|| settings.ai_settings().codex.command.clone()),
+                    args: Vec::new(),
+                    workdir: (provider_kind == ai::AiProviderKind::Codex)
+                        .then_some(workdir.clone()),
+                    save_path: save_path.clone(),
+                };
+                let result = ai::analyze_with_default_provider(&request, |chunk| {
+                    let ai::AiChunk::Text(text) = chunk;
+                    let _ = tx.send(UiEvent::AnalysisChunk {
+                        name: snapshot.job_name.clone(),
+                        delta: text,
+                    });
+                })
+                .map_err(|err| anyhow::anyhow!(err.message))?;
+                if let Some(path) = &save_path {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(path, &result.text)?;
+                }
+                let _ = tx.send(UiEvent::AnalysisFinished {
+                    name: snapshot.job_name,
+                    final_text: result.text,
+                    saved_path: save_path,
+                    error: None,
+                });
+                Ok(())
+            })();
+
+            if let Err(err) = result {
+                let _ = tx.send(UiEvent::AnalysisFinished {
+                    name: job_name,
+                    final_text: String::new(),
+                    saved_path: None,
+                    error: Some(err.to_string()),
+                });
+            }
+        });
     }
 
     fn suspend_terminal<F>(&mut self, action: F) -> Result<()>

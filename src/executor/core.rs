@@ -614,8 +614,8 @@ impl ExecutorCore {
         }
 
         let outcome = (|| -> Result<Option<PathBuf>> {
-            if provider_kind == AiProviderKind::Ollama {
-                if self
+            if provider_kind == AiProviderKind::Ollama
+                && self
                     .config
                     .settings
                     .ai_settings()
@@ -623,11 +623,10 @@ impl ExecutorCore {
                     .model
                     .trim()
                     .is_empty()
-                {
-                    anyhow::bail!(
-                        "Ollama analysis requires [ai.ollama].model in config; Opal does not choose a default model for you"
-                    );
-                }
+            {
+                anyhow::bail!(
+                    "Ollama analysis requires [ai.ollama].model in config; Opal does not choose a default model for you"
+                );
             }
             let rendered = self.render_ai_prompt_parts(plan, job_name, source_name)?;
             let prompt = self.secrets.mask_fragment(&rendered.prompt);
@@ -647,8 +646,20 @@ impl ExecutorCore {
                 provider: provider_kind,
                 prompt: prompt.into_owned(),
                 system,
-                host: Some(self.config.settings.ai_settings().ollama.host.clone()),
-                model: Some(self.config.settings.ai_settings().ollama.model.clone()),
+                host: (provider_kind == AiProviderKind::Ollama)
+                    .then(|| self.config.settings.ai_settings().ollama.host.clone()),
+                model: match provider_kind {
+                    AiProviderKind::Ollama => {
+                        Some(self.config.settings.ai_settings().ollama.model.clone())
+                    }
+                    AiProviderKind::Codex => self.config.settings.ai_settings().codex.model.clone(),
+                    AiProviderKind::Claude => None,
+                },
+                command: (provider_kind == AiProviderKind::Codex)
+                    .then(|| self.config.settings.ai_settings().codex.command.clone()),
+                args: Vec::new(),
+                workdir: (provider_kind == AiProviderKind::Codex)
+                    .then(|| self.config.workdir.clone()),
                 save_path: save_path.clone(),
             };
 
@@ -671,8 +682,19 @@ impl ExecutorCore {
 
         if let Some(ui) = ui {
             match outcome {
-                Ok(saved_path) => ui.analysis_finished(job_name, saved_path, None),
-                Err(err) => ui.analysis_finished(job_name, None, Some(err.to_string())),
+                Ok(saved_path) => ui.analysis_finished(
+                    job_name,
+                    if let Some(path) = &saved_path {
+                        fs::read_to_string(path).unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    saved_path,
+                    None,
+                ),
+                Err(err) => {
+                    ui.analysis_finished(job_name, String::new(), None, Some(err.to_string()))
+                }
             }
         }
     }

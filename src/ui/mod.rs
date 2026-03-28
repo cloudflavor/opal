@@ -30,6 +30,7 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
         String::new(),
         workdir,
         pipeline_path,
+        tx.clone(),
         rx,
         cmd_tx,
     )?;
@@ -60,6 +61,7 @@ pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
         String::new(),
         workdir,
         pipeline_path,
+        tx.clone(),
         rx,
         cmd_tx,
     )?;

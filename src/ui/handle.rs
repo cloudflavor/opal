@@ -41,6 +41,7 @@ impl UiHandle {
                 plan_text,
                 workdir,
                 pipeline_path,
+                tx.clone(),
                 rx,
                 cmd_tx,
             ) {
@@ -145,11 +146,13 @@ impl UiBridge {
     pub fn analysis_finished(
         &self,
         name: &str,
+        final_text: String,
         saved_path: Option<PathBuf>,
         error: Option<String>,
     ) {
         let _ = self.sender.send(UiEvent::AnalysisFinished {
             name: name.to_string(),
+            final_text,
             saved_path,
             error,
         });

@@ -110,6 +110,7 @@ pub enum UiEvent {
     },
     AnalysisFinished {
         name: String,
+        final_text: String,
         saved_path: Option<PathBuf>,
         error: Option<String>,
     },
