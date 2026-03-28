@@ -21,8 +21,8 @@ tail_lines = 200
 save_analysis = true
 
 [ai.prompts]
-system_file = ".opal/prompts/ai/system.md"
-job_analysis_file = ".opal/prompts/ai/job-analysis.md"
+system_file = "prompts/ai/system.md"
+job_analysis_file = "prompts/ai/job-analysis.md"
 
 [ai.ollama]
 host = "http://127.0.0.1:11434"
@@ -108,39 +108,15 @@ Add more `[engine.<name>]` tables in the future to tune other runtimes.
 
 ## AI settings
 
-Opal can analyze a selected TUI job with an AI backend.
+AI troubleshooting configuration is documented separately in `docs/ai-config.md`.
 
-Current implementation status:
+Use that page for:
 
-- `ollama`: implemented
-- `claude`: planned
-- `codex`: planned
-
-Supported keys today:
-
-- `[ai].default_provider`
-  - accepted values: `ollama`, `claude`, `codex`
-  - the first implemented backend is `ollama`
-  - when unset, Opal currently falls back to `ollama`
-- `[ai].tail_lines`
-  - number of trailing log lines to send in the troubleshooting context
-- `[ai].save_analysis`
-  - when `true`, save the final analysis into the run session
-- `[ai.prompts].system_file`
-  - optional path to a system-prompt template file
-  - when set, overrides the embedded default system prompt
-  - relative paths are resolved from the current project workdir
-- `[ai.prompts].job_analysis_file`
-  - optional path to a job-analysis prompt template file
-  - when set, overrides the embedded default analysis prompt
-  - relative paths are resolved from the current project workdir
-- `[ai.ollama].host`
-  - default: `http://127.0.0.1:11434`
-- `[ai.ollama].model`
-  - required when using the `ollama` provider
-  - Opal does not choose a default Ollama model for you
-- `[ai.ollama].system`
-  - optional provider-level system prompt override; prompt template files are the preferred long-form customization path
+- backend selection (`ollama`, `codex`, planned `claude`)
+- prompt-template file overrides
+- Ollama host/model settings
+- Codex command/model settings
+- analysis storage behavior
 
 The current prompt-template placeholders are documented in `docs/ai.md`.
 

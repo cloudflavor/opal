@@ -111,6 +111,24 @@ OPAL_BIN=target/debug/opal OPAL_TEST_ARGS='--no-tui --engine docker' ./scripts/t
 
 For the current fixture matrix and scenario descriptions, see `pipelines/tests/README.md`.
 
+## AI troubleshooting
+
+Opal can analyze a selected job directly from the TUI.
+
+- `a` starts analysis for the selected job and toggles the analysis view once it exists
+- `A` previews the exact rendered prompt that Opal will send
+- `o` opens the current log or analysis view in your pager
+
+Current backends:
+
+- `ollama`
+- `codex`
+
+See:
+
+- `docs/ai.md` for usage, current behavior, and provider notes
+- `docs/ai-config.md` for backend selection, prompt files, and AI configuration
+
 ## Releasing
 
 Build release artifacts with:

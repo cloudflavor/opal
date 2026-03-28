@@ -29,6 +29,20 @@
       body: 'Open prior run history, logs, artifacts, and cache metadata after the fact.',
       href: '/docs/ui#layout',
       cast: '3eTpVFphkhQKDZB9'
+    },
+    {
+      title: 'Opal AI Troubleshooting · Codex',
+      command: 'press a inside opal run',
+      body: 'Analyze the selected job with the Codex backend, inspect the rendered prompt, and keep troubleshooting inside the TUI.',
+      href: '/docs/ai',
+      cast: '876637'
+    },
+    {
+      title: 'Opal AI Troubleshooting · Ollama',
+      command: 'press a inside opal run',
+      body: 'Analyze the selected job with the Ollama backend and stream the response directly into the TUI.',
+      href: '/docs/ai',
+      cast: '876581'
     }
   ];
 
@@ -38,6 +52,18 @@
       command: 'opal --help',
       body: 'See the complete command-line surface, flags, environment variables, and common examples.',
       href: '/docs/cli'
+    },
+    {
+      title: 'AI Troubleshooting',
+      command: 'a / A in the TUI',
+      body: 'Analyze selected jobs with Codex or Ollama, inspect the exact rendered prompt, and keep troubleshooting inside the terminal.',
+      href: '/docs/ai'
+    },
+    {
+      title: 'AI Configuration',
+      command: '.opal/config.toml',
+      body: 'Configure the active AI backend, prompt template files, Ollama host/model settings, and Codex CLI command/model overrides.',
+      href: '/docs/ai-config'
     },
     {
       title: 'Pipeline Model',
@@ -77,7 +103,7 @@
   <div class="hero-copy">
     <p class="eyebrow">Opal Documentation</p>
     <h1>Run GitLab-style pipelines locally.</h1>
-    <p class="lede">Opal is a terminal-first local runner for GitLab pipelines. It evaluates `.gitlab-ci.yml`, keeps local Git-aware behavior where it matters, and gives you fast ways to run, inspect, and debug jobs without pushing to a remote runner.</p>
+    <p class="lede">Opal is a terminal-first, AI-capable local runner for GitLab pipelines. It evaluates `.gitlab-ci.yml`, keeps local Git-aware behavior where it matters, and gives you fast ways to run, inspect, debug, and analyze jobs without pushing to a remote runner.</p>
     <div class="hero-links">
       <a href="/docs/quickstart">Quick Start</a>
       <a href="/docs/cli">CLI Reference</a>
@@ -94,6 +120,11 @@
       <span>Main modes</span>
       <strong>run · run --no-tui · plan · view</strong>
       <p>Use interactive runs, plain terminal runs, DAG-only planning, or post-run history browsing depending on the task.</p>
+    </div>
+    <div class="panel-block">
+      <span>AI-assisted</span>
+      <strong>job analysis in the TUI</strong>
+      <p>Analyze a selected job, preview the exact prompt Opal sends, and keep troubleshooting inside the same terminal workflow.</p>
     </div>
   </div>
 </section>

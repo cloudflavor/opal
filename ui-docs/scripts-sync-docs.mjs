@@ -8,7 +8,7 @@ const docsDir = path.join(repoRoot, 'docs');
 const outputDir = path.join(process.cwd(), 'src', 'lib', 'generated');
 const outputFile = path.join(outputDir, 'docs.json');
 
-const preferredOrder = ['index', 'install', 'quickstart', 'pipeline', 'plan', 'config', 'gitlab-parity', 'ui'];
+const preferredOrder = ['index', 'install', 'quickstart', 'pipeline', 'plan', 'config', 'ai-config', 'ai', 'gitlab-parity', 'ui'];
 
 function stripInlineMarkdown(value) {
   return value
