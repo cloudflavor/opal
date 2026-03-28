@@ -2,7 +2,7 @@
 
 [![Docs](https://img.shields.io/badge/docs-opal.cloudflavor.io-0ea5e9)](https://opal.cloudflavor.io)
 
-Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, and docs.
+Opal is a terminal-first, AI-capable GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, docs, and job analysis.
 
 ## Demo
 
@@ -22,11 +22,20 @@ Opal is a terminal-first GitLab pipeline runner for local debugging. It parses `
 
 [![asciicast](https://asciinema.org/a/3eTpVFphkhQKDZB9.svg)](https://asciinema.org/a/3eTpVFphkhQKDZB9)
 
+### Opal AI Troubleshooting · Codex
+
+[![asciicast](https://asciinema.org/a/876637.svg)](https://asciinema.org/a/876637)
+
+### Opal AI Troubleshooting · Ollama
+
+[![asciicast](https://asciinema.org/a/876581.svg)](https://asciinema.org/a/876581)
+
 ## Features
 
 - `opal run` executes a practical local-runner subset of GitLab pipelines, including `rules`, `workflow:rules`, `needs`, `dependencies`, artifacts, cache, services, and matrix jobs.
 - `opal plan` prints the evaluated DAG without starting containers.
 - `opal view` opens the history/log browser for previous runs.
+- The TUI can analyze a selected job with AI backends, preview the exact rendered prompt, and keep troubleshooting inside the terminal.
 - The TUI includes embedded markdown docs, help overlays, pager integration, and history/resource browsing. Press `?` inside the TUI to open the built-in documentation viewer.
 - GitLab-style predefined job metadata is injected into job environments, including `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
 - Supported local engines: `docker`, `podman`, Apple `container`, and `orbstack`.
@@ -118,6 +127,8 @@ Opal can analyze a selected job directly from the TUI.
 - `a` starts analysis for the selected job and toggles the analysis view once it exists
 - `A` previews the exact rendered prompt that Opal will send
 - `o` opens the current log or analysis view in your pager
+
+This also works when you load a past job in `opal view`.
 
 Current backends:
 
