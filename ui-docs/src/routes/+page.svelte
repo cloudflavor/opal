@@ -101,7 +101,15 @@
 
 <section class="hero shell">
   <div class="hero-copy">
-    <p class="eyebrow">Opal Documentation</p>
+    <div class="hero-topbar">
+      <p class="eyebrow">Opal Documentation</p>
+      <a class="github-link" href="https://github.com/cloudflavor/opal" target="_blank" rel="noreferrer" aria-label="Open the Opal GitHub repository">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.66 7.66 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z" fill="currentColor" />
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </div>
     <h1>Run GitLab-style pipelines locally.</h1>
     <p class="lede">Opal is a terminal-first, AI-capable local runner for GitLab pipelines. It evaluates `.gitlab-ci.yml`, keeps local Git-aware behavior where it matters, and gives you fast ways to run, inspect, debug, and analyze jobs without pushing to a remote runner.</p>
     <div class="hero-links">
@@ -223,6 +231,37 @@
     color: var(--accent);
     font-size: 0.75rem;
     font-weight: 700;
+  }
+  .hero-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.35rem;
+  }
+  .hero-topbar .eyebrow {
+    margin-bottom: 0;
+  }
+  .github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    text-decoration: none;
+    color: var(--text-soft);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel);
+    padding: 0.45rem 0.75rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .github-link:hover {
+    color: var(--text-strong);
+    border-color: var(--border-strong);
+  }
+  .github-link svg {
+    width: 1rem;
+    height: 1rem;
   }
   h1 {
     margin: 0 0 1rem;
