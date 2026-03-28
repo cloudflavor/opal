@@ -159,7 +159,9 @@ package-crate:
   variables:
     CARGO_HOME: "/usr/local/cargo"
     RUSTUP_HOME: "/usr/local/rustup"
+    TMPDIR: "$CI_PROJECT_DIR/target/tmp"
   script:
+    - mkdir -p "$TMPDIR"
     - cargo package --locked
   artifacts:
     expire_in: 1 week
