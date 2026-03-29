@@ -56,24 +56,6 @@ brew uninstall cloudflavor/opal-cli/opal
 brew untap cloudflavor/opal-cli
 ```
 
-## Homebrew tap maintenance
-
-This section is for maintainers of the tap, not end users.
-
-Tap expectations:
-
-- the tap repo stays public at `cloudflavor/homebrew-opal-cli`
-- the formula lives at `Formula/opal.rb`
-- Homebrew reads the default branch of that repo
-
-Useful validation after pushing a formula update:
-
-```bash
-brew untap cloudflavor/opal-cli || true
-brew tap cloudflavor/opal-cli
-brew install cloudflavor/opal-cli/opal
-```
-
 ## Install from a local checkout
 
 ```bash
