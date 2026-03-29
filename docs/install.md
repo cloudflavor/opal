@@ -19,8 +19,8 @@ opal
 If you prefer Homebrew, install Opal from the Cloudflavor tap:
 
 ```bash
-brew tap cloudflavor/opal-cli
-brew install cloudflavor/opal-cli/opal
+brew tap cloudflavor/tap
+brew install cloudflavor/tap/opal-cli
 ```
 
 Verify the install:
@@ -35,7 +35,7 @@ When the tap publishes a newer formula:
 
 ```bash
 brew update
-brew upgrade cloudflavor/opal-cli/opal
+brew upgrade cloudflavor/tap/opal-cli
 ```
 
 ### Check versions
@@ -43,8 +43,8 @@ brew upgrade cloudflavor/opal-cli/opal
 Use Homebrew's built-in inspection commands:
 
 ```bash
-brew livecheck cloudflavor/opal-cli/opal
-brew info cloudflavor/opal-cli/opal
+brew livecheck cloudflavor/tap/opal-cli
+brew info cloudflavor/tap/opal-cli
 ```
 
 ### Remove
@@ -52,8 +52,8 @@ brew info cloudflavor/opal-cli/opal
 To uninstall Opal and remove the tap:
 
 ```bash
-brew uninstall cloudflavor/opal-cli/opal
-brew untap cloudflavor/opal-cli
+brew uninstall cloudflavor/tap/opal-cli
+brew untap cloudflavor/tap
 ```
 
 ## Install from a local checkout

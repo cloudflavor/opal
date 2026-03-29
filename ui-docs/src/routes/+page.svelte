@@ -152,8 +152,8 @@
       </section>
       <section class="install-intro-group">
         <h3 id="brew-macos"><a class="section-anchor" href="#brew-macos" aria-label="Link to Homebrew install for macOS">#</a>Install with Homebrew on macOS</h3>
-        <pre>brew tap cloudflavor/opal-cli
-brew install cloudflavor/opal-cli/opal</pre>
+        <pre>brew tap cloudflavor/tap
+brew install cloudflavor/tap/opal-cli</pre>
       </section>
     </div>
     <a class="reference-doc-link" href="/docs/install">Open install docs →</a>
