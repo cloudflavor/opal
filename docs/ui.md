@@ -18,7 +18,25 @@ The documentation files under `docs/` are embedded into the Opal binary at build
 6. **Log pane** – Streams job output live. Scroll with `↑/↓`, `PgUp/PgDn`, `Ctrl+u/d`, `g/G`, etc. Press `o` to open the current log or AI analysis view in your pager. Press `a` to analyze the selected job, and press `a` again to toggle between the normal log view and the saved/streamed analysis view. Press `A` to preview the exact rendered AI prompt that Opal will send, and press `A` again to close that preview. These actions also work when you are viewing a job loaded from history.
 7. **Shortcuts footer** – The bottom footer stays under the main pane so the active shortcuts remain visible even when the history sidebar is hidden.
 8. **Job resources** – When you expand a run in the history sidebar, each job now lists its artifacts, caches, and loaded environment variable names. Press `Enter` on any artifact or cache directory to render a tree in the preview pane, press `Enter` on an artifact file to read it directly, or press `Enter` on the env-vars row to inspect the loaded variable names.
-   When runtime-object preservation is enabled, this section also surfaces the recorded job container, service network, service container names, and a generated runtime summary file for inspection. Press `Enter` on the summary file or runtime info rows to load the full text into the preview pane.
+   When runtime-object preservation is enabled, this section also surfaces service network details, service container names, and a generated runtime summary file for inspection. Press `Enter` on the summary file or runtime info rows to load the full text into the preview pane.
+
+## Inspect loaded env vars
+
+To inspect which environment variables were loaded into a job:
+
+1. Press `H` if the history sidebar is hidden.
+2. Move to the history sidebar with `Tab`.
+3. Expand the current run or a historical run with `→` / `l`.
+4. Select the job you want to inspect.
+5. Expand its resource rows if needed.
+6. Select the row labeled `Env vars: N loaded`.
+7. Press `Enter` to load the variable-name list into the preview pane.
+
+Notes:
+
+- the `Details` pane shows the compact count as `Env: N loaded`
+- the preview shows variable **names**, not values
+- this is intentional so secret values are not dumped into the UI
 
 ## Help overlay
 

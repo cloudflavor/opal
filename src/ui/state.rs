@@ -477,18 +477,6 @@ impl UiState {
 
     fn resource_tree_entries(&self, resources: &UiJobResources) -> Vec<HistoryTreeEntry> {
         let mut nodes = Vec::new();
-        if let Some(container) = &resources.container_name {
-            nodes.push(HistoryTreeEntry {
-                key: HistoryNodeKey::ResourceInfo,
-                display: HistoryNodeDisplay::Resource(ResourceDisplay::Info {
-                    label: format!("Container: {container}"),
-                    color: Color::Cyan,
-                    preview: None,
-                }),
-                children: Vec::new(),
-                collapsed: false,
-            });
-        }
         if let Some(network) = &resources.service_network {
             nodes.push(HistoryTreeEntry {
                 key: HistoryNodeKey::ResourceInfo,
