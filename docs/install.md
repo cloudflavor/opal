@@ -14,56 +14,64 @@ The installed executable is still:
 opal
 ```
 
-## Install with Homebrew on macOS
+## Homebrew on macOS
+
+If you prefer Homebrew, install Opal from the Cloudflavor tap:
 
 ```bash
-brew tap cloudflavor/tap
-brew install cloudflavor/tap/opal
+brew tap cloudflavor/opal-cli
+brew install cloudflavor/opal-cli/opal
 ```
 
-### `#brew-macos`
-
-Use it:
+Verify the install:
 
 ```bash
-brew tap cloudflavor/tap
-brew install cloudflavor/tap/opal
 opal --version
 ```
 
-Update it:
+### Upgrade
+
+When the tap publishes a newer formula:
 
 ```bash
 brew update
-brew upgrade cloudflavor/tap/opal
+brew upgrade cloudflavor/opal-cli/opal
 ```
 
-Check versions:
+### Check versions
+
+Use Homebrew's built-in inspection commands:
 
 ```bash
-brew livecheck cloudflavor/tap/opal
-brew info cloudflavor/tap/opal
+brew livecheck cloudflavor/opal-cli/opal
+brew info cloudflavor/opal-cli/opal
 ```
 
-Remove it:
+### Remove
+
+To uninstall Opal and remove the tap:
 
 ```bash
-brew uninstall cloudflavor/tap/opal
-brew untap cloudflavor/tap
+brew uninstall cloudflavor/opal-cli/opal
+brew untap cloudflavor/opal-cli
 ```
 
-Repo expectations:
+## Homebrew tap maintenance
 
-- the tap repo stays public at `cloudflavor/homebrew-tap`
+This section is for maintainers of the tap, not end users.
+
+Tap expectations:
+
+- the tap repo stays public at `cloudflavor/homebrew-opal-cli`
 - the formula lives at `Formula/opal.rb`
 - Homebrew reads the default branch of that repo
 
-Good first test after a tap push:
+Useful validation after pushing a formula update:
 
 ```bash
-brew untap cloudflavor/tap || true
-brew tap cloudflavor/tap
-brew install cloudflavor/tap/opal
+brew untap cloudflavor/opal-cli || true
+brew tap cloudflavor/opal-cli
+brew install cloudflavor/opal-cli/opal
 ```
 
 ## Install from a local checkout

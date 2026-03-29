@@ -145,12 +145,16 @@
   </div>
 
   <div class="install-intro">
-    <div>
-      <h3>Install from crates.io</h3>
-      <pre>cargo install opal-cli</pre>
-      <h3 id="brew-macos"><a class="section-anchor" href="#brew-macos" aria-label="Link to Homebrew install for macOS">#</a>Install with Homebrew on macOS</h3>
-      <pre>brew tap cloudflavor/tap
-brew install cloudflavor/tap/opal</pre>
+    <div class="install-intro-stack">
+      <section class="install-intro-group">
+        <h3>Install from crates.io</h3>
+        <pre>cargo install opal-cli</pre>
+      </section>
+      <section class="install-intro-group">
+        <h3 id="brew-macos"><a class="section-anchor" href="#brew-macos" aria-label="Link to Homebrew install for macOS">#</a>Install with Homebrew on macOS</h3>
+        <pre>brew tap cloudflavor/opal-cli
+brew install cloudflavor/opal-cli/opal</pre>
+      </section>
     </div>
     <a class="reference-doc-link" href="/docs/install">Open install docs →</a>
   </div>
@@ -410,8 +414,17 @@ brew install cloudflavor/tap/opal</pre>
     gap: 1.5rem;
     padding-bottom: 1.25rem;
   }
+  .install-intro-stack {
+    display: grid;
+    gap: 1rem;
+    min-width: 0;
+  }
+  .install-intro-group {
+    display: grid;
+    gap: 0.55rem;
+  }
   .install-intro h3 {
-    margin: 0 0 0.75rem;
+    margin: 0;
     color: var(--text-strong);
     font-size: 1.05rem;
   }
