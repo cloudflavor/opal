@@ -178,7 +178,7 @@ Starts the MCP server over stdio.
 
 This command is intended for MCP clients that launch Opal as a subprocess and speak JSON-RPC over stdin/stdout.
 
-The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, `opal_run_diff`, `opal_logs_search`, `opal_plan_explain`, and `opal_engine_status`.
+The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, `opal_run_diff`, `opal_logs_search`, `opal_job_rerun`, `opal_plan_explain`, and `opal_engine_status`.
 
 Example:
 
@@ -207,6 +207,18 @@ Run the default repo pipeline locally:
 
 ```bash
 opal run
+```
+
+Rerun one recorded job name from the latest Opal history entry against the current checkout:
+
+```bash
+opal run --rerun-job rust-checks
+```
+
+Rerun a job name from a specific recorded run:
+
+```bash
+opal run --rerun-job ui-docs-check --rerun-run-id gitlab-ci-70212f44
 ```
 
 Run one job plus required upstreams:

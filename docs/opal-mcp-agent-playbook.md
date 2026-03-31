@@ -92,6 +92,9 @@ In the current Opal implementation, the most important parts are:
 - `opal_logs_search`
   - searches recorded job logs with optional run and job filters
   - helps an agent spot recurring failure strings before opening full job logs one by one
+- `opal_job_rerun`
+  - reruns a job name from the latest or a selected recorded run against the current checkout
+  - lets an agent retry one historical job name while still relying on Opal's normal dependency closure and current local pipeline state
 - `opal_plan_explain`
   - explains why a job is included, skipped, or blocked in the evaluated plan
   - helps an agent answer selector and rule questions without inferring from raw plan output
@@ -180,6 +183,7 @@ For Opal, the core tools are:
 - `opal_history_list`
 - `opal_failed_jobs`
 - `opal_logs_search`
+- `opal_job_rerun`
 - `opal_plan_explain`
 - `opal_engine_status`
 
@@ -454,8 +458,6 @@ If designing an agent-first Opal MCP experience, the following additions would b
 
 - richer `opal_history_list`
   - add branch and pipeline-file filters on top of the current status, job-name, and date-range filters
-- `opal_job_rerun`
-  - rerun one job plus required upstream closure from an existing run
 
 These are not required to use Opal effectively, but they would make agent workflows much more powerful.
 

@@ -67,7 +67,7 @@ opal view
 opal mcp
 ```
 
-The MCP server currently exposes planning, run execution, run inspection, history listing, failed-job lookup, run-diff, log-search, plan-explanation, and engine-status tools for agent workflows.
+The MCP server currently exposes planning, run execution, run inspection, history listing, failed-job lookup, run-diff, log-search, job-rerun, plan-explanation, and engine-status tools for agent workflows.
 
 When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
 

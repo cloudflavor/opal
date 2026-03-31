@@ -126,6 +126,28 @@ pub(crate) fn list_tools() -> Value {
                 }
             },
             {
+                "name": "opal_job_rerun",
+                "title": "Rerun a recorded job name",
+                "description": "Reruns a job name from the latest or a selected recorded run against the current checkout, letting Opal include upstream closure automatically.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string" },
+                        "job": { "type": "string" },
+                        "workdir": { "type": "string" },
+                        "pipeline": { "type": "string" },
+                        "base_image": { "type": "string" },
+                        "env_includes": { "type": "array", "items": { "type": "string" } },
+                        "max_parallel_jobs": { "type": "integer", "minimum": 1 },
+                        "trace_scripts": { "type": "boolean" },
+                        "engine": { "type": "string", "enum": EngineChoice::VARIANTS },
+                        "gitlab_base_url": { "type": "string" },
+                        "gitlab_token": { "type": "string" }
+                    },
+                    "required": ["job"]
+                }
+            },
+            {
                 "name": "opal_plan_explain",
                 "title": "Explain a job's plan status",
                 "description": "Explains why a job is included, skipped, or blocked in the evaluated plan.",
@@ -181,6 +203,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_history_list" => Ok(history_list_tool(arguments)?),
         "opal_run_diff" => Ok(run_diff_tool(arguments)?),
         "opal_logs_search" => Ok(logs_search_tool(arguments)?),
+        "opal_job_rerun" => Ok(job_rerun_tool(app, arguments).await),
         "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
         "opal_engine_status" => Ok(engine_status_tool(app, arguments)?),
         other => Ok(error_tool_result(
@@ -443,6 +466,39 @@ fn logs_search_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
+async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
+    let request = match job_rerun_request(&arguments) {
+        Ok(request) => request,
+        Err(err) => return error_tool_result(err.to_string(), Value::Null),
+    };
+    let capture = execute_and_capture(app, request.run_args).await;
+    let structured = json!({
+        "source_run": history_entry_json(&request.source_run),
+        "source_job": request.source_job,
+        "requested_job": request.requested_job,
+        "rerun": capture.history_entry.as_ref().map(history_entry_json).unwrap_or(Value::Null),
+    });
+    let text = match (&capture.history_entry, &capture.error) {
+        (Some(entry), Some(err)) => format!(
+            "Reran job {} from recorded run {} as Opal run {} with status {:?}: {err}",
+            request.requested_job, request.source_run.run_id, entry.run_id, entry.status
+        ),
+        (Some(entry), None) => format!(
+            "Reran job {} from recorded run {} as Opal run {} with status {:?}",
+            request.requested_job, request.source_run.run_id, entry.run_id, entry.status
+        ),
+        (None, Some(err)) => format!(
+            "Failed to rerun job {} from recorded run {}: {err}",
+            request.requested_job, request.source_run.run_id
+        ),
+        (None, None) => format!(
+            "Reran job {} from recorded run {} without a recorded history entry",
+            request.requested_job, request.source_run.run_id
+        ),
+    };
+    tool_result(text, structured, capture.error.is_some())
+}
+
 fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let job = arguments
         .get("job")
@@ -689,6 +745,13 @@ struct LogSearchReadError {
     error: String,
 }
 
+struct JobRerunRequest {
+    source_run: HistoryEntry,
+    source_job: crate::history::HistoryJob,
+    requested_job: String,
+    run_args: RunArgs,
+}
+
 fn selected_run_pair(
     history: &[HistoryEntry],
     run_id: Option<&str>,
@@ -910,6 +973,33 @@ fn line_matches_query(line: &str, query: &str, case_sensitive: bool) -> bool {
         line.to_ascii_lowercase()
             .contains(&query.to_ascii_lowercase())
     }
+}
+
+fn job_rerun_request(arguments: &Value) -> Result<JobRerunRequest> {
+    let run_id = arguments.get("run_id").and_then(Value::as_str);
+    let requested_job = arguments
+        .get("job")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .context("missing job")?;
+    let source_run = selected_history_entry(run_id)?;
+    let source_job = find_job(&source_run, &requested_job)
+        .cloned()
+        .with_context(|| {
+            format!(
+                "job '{}' not found in recorded run '{}'",
+                requested_job, source_run.run_id
+            )
+        })?;
+    let mut run_args = run_args_from_value(arguments.clone())?;
+    run_args.jobs = vec![requested_job.clone()];
+
+    Ok(JobRerunRequest {
+        source_run,
+        source_job,
+        requested_job,
+        run_args,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1145,6 +1235,14 @@ fn run_args_from_value(value: Value) -> Result<RunArgs> {
             .get("gitlab_token")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        rerun_job: value
+            .get("rerun_job")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        rerun_run_id: value
+            .get("rerun_run_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         jobs: string_vec(&value, "jobs"),
     })
 }
@@ -1175,7 +1273,7 @@ fn _view_args_from_value(value: Value) -> ViewArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_tool, list_tools, run_args_from_value};
+    use super::{call_tool, job_rerun_request, list_tools, run_args_from_value};
     use crate::app::OpalApp;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
@@ -1197,6 +1295,7 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run_diff"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_logs_search"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_job_rerun"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan_explain"));
         assert!(
             tools
@@ -2064,6 +2163,55 @@ mod tests {
             result["structuredContent"]["matches"][0]["matching_lines"][0]["text"],
             "Fatal build issue"
         );
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn job_rerun_request_uses_recorded_job_name() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-job-rerun-request");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-1".to_string(),
+                finished_at: "2026-03-31T12:00:00Z".to_string(),
+                status: HistoryStatus::Failed,
+                jobs: vec![HistoryJob {
+                    name: "rust-checks".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Failed,
+                    log_hash: "abc123".to_string(),
+                    log_path: None,
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
+                    runtime_summary_path: None,
+                    env_vars: Vec::new(),
+                }],
+            }],
+        )
+        .expect("save history");
+
+        let request = job_rerun_request(&json!({
+            "job": "rust-checks",
+            "engine": "docker"
+        }))
+        .expect("job rerun request");
+
+        assert_eq!(request.source_run.run_id, "run-1");
+        assert_eq!(request.source_job.name, "rust-checks");
+        assert_eq!(request.run_args.jobs, vec!["rust-checks"]);
+        assert_eq!(request.run_args.engine, crate::EngineChoice::Docker);
         unsafe {
             env::remove_var("OPAL_HOME");
         }

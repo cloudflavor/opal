@@ -158,6 +158,19 @@ pub struct RunArgs {
     #[structopt(long = "gitlab-token", env = "OPAL_GITLAB_TOKEN")]
     pub gitlab_token: Option<String>,
 
+    /// Rerun a job name from the latest or selected recorded run.
+    ///
+    /// When set, Opal verifies the job existed in recorded history and then
+    /// reruns that job name against the current checkout.
+    #[structopt(long = "rerun-job", value_name = "NAME")]
+    pub rerun_job: Option<String>,
+
+    /// Recorded run to use with `--rerun-job`.
+    ///
+    /// Defaults to the latest recorded run when omitted.
+    #[structopt(long = "rerun-run-id", value_name = "RUN_ID")]
+    pub rerun_run_id: Option<String>,
+
     /// Limit execution to selected jobs and their required upstream closure.
     ///
     /// Repeat this option to select multiple jobs.
