@@ -85,6 +85,9 @@ In the current Opal implementation, the most important parts are:
 - `opal_failed_jobs`
   - returns the failed jobs for the latest or a selected recorded run
   - lets an agent jump directly to actionable failures before inspecting full run details
+- `opal_plan_explain`
+  - explains why a job is included, skipped, or blocked in the evaluated plan
+  - helps an agent answer selector and rule questions without inferring from raw plan output
 
 ### Resources
 
@@ -166,6 +169,7 @@ For Opal, the core tools are:
 - `opal_view`
 - `opal_history_list`
 - `opal_failed_jobs`
+- `opal_plan_explain`
 
 Pay attention to arguments such as:
 
@@ -444,8 +448,6 @@ If designing an agent-first Opal MCP experience, the following additions would b
   - rerun one job plus required upstream closure from an existing run
 - `opal_engine_status`
   - report which local engine is healthy and usable
-- `opal_plan_explain`
-  - explain why a job is included, skipped, or blocked
 - `opal_logs_search`
   - search across historical logs for recurring failures
 

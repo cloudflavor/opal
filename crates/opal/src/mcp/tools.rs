@@ -1,5 +1,5 @@
 use crate::app::OpalApp;
-use crate::app::plan::render as render_plan;
+use crate::app::plan::{explain as explain_plan, render as render_plan};
 use crate::app::run::execute_and_capture;
 use crate::app::view::{
     find_history_entry, find_job, latest_history_entry, load_history, read_job_log,
@@ -91,6 +91,23 @@ pub(crate) fn list_tools() -> Value {
                         "limit": { "type": "integer", "minimum": 1 }
                     }
                 }
+            },
+            {
+                "name": "opal_plan_explain",
+                "title": "Explain a job's plan status",
+                "description": "Explains why a job is included, skipped, or blocked in the evaluated plan.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "job": { "type": "string" },
+                        "workdir": { "type": "string" },
+                        "pipeline": { "type": "string" },
+                        "gitlab_base_url": { "type": "string" },
+                        "gitlab_token": { "type": "string" },
+                        "jobs": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["job"]
+                }
             }
         ]
     })
@@ -118,6 +135,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_view" => Ok(view_tool(arguments)?),
         "opal_failed_jobs" => Ok(failed_jobs_tool(arguments)?),
         "opal_history_list" => Ok(history_list_tool(arguments)?),
+        "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
         other => Ok(error_tool_result(
             format!("unknown tool: {other}"),
             Value::Null,
@@ -270,6 +288,20 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
             "total_runs": total_runs,
             "returned_runs": runs.len(),
         }),
+        false,
+    ))
+}
+
+fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+    let job = arguments
+        .get("job")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .context("missing job")?;
+    let explanation = explain_plan(app, plan_args_from_value(arguments)?, &job)?;
+    Ok(tool_result(
+        explanation.summary,
+        json!(explanation.details),
         false,
     ))
 }
@@ -479,6 +511,7 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "opal_view"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_failed_jobs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_plan_explain"));
     }
 
     #[test]
@@ -872,5 +905,127 @@ mod tests {
         unsafe {
             env::remove_var("OPAL_HOME");
         }
+    }
+
+    #[test]
+    fn plan_explain_tool_reports_selected_dependency_closure() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join(".gitlab-ci.yml"),
+            concat!(
+                "stages: [build, test]\n",
+                "build:\n",
+                "  stage: build\n",
+                "  script: [\"echo build\"]\n",
+                "test:\n",
+                "  stage: test\n",
+                "  needs: [build]\n",
+                "  script: [\"echo test\"]\n"
+            ),
+        )
+        .expect("write pipeline");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_plan_explain",
+                    "arguments": {
+                        "workdir": dir.path().display().to_string(),
+                        "job": "build",
+                        "jobs": ["test"]
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["job"]["status"], "included");
+        assert_eq!(result["structuredContent"]["job"]["selected"], true);
+        assert_eq!(
+            result["structuredContent"]["job"]["selected_directly"],
+            false
+        );
+    }
+
+    #[test]
+    fn plan_explain_tool_reports_blocked_jobs_outside_selected_slice() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join(".gitlab-ci.yml"),
+            concat!(
+                "stages: [build, docs]\n",
+                "build:\n",
+                "  stage: build\n",
+                "  script: [\"echo build\"]\n",
+                "docs:\n",
+                "  stage: docs\n",
+                "  script: [\"echo docs\"]\n"
+            ),
+        )
+        .expect("write pipeline");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_plan_explain",
+                    "arguments": {
+                        "workdir": dir.path().display().to_string(),
+                        "job": "docs",
+                        "jobs": ["build"]
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["job"]["status"], "blocked");
+        assert_eq!(result["structuredContent"]["job"]["selected"], false);
+    }
+
+    #[test]
+    fn plan_explain_tool_reports_skipped_jobs() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join(".gitlab-ci.yml"),
+            concat!(
+                "stages: [test]\n",
+                "never-job:\n",
+                "  stage: test\n",
+                "  when: never\n",
+                "  script: [\"echo nope\"]\n"
+            ),
+        )
+        .expect("write pipeline");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_plan_explain",
+                    "arguments": {
+                        "workdir": dir.path().display().to_string(),
+                        "job": "never-job"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["job"]["status"], "skipped");
+        assert_eq!(
+            result["structuredContent"]["job"]["resolved_name"],
+            "never-job"
+        );
     }
 }
