@@ -82,7 +82,7 @@ pub(crate) fn list_tools() -> Value {
             {
                 "name": "opal_history_list",
                 "title": "List recorded Opal runs",
-                "description": "Returns recorded Opal runs with optional status and job-name filters.",
+                "description": "Returns recorded Opal runs with optional status, job-name, date-range, branch, and pipeline-file filters.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -91,6 +91,8 @@ pub(crate) fn list_tools() -> Value {
                             "enum": ["success", "failed", "skipped", "running"]
                         },
                         "job": { "type": "string" },
+                        "branch": { "type": "string" },
+                        "pipeline_file": { "type": "string" },
                         "since": { "type": "string" },
                         "until": { "type": "string" },
                         "limit": { "type": "integer", "minimum": 1 }
@@ -319,6 +321,8 @@ fn failed_jobs_tool(arguments: Value) -> Result<Value> {
 fn history_list_tool(arguments: Value) -> Result<Value> {
     let status = history_status_from_value(arguments.get("status"))?;
     let job_name = arguments.get("job").and_then(Value::as_str);
+    let branch = arguments.get("branch").and_then(Value::as_str);
+    let pipeline_file = arguments.get("pipeline_file").and_then(Value::as_str);
     let since = history_time_filter(arguments.get("since"), "since")?;
     let until = history_time_filter(arguments.get("until"), "until")?;
     let limit = arguments
@@ -334,12 +338,21 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
         .rev()
         .filter(|entry| matches_status(entry, status))
         .filter(|entry| matches_job_name(entry, job_name))
+        .filter(|entry| matches_branch(entry, branch))
+        .filter(|entry| matches_pipeline_file(entry, pipeline_file))
         .filter(|entry| matches_finished_at(entry, since.as_deref(), until.as_deref()))
         .take(limit)
         .collect::<Vec<_>>();
 
-    let filter_summary =
-        history_filter_summary(status, job_name, since.as_deref(), until.as_deref(), limit);
+    let filter_summary = history_filter_summary(
+        status,
+        job_name,
+        branch,
+        pipeline_file,
+        since.as_deref(),
+        until.as_deref(),
+        limit,
+    );
     let text = if runs.is_empty() {
         format!("No recorded Opal runs matched {filter_summary}")
     } else {
@@ -357,6 +370,8 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
             "filters": {
                 "status": status.map(history_status_label),
                 "job": job_name,
+                "branch": branch,
+                "pipeline_file": pipeline_file,
                 "since": since,
                 "until": until,
                 "limit": limit,
@@ -635,9 +650,19 @@ fn matches_job_name(entry: &HistoryEntry, job_name: Option<&str>) -> bool {
     job_name.is_none_or(|job_name| entry.jobs.iter().any(|job| job.name == job_name))
 }
 
+fn matches_branch(entry: &HistoryEntry, branch: Option<&str>) -> bool {
+    branch.is_none_or(|branch| entry.ref_name.as_deref() == Some(branch))
+}
+
+fn matches_pipeline_file(entry: &HistoryEntry, pipeline_file: Option<&str>) -> bool {
+    pipeline_file.is_none_or(|pipeline_file| entry.pipeline_file.as_deref() == Some(pipeline_file))
+}
+
 fn history_filter_summary(
     status: Option<HistoryStatus>,
     job_name: Option<&str>,
+    branch: Option<&str>,
+    pipeline_file: Option<&str>,
     since: Option<&str>,
     until: Option<&str>,
     limit: usize,
@@ -648,6 +673,12 @@ fn history_filter_summary(
     }
     if let Some(job_name) = job_name {
         filters.push(format!("job={job_name}"));
+    }
+    if let Some(branch) = branch {
+        filters.push(format!("branch={branch}"));
+    }
+    if let Some(pipeline_file) = pipeline_file {
+        filters.push(format!("pipeline_file={pipeline_file}"));
     }
     if let Some(since) = since {
         filters.push(format!("since={since}"));
@@ -1335,6 +1366,8 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "now".to_string(),
                 status: HistoryStatus::Success,
+                ref_name: None,
+                pipeline_file: None,
                 jobs: vec![HistoryJob {
                     name: "build".to_string(),
                     stage: "test".to_string(),
@@ -1394,6 +1427,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "test".to_string(),
@@ -1414,6 +1449,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "now".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![
                         HistoryJob {
                             name: "rust-checks".to_string(),
@@ -1491,6 +1528,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "lint".to_string(),
                         stage: "test".to_string(),
@@ -1511,6 +1550,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "test".to_string(),
@@ -1569,18 +1610,24 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
                 HistoryEntry {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
                 HistoryEntry {
                     run_id: "run-3".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
             ],
@@ -1631,6 +1678,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "test".to_string(),
@@ -1651,6 +1700,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "rust-checks".to_string(),
                         stage: "test".to_string(),
@@ -1713,18 +1764,24 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "2026-03-29T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
                 HistoryEntry {
                     run_id: "run-2".to_string(),
                     finished_at: "2026-03-30T12:00:00Z".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
                 HistoryEntry {
                     run_id: "run-3".to_string(),
                     finished_at: "2026-03-31T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![],
                 },
             ],
@@ -1766,6 +1823,77 @@ mod tests {
     }
 
     #[test]
+    fn history_list_tool_filters_runs_by_branch_and_pipeline_file() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-history-list-branch-pipeline");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-1".to_string(),
+                    finished_at: "2026-03-29T12:00:00Z".to_string(),
+                    status: HistoryStatus::Success,
+                    ref_name: Some("main".to_string()),
+                    pipeline_file: Some(".gitlab-ci.yml".to_string()),
+                    jobs: vec![],
+                },
+                HistoryEntry {
+                    run_id: "run-2".to_string(),
+                    finished_at: "2026-03-30T12:00:00Z".to_string(),
+                    status: HistoryStatus::Failed,
+                    ref_name: Some("release".to_string()),
+                    pipeline_file: Some(".gitlab-ci.yml".to_string()),
+                    jobs: vec![],
+                },
+                HistoryEntry {
+                    run_id: "run-3".to_string(),
+                    finished_at: "2026-03-31T12:00:00Z".to_string(),
+                    status: HistoryStatus::Success,
+                    ref_name: Some("main".to_string()),
+                    pipeline_file: Some("pipelines/docs.yml".to_string()),
+                    jobs: vec![],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_history_list",
+                    "arguments": {
+                        "branch": "main",
+                        "pipeline_file": "pipelines/docs.yml"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        let runs = result["structuredContent"]["runs"]
+            .as_array()
+            .expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "run-3");
+        assert_eq!(result["structuredContent"]["filters"]["branch"], "main");
+        assert_eq!(
+            result["structuredContent"]["filters"]["pipeline_file"],
+            "pipelines/docs.yml"
+        );
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
     fn run_diff_tool_compares_latest_two_runs() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
@@ -1781,6 +1909,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![
                         HistoryJob {
                             name: "build".to_string(),
@@ -1818,6 +1948,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![
                         HistoryJob {
                             name: "build".to_string(),
@@ -1912,6 +2044,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "first".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "build".to_string(),
@@ -1932,6 +2066,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "second".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "build".to_string(),
@@ -1952,6 +2088,8 @@ mod tests {
                     run_id: "run-3".to_string(),
                     finished_at: "third".to_string(),
                     status: HistoryStatus::Success,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "build".to_string(),
@@ -2021,6 +2159,8 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "build".to_string(),
                         stage: "build".to_string(),
@@ -2041,6 +2181,8 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    ref_name: None,
+                    pipeline_file: None,
                     jobs: vec![HistoryJob {
                         name: "docs".to_string(),
                         stage: "test".to_string(),
@@ -2104,6 +2246,8 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "now".to_string(),
                 status: HistoryStatus::Failed,
+                ref_name: None,
+                pipeline_file: None,
                 jobs: vec![
                     HistoryJob {
                         name: "build".to_string(),
@@ -2183,6 +2327,8 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "2026-03-31T12:00:00Z".to_string(),
                 status: HistoryStatus::Failed,
+                ref_name: None,
+                pipeline_file: None,
                 jobs: vec![HistoryJob {
                     name: "rust-checks".to_string(),
                     stage: "test".to_string(),

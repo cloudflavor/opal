@@ -80,9 +80,8 @@ In the current Opal implementation, the most important parts are:
   - inspects the latest or a selected recorded run
   - can include job logs and runtime summaries
 - `opal_history_list`
-  - returns recorded runs with optional run-status and job-name filters
+  - returns recorded runs with optional run-status, job-name, branch, pipeline-file, and RFC3339 date-range filters
   - lets an agent narrow history before choosing a run to inspect
-  - also supports RFC3339 `since` / `until` filters for time-bounded run discovery
 - `opal_failed_jobs`
   - returns the failed jobs for the latest or a selected recorded run
   - lets an agent jump directly to actionable failures before inspecting full run details
@@ -192,6 +191,8 @@ Pay attention to arguments such as:
 - `workdir`
 - `pipeline`
 - `jobs`
+- `branch`
+- `pipeline_file`
 - `engine`
 - `json`
 - `include_log`
@@ -452,14 +453,9 @@ Use this as the default playbook.
 
 - run additional dependent jobs or the full pipeline once the narrow scope is clean
 
-## What Would Make Opal Even Better For Agents
+## Current MCP Backlog
 
-If designing an agent-first Opal MCP experience, the following additions would be especially valuable:
-
-- richer `opal_history_list`
-  - add branch and pipeline-file filters on top of the current status, job-name, and date-range filters
-
-These are not required to use Opal effectively, but they would make agent workflows much more powerful.
+There are no open agent-first MCP enhancements tracked in this document right now.
 
 ## Short Agent Instruction Block
 

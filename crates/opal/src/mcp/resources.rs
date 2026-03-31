@@ -154,6 +154,8 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "now".to_string(),
                 status: HistoryStatus::Success,
+                ref_name: None,
+                pipeline_file: None,
                 jobs: vec![HistoryJob {
                     name: "build".to_string(),
                     stage: "test".to_string(),

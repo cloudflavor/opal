@@ -4159,6 +4159,8 @@ mod tests {
             run_id: "run-2".to_string(),
             finished_at: "2026-03-27T00:00:00Z".to_string(),
             status: HistoryStatus::Success,
+            ref_name: None,
+            pipeline_file: None,
             jobs: vec![HistoryJob {
                 name: "unit-tests".to_string(),
                 stage: "test".to_string(),
@@ -4206,6 +4208,8 @@ mod tests {
             run_id: "run-2".to_string(),
             finished_at: "2026-03-27T00:00:00Z".to_string(),
             status: HistoryStatus::Success,
+            ref_name: None,
+            pipeline_file: None,
             jobs: vec![
                 HistoryJob {
                     name: "lint".to_string(),
@@ -4269,6 +4273,8 @@ mod tests {
             run_id: "run-latest".to_string(),
             finished_at: "2026-03-27T00:00:00Z".to_string(),
             status: HistoryStatus::Success,
+            ref_name: None,
+            pipeline_file: None,
             jobs: vec![HistoryJob {
                 name: "lint".to_string(),
                 stage: "test".to_string(),

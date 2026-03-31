@@ -415,8 +415,23 @@ impl ExecutorCore {
                 )
             })
             .collect();
-        self.history_store
-            .record(&self.run_id, summaries, &resource_map)
+        let run_manual = env::var("OPAL_RUN_MANUAL").is_ok_and(|v| v == "1");
+        let ctx = RuleContext::from_env(&self.config.workdir, self.shared_env.clone(), run_manual);
+        let ref_name = ctx
+            .env_value("CI_COMMIT_REF_NAME")
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let pipeline_file = Some(recorded_pipeline_file(
+            &self.config.workdir,
+            &self.config.pipeline,
+        ));
+        self.history_store.record(
+            &self.run_id,
+            summaries,
+            &resource_map,
+            ref_name,
+            pipeline_file,
+        )
     }
 
     pub(crate) fn record_runtime_objects(
@@ -922,6 +937,14 @@ impl ExecutorCore {
             ],
         )
     }
+}
+
+fn recorded_pipeline_file(workdir: &Path, pipeline: &Path) -> String {
+    pipeline
+        .strip_prefix(workdir)
+        .unwrap_or(pipeline)
+        .display()
+        .to_string()
 }
 
 fn is_user_visible_job_env(key: &str) -> bool {

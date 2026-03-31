@@ -8,6 +8,10 @@ pub struct HistoryEntry {
     pub run_id: String,
     pub finished_at: String,
     pub status: HistoryStatus,
+    #[serde(default)]
+    pub ref_name: Option<String>,
+    #[serde(default)]
+    pub pipeline_file: Option<String>,
     pub jobs: Vec<HistoryJob>,
 }
 

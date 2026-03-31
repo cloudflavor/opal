@@ -56,6 +56,8 @@ impl HistoryStore {
         run_id: &str,
         summaries: &[JobSummary],
         resources: &HashMap<String, HistoryResources>,
+        ref_name: Option<String>,
+        pipeline_file: Option<String>,
     ) -> Option<HistoryEntry> {
         let finished_at = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
@@ -64,6 +66,8 @@ impl HistoryStore {
             run_id: run_id.to_string(),
             finished_at,
             status: pipeline_status(summaries),
+            ref_name,
+            pipeline_file,
             jobs: summaries
                 .iter()
                 .map(|summary| HistoryJob {
@@ -200,11 +204,19 @@ mod tests {
         )]);
 
         let entry = store
-            .record("run-123", &summaries, &resources)
+            .record(
+                "run-123",
+                &summaries,
+                &resources,
+                Some("main".into()),
+                Some(".gitlab-ci.yml".into()),
+            )
             .expect("history entry recorded");
 
         assert_eq!(entry.run_id, "run-123");
         assert_eq!(entry.status, HistoryStatus::Success);
+        assert_eq!(entry.ref_name.as_deref(), Some("main"));
+        assert_eq!(entry.pipeline_file.as_deref(), Some(".gitlab-ci.yml"));
         assert_eq!(entry.jobs.len(), 1);
         assert_eq!(
             entry.jobs[0].artifact_dir.as_deref(),

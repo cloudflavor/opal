@@ -198,6 +198,8 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "2026-03-31T12:00:00Z".to_string(),
                 status: HistoryStatus::Failed,
+                ref_name: None,
+                pipeline_file: None,
                 jobs: vec![HistoryJob {
                     name: "rust-checks".to_string(),
                     stage: "test".to_string(),
