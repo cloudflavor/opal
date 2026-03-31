@@ -8,6 +8,7 @@ use anyhow::Result;
 use std::env;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct OpalApp {
     current_dir: PathBuf,
 }

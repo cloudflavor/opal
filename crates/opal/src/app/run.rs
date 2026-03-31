@@ -41,8 +41,7 @@ pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapt
         .iter()
         .rev()
         .find(|entry| !known_run_ids.contains(&entry.run_id))
-        .cloned()
-        .or_else(|| after.last().cloned());
+        .cloned();
 
     RunCapture {
         history_entry,

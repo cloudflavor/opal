@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, OnceLock};
+use time::OffsetDateTime;
 
 pub(crate) fn list_tools() -> Value {
     json!({
@@ -37,7 +39,7 @@ pub(crate) fn list_tools() -> Value {
             {
                 "name": "opal_run",
                 "title": "Run an Opal pipeline",
-                "description": "Runs the local pipeline without the TUI and returns the latest recorded run summary.",
+                "description": "Starts a local pipeline run in the background and returns an operation handle for status polling.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -52,6 +54,18 @@ pub(crate) fn list_tools() -> Value {
                         "gitlab_token": { "type": "string" },
                         "jobs": { "type": "array", "items": { "type": "string" } }
                     }
+                }
+            },
+            {
+                "name": "opal_run_status",
+                "title": "Inspect a background Opal run operation",
+                "description": "Returns the current or final status for a background Opal MCP run operation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation_id": { "type": "string" }
+                    },
+                    "required": ["operation_id"]
                 }
             },
             {
@@ -200,6 +214,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
             ))
         }
         "opal_run" => Ok(run_tool(app, arguments).await),
+        "opal_run_status" => Ok(run_status_tool(arguments)?),
         "opal_view" => Ok(view_tool(arguments)?),
         "opal_failed_jobs" => Ok(failed_jobs_tool(arguments)?),
         "opal_history_list" => Ok(history_list_tool(arguments)?),
@@ -219,29 +234,42 @@ async fn run_tool(app: &OpalApp, arguments: Value) -> Value {
     let Ok(args) = run_args_from_value(arguments) else {
         return error_tool_result("invalid run arguments".to_string(), Value::Null);
     };
-    let capture = execute_and_capture(app, args).await;
-    let structured = capture
-        .history_entry
-        .as_ref()
-        .map(history_entry_json)
-        .unwrap_or(Value::Null);
-    let text = match (&capture.history_entry, &capture.error) {
-        (Some(entry), Some(err)) => {
-            format!(
-                "Opal run {} finished with status {:?}: {err}",
-                entry.run_id, entry.status
-            )
-        }
-        (Some(entry), None) => {
-            format!(
-                "Opal run {} finished with status {:?}",
-                entry.run_id, entry.status
-            )
-        }
-        (None, Some(err)) => format!("Opal run failed before recording history: {err}"),
-        (None, None) => "Opal run completed without a recorded history entry".to_string(),
-    };
-    tool_result(text, structured, capture.error.is_some())
+    let requested_jobs = args.jobs.clone();
+    let operation = run_operations().start(
+        RunOperationRequest {
+            tool: "opal_run",
+            requested_jobs,
+            requested_job: None,
+            source_run_id: None,
+        },
+        {
+            let app = app.clone();
+            async move { execute_and_capture(&app, args).await }
+        },
+    );
+    tool_result(
+        format!(
+            "Started background Opal run operation {}. Poll opal_run_status with this operation_id.",
+            operation.operation_id
+        ),
+        json!({ "operation": operation }),
+        false,
+    )
+}
+
+fn run_status_tool(arguments: Value) -> Result<Value> {
+    let operation_id = arguments
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .context("missing operation_id")?;
+    let operation = run_operations()
+        .get(operation_id)
+        .with_context(|| format!("run operation '{operation_id}' not found"))?;
+    Ok(tool_result(
+        render_run_operation_summary(&operation),
+        json!({ "operation": operation }),
+        false,
+    ))
 }
 
 fn view_tool(arguments: Value) -> Result<Value> {
@@ -486,32 +514,32 @@ async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
         Ok(request) => request,
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
-    let capture = execute_and_capture(app, request.run_args).await;
-    let structured = json!({
-        "source_run": history_entry_json(&request.source_run),
-        "source_job": request.source_job,
-        "requested_job": request.requested_job,
-        "rerun": capture.history_entry.as_ref().map(history_entry_json).unwrap_or(Value::Null),
-    });
-    let text = match (&capture.history_entry, &capture.error) {
-        (Some(entry), Some(err)) => format!(
-            "Reran job {} from recorded run {} as Opal run {} with status {:?}: {err}",
-            request.requested_job, request.source_run.run_id, entry.run_id, entry.status
+    let operation = run_operations().start(
+        RunOperationRequest {
+            tool: "opal_job_rerun",
+            requested_jobs: vec![request.requested_job.clone()],
+            requested_job: Some(request.requested_job.clone()),
+            source_run_id: Some(request.source_run.run_id.clone()),
+        },
+        {
+            let app = app.clone();
+            let run_args = request.run_args;
+            async move { execute_and_capture(&app, run_args).await }
+        },
+    );
+    tool_result(
+        format!(
+            "Started background rerun operation {} for job {} from recorded run {}. Poll opal_run_status with this operation_id.",
+            operation.operation_id, request.requested_job, request.source_run.run_id
         ),
-        (Some(entry), None) => format!(
-            "Reran job {} from recorded run {} as Opal run {} with status {:?}",
-            request.requested_job, request.source_run.run_id, entry.run_id, entry.status
-        ),
-        (None, Some(err)) => format!(
-            "Failed to rerun job {} from recorded run {}: {err}",
-            request.requested_job, request.source_run.run_id
-        ),
-        (None, None) => format!(
-            "Reran job {} from recorded run {} without a recorded history entry",
-            request.requested_job, request.source_run.run_id
-        ),
-    };
-    tool_result(text, structured, capture.error.is_some())
+        json!({
+            "operation": operation,
+            "source_run": history_entry_json(&request.source_run),
+            "source_job": request.source_job,
+            "requested_job": request.requested_job,
+        }),
+        false,
+    )
 }
 
 fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
@@ -592,6 +620,161 @@ fn tool_result(text: String, structured_content: Value, is_error: bool) -> Value
 
 fn error_tool_result(text: String, structured_content: Value) -> Value {
     tool_result(text, structured_content, true)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RunOperation {
+    operation_id: String,
+    tool: String,
+    status: &'static str,
+    started_at: String,
+    finished_at: Option<String>,
+    requested_jobs: Vec<String>,
+    requested_job: Option<String>,
+    source_run_id: Option<String>,
+    run: Option<HistoryEntry>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RunOperationRequest {
+    tool: &'static str,
+    requested_jobs: Vec<String>,
+    requested_job: Option<String>,
+    source_run_id: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct RunOperations {
+    inner: Arc<Mutex<BTreeMap<String, RunOperation>>>,
+}
+
+impl RunOperations {
+    fn start<F>(&self, request: RunOperationRequest, future: F) -> RunOperation
+    where
+        F: std::future::Future<Output = crate::app::run::RunCapture> + Send + 'static,
+    {
+        let operation = RunOperation {
+            operation_id: next_operation_id(),
+            tool: request.tool.to_string(),
+            status: "running",
+            started_at: now_rfc3339(),
+            finished_at: None,
+            requested_jobs: request.requested_jobs,
+            requested_job: request.requested_job,
+            source_run_id: request.source_run_id,
+            run: None,
+            error: None,
+        };
+        let operation_id = operation.operation_id.clone();
+        self.inner
+            .lock()
+            .expect("run operations lock")
+            .insert(operation_id.clone(), operation.clone());
+
+        let operations = self.clone();
+        tokio::spawn(async move {
+            let capture = future.await;
+            operations.finish(&operation_id, capture);
+        });
+
+        operation
+    }
+
+    fn get(&self, operation_id: &str) -> Option<RunOperation> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|operations| operations.get(operation_id).cloned())
+    }
+
+    fn finish(&self, operation_id: &str, capture: crate::app::run::RunCapture) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(operation) = operations.get_mut(operation_id) else {
+            return;
+        };
+        operation.finished_at = Some(now_rfc3339());
+        operation.status = if capture.error.is_some() {
+            "failed"
+        } else {
+            "succeeded"
+        };
+        operation.run = capture.history_entry;
+        operation.error = capture.error;
+    }
+
+    #[cfg(test)]
+    fn clear(&self) {
+        if let Ok(mut operations) = self.inner.lock() {
+            operations.clear();
+        }
+    }
+}
+
+fn run_operations() -> RunOperations {
+    static RUN_OPERATIONS: OnceLock<RunOperations> = OnceLock::new();
+    RUN_OPERATIONS.get_or_init(RunOperations::default).clone()
+}
+
+fn next_operation_id() -> String {
+    use sha2::{Digest, Sha256};
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(process::id().to_le_bytes());
+    let suffix = format!("{:x}", hasher.finalize());
+    format!("op-{}", &suffix[..8])
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn render_run_operation_summary(operation: &RunOperation) -> String {
+    match (
+        operation.status,
+        operation.run.as_ref(),
+        operation.error.as_deref(),
+    ) {
+        ("running", _, _) => format!(
+            "Opal background operation {} is still running",
+            operation.operation_id
+        ),
+        ("succeeded", Some(run), _) => format!(
+            "Opal background operation {} completed as run {} with status {:?}",
+            operation.operation_id, run.run_id, run.status
+        ),
+        ("succeeded", None, _) => format!(
+            "Opal background operation {} completed without a recorded history entry",
+            operation.operation_id
+        ),
+        ("failed", Some(run), Some(error)) => format!(
+            "Opal background operation {} finished as run {} with status {:?}: {error}",
+            operation.operation_id, run.run_id, run.status
+        ),
+        ("failed", None, Some(error)) => format!(
+            "Opal background operation {} failed before recording history: {error}",
+            operation.operation_id
+        ),
+        (_, _, Some(error)) => format!(
+            "Opal background operation {} finished with error: {error}",
+            operation.operation_id
+        ),
+        _ => format!(
+            "Opal background operation {} is in state {}",
+            operation.operation_id, operation.status
+        ),
+    }
 }
 
 fn history_entry_json(entry: &HistoryEntry) -> Value {
@@ -1304,12 +1487,12 @@ fn _view_args_from_value(value: Value) -> ViewArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_tool, job_rerun_request, list_tools, run_args_from_value};
+    use super::{call_tool, job_rerun_request, list_tools, run_args_from_value, run_operations};
     use crate::app::OpalApp;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::env;
     use std::ffi::OsString;
     use std::fs;
@@ -1321,6 +1504,7 @@ mod tests {
         let tools = response["tools"].as_array().expect("tool array");
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_run_status"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_view"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_failed_jobs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
@@ -1347,6 +1531,77 @@ mod tests {
         assert!(args.no_tui);
         assert_eq!(args.jobs, vec!["build"]);
         assert_eq!(args.max_parallel_jobs, 2);
+    }
+
+    #[tokio::test]
+    async fn run_status_tool_reports_background_failure() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        run_operations().clear();
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join(".gitlab-ci.yml"),
+            "stages:\n  - test\nhello:\n  stage: test\n  script:\n    - echo hello\n",
+        )
+        .expect("write pipeline");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let start = call_tool(
+            &app,
+            json!({
+                "name": "opal_run",
+                "arguments": {
+                    "workdir": dir.path().display().to_string(),
+                    "pipeline": "missing.yml"
+                }
+            }),
+        )
+        .await
+        .expect("start op");
+
+        assert_eq!(start["isError"], false);
+        let operation_id = start["structuredContent"]["operation"]["operation_id"]
+            .as_str()
+            .expect("operation id")
+            .to_string();
+
+        let mut terminal = None;
+        for _ in 0..50 {
+            let status = call_tool(
+                &app,
+                json!({
+                    "name": "opal_run_status",
+                    "arguments": {
+                        "operation_id": operation_id
+                    }
+                }),
+            )
+            .await
+            .expect("status");
+            let state = status["structuredContent"]["operation"]["status"]
+                .as_str()
+                .expect("status");
+            if state != "running" {
+                terminal = Some(status);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let terminal = terminal.expect("terminal status");
+        assert_eq!(
+            terminal["structuredContent"]["operation"]["status"],
+            "failed"
+        );
+        assert_eq!(
+            terminal["structuredContent"]["operation"]["run"],
+            Value::Null
+        );
+        assert!(
+            !terminal["structuredContent"]["operation"]["error"]
+                .as_str()
+                .expect("error")
+                .is_empty()
+        );
     }
 
     #[test]

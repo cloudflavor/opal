@@ -116,11 +116,11 @@ mod tests {
 
     #[test]
     fn reads_content_length_messages() {
-        let body = b"{\"jsonrpc\":\"2.0\",\"id\":1}";
+        let body = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1})).expect("json body");
         let payload = format!(
             "Content-Length: {}\r\n\r\n{}",
             body.len(),
-            String::from_utf8_lossy(body)
+            String::from_utf8_lossy(&body)
         );
         let mut reader = Cursor::new(payload.into_bytes());
         let mut framing = None;
@@ -134,8 +134,9 @@ mod tests {
 
     #[test]
     fn reads_newline_delimited_messages() {
-        let payload = b"{\"jsonrpc\":\"2.0\",\"id\":1}\n";
-        let mut reader = Cursor::new(payload.as_slice());
+        let mut payload = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1})).expect("json");
+        payload.push(b'\n');
+        let mut reader = Cursor::new(payload);
         let mut framing = None;
         let message = read_message(&mut reader, &mut framing)
             .expect("read message")
@@ -148,16 +149,15 @@ mod tests {
     #[test]
     fn writes_newline_delimited_messages() {
         let mut output = Vec::new();
-        write_message(
-            &mut output,
-            &json!({"jsonrpc":"2.0","result":{}}),
-            FramingMode::NewlineDelimited,
-        )
-        .expect("write message");
+        let message = json!({"jsonrpc":"2.0","result":{}});
+        write_message(&mut output, &message, FramingMode::NewlineDelimited).expect("write");
 
+        let written = String::from_utf8(output).expect("utf8");
+        let (json_line, newline) = written.split_at(written.len() - 1);
+        assert_eq!(newline, "\n");
         assert_eq!(
-            String::from_utf8(output).expect("utf8"),
-            "{\"jsonrpc\":\"2.0\",\"result\":{}}\n"
+            serde_json::from_str::<serde_json::Value>(json_line).expect("parse written json"),
+            message
         );
     }
 }
