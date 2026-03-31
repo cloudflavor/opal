@@ -35,7 +35,7 @@ rust-checks:
     - job: fetch-sources
       artifacts: false
   script:
-    - cargo check
+    - cargo check --workspace --all-targets --locked
     - cargo fmt --all -- --check
     - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
 
@@ -61,7 +61,16 @@ unit-tests:
     - job: rust-checks
       artifacts: false
   script:
-    - cargo test --all --all-targets --locked
+    - cargo test --workspace --all-targets --locked
+
+opal-install-smoke:
+  stage: test
+  needs:
+    - job: fetch-sources
+      artifacts: false
+  script:
+    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
+    - $CI_PROJECT_DIR/.opal-installed/bin/opal --version
 
 extended-tests:
   stage: test
@@ -75,8 +84,8 @@ extended-tests:
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - cargo build --release --locked
-    - export OPAL_BIN="$CARGO_TARGET_DIR/release/opal"
+    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
+    - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
       ./scripts/test-pipelines.sh
       needs-branch
@@ -107,8 +116,8 @@ e2e-tests:
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - cargo build --release --locked
-    - export OPAL_BIN="$CARGO_TARGET_DIR/release/opal"
+    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
+    - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
       ./scripts/test-pipelines.sh
       resources-services
@@ -153,7 +162,7 @@ package-crate:
     TMPDIR: "$CI_PROJECT_DIR/target/tmp"
   script:
     - mkdir -p "$TMPDIR"
-    - cargo package --locked
+    - cargo package -p opal --locked
   artifacts:
     expire_in: 1 week
     paths:
@@ -163,6 +172,8 @@ release-artifacts:arm64:
   stage: release
   needs:
     - job: rust-checks
+      artifacts: false
+    - job: opal-install-smoke
       artifacts: false
     - job: unit-tests
       artifacts: false
@@ -193,6 +204,8 @@ release-artifacts:amd64:
   stage: release
   needs:
     - job: rust-checks
+      artifacts: false
+    - job: opal-install-smoke
       artifacts: false
     - job: unit-tests
       artifacts: false
@@ -232,7 +245,7 @@ publish-crate:
   script:
     - bash ./scripts/check-release-tag-version.sh
     - echo "publishing opal $CI_COMMIT_TAG"
-    - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+    - cargo publish -p opal --locked --token "$CARGO_REGISTRY_TOKEN"
 
 publish-github-release:
   stage: publish
