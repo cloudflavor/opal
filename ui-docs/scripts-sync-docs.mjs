@@ -8,31 +8,94 @@ const docsDir = path.join(repoRoot, 'docs');
 const outputDir = path.join(process.cwd(), 'src', 'lib', 'generated');
 const outputFile = path.join(outputDir, 'docs.json');
 const releaseFile = path.join(outputDir, 'release.json');
+const crateManifestFile = path.join(repoRoot, 'crates', 'opal', 'Cargo.toml');
+const explicitReleaseTag = process.env.CI_COMMIT_TAG || process.env.GIT_COMMIT_TAG || null;
 
 const preferredOrder = ['index', 'install', 'quickstart', 'pipeline', 'plan', 'config', 'ai-config', 'ai', 'gitlab-parity', 'ui'];
 
-const cargoToml = await fs.readFile(path.join(repoRoot, 'Cargo.toml'), 'utf8');
-const version = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
-const repository = cargoToml.match(/^repository = "([^"]+)"$/m)?.[1];
+async function readCrateReleaseMetadata() {
+  const cargoToml = await fs.readFile(crateManifestFile, 'utf8');
+  const version = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
+  const repository = cargoToml.match(/^repository = "([^"]+)"$/m)?.[1];
 
-if (!version || !repository) {
-  throw new Error('failed to read version/repository from Cargo.toml');
+  if (!version || !repository) {
+    throw new Error(`failed to read version/repository from ${path.relative(repoRoot, crateManifestFile)}`);
+  }
+
+  return { version, repository };
 }
 
-const releaseTag = `v${version}`;
-const releasesBaseUrl = `${repository}/releases/download/${releaseTag}`;
+function buildReleaseMeta({ version, repository, releaseTag }) {
+  const releasesBaseUrl = `${repository}/releases/download/${releaseTag}`;
 
-const releaseMeta = {
-  version,
-  tag: releaseTag,
-  repository,
-  releasesUrl: `${repository}/releases`,
-  assets: {
-    macosArm64: `${releasesBaseUrl}/opal-${version}-aarch64-apple-silicon.tar.gz`,
-    linuxArm64: `${releasesBaseUrl}/opal-${version}-aarch64-unknown-linux-gnu.tar.gz`,
-    linuxAmd64: `${releasesBaseUrl}/opal-${version}-x86_64-unknown-linux-gnu.tar.gz`
+  return {
+    version,
+    tag: releaseTag,
+    repository,
+    releasesUrl: `${repository}/releases`,
+    assets: {
+      macosArm64: `${releasesBaseUrl}/opal-${version}-aarch64-apple-silicon.tar.gz`,
+      linuxArm64: `${releasesBaseUrl}/opal-${version}-aarch64-unknown-linux-gnu.tar.gz`,
+      linuxAmd64: `${releasesBaseUrl}/opal-${version}-x86_64-unknown-linux-gnu.tar.gz`
+    }
+  };
+}
+
+function validateReleaseMeta(meta) {
+  if (
+    !meta ||
+    typeof meta.version !== 'string' ||
+    typeof meta.tag !== 'string' ||
+    typeof meta.repository !== 'string' ||
+    typeof meta.releasesUrl !== 'string' ||
+    typeof meta.assets?.macosArm64 !== 'string' ||
+    typeof meta.assets?.linuxArm64 !== 'string' ||
+    typeof meta.assets?.linuxAmd64 !== 'string'
+  ) {
+    throw new Error(`invalid release metadata in ${path.relative(process.cwd(), releaseFile)}`);
   }
-};
+  return meta;
+}
+
+async function readExistingReleaseMeta() {
+  try {
+    const raw = await fs.readFile(releaseFile, 'utf8');
+    return validateReleaseMeta(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function resolveReleaseMeta() {
+  if (!explicitReleaseTag) {
+    const existing = await readExistingReleaseMeta();
+    if (existing) return { releaseMeta: existing, shouldWrite: false };
+
+    const crateMeta = await readCrateReleaseMetadata();
+    return {
+      releaseMeta: buildReleaseMeta({ ...crateMeta, releaseTag: `v${crateMeta.version}` }),
+      shouldWrite: true
+    };
+  }
+
+  const crateMeta = await readCrateReleaseMetadata();
+  if (explicitReleaseTag.replace(/^v/, '') !== crateMeta.version) {
+    throw new Error(
+      `release tag ${explicitReleaseTag} does not match crates/opal version ${crateMeta.version}`
+    );
+  }
+
+  return {
+    releaseMeta: buildReleaseMeta({ ...crateMeta, releaseTag: explicitReleaseTag }),
+    shouldWrite: true
+  };
+}
+
+const { releaseMeta, shouldWrite: shouldWriteReleaseMeta } = await resolveReleaseMeta();
+const version = releaseMeta.version;
+const repository = releaseMeta.repository;
+const releaseTag = releaseMeta.tag;
 
 const tokenMap = new Map([
   ['{{release_version}}', version],
@@ -188,5 +251,7 @@ for (const filename of entries) {
 
 await fs.mkdir(outputDir, { recursive: true });
 await fs.writeFile(outputFile, JSON.stringify(docs, null, 2));
-await fs.writeFile(releaseFile, JSON.stringify(releaseMeta, null, 2));
+if (shouldWriteReleaseMeta) {
+  await fs.writeFile(releaseFile, JSON.stringify(releaseMeta, null, 2));
+}
 console.log(`generated ${docs.length} docs into ${path.relative(process.cwd(), outputFile)}`);

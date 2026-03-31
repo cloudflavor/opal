@@ -40,6 +40,7 @@ opal.cloudflavor.io
 
 - `scripts-sync-docs.mjs` reads `../docs/*.md`
 - it generates `src/lib/generated/docs.json`
+- it refreshes `src/lib/generated/release.json` only when `CI_COMMIT_TAG` or `GIT_COMMIT_TAG` is explicitly set; ordinary branch builds reuse the checked-in release metadata
 - the Svelte routes render that generated data
 
 If you change the markdown docs, rerun any of:
