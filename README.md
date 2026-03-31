@@ -45,7 +45,7 @@ Opal is a terminal-first, AI-capable GitLab pipeline runner for local debugging.
 ## Quick Start
 
 ```bash
-cargo install opal-cli
+cargo install --path crates/opal
 opal run
 ```
 
@@ -54,7 +54,7 @@ This installs the executable as `opal` on your system.
 For a local checkout during development, use:
 
 ```bash
-cargo install --path .
+cargo install --path crates/opal
 ```
 
 Common entry points:
@@ -64,6 +64,7 @@ opal run
 opal run --no-tui
 opal plan
 opal view
+opal mcp
 ```
 
 When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
@@ -159,7 +160,7 @@ Artifacts are written under `releases/`.
 
 Tag-driven release publishing expectations:
 
-- release tags must match `Cargo.toml`'s package version, allowing an optional leading `v`
+- release tags must match `crates/opal/Cargo.toml`'s package version, allowing an optional leading `v`
 - plain `opal run` does not turn into a tag pipeline just because `HEAD` is tagged; set `CI_COMMIT_TAG` or `GIT_COMMIT_TAG` explicitly when you want local tag-pipeline behavior
 - Linux release artifacts are split into separate `arm64` and `amd64` release jobs so each target runs in its own matching container image platform
 - `CARGO_REGISTRY_TOKEN` enables automatic crates.io publishing from the tag pipeline

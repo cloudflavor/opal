@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-cargo install opal-cli
+cargo install --path crates/opal
 ```
 
 This installs the executable as `opal`.
@@ -21,7 +21,7 @@ https://github.com/apple/container
 If you are installing from a local checkout while developing Opal itself, use:
 
 ```bash
-cargo install --path .
+cargo install --path crates/opal
 ```
 
 ## Prepare A Workspace

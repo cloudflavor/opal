@@ -20,17 +20,22 @@ release_tag() {
   echo "${tag}"
 }
 
-manifest_version() {
+manifest_version_for() {
+  local manifest="$1"
   local version
   version="$(awk -F '"' '
     $0 == "[package]" { in_package = 1; next }
     /^\[/ && $0 != "[package]" { in_package = 0 }
     in_package && $1 ~ /^version = / { print $2; exit }
-  ' "${REPO_ROOT}/Cargo.toml")"
+  ' "${manifest}")"
   if [[ -z "${version}" ]]; then
-    die "failed to read [package].version from Cargo.toml"
+    die "failed to read [package].version from ${manifest}"
   fi
   echo "${version}"
+}
+
+manifest_version() {
+  manifest_version_for "${REPO_ROOT}/crates/opal/Cargo.toml"
 }
 
 assert_match() {

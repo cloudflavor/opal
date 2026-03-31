@@ -1,12 +1,12 @@
 # Install
 
-## Install from crates.io
+## Install with Cargo
 
 ```bash
-cargo install opal-cli
+cargo install --path crates/opal
 ```
 
-This is the default user-facing install path.
+From this workspace, install the CLI crate directly.
 
 The installed executable is still:
 
@@ -59,7 +59,7 @@ brew untap cloudflavor/tap
 ## Install from a local checkout
 
 ```bash
-cargo install --path .
+cargo install --path crates/opal
 ```
 
 Use this when you are developing Opal itself from a local repository checkout.

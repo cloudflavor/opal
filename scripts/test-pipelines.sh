@@ -99,12 +99,31 @@ fi
 failures=()
 
 detect_runtime_engine() {
-  if docker info >/dev/null 2>&1; then
-    echo docker
-    return 0
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if container system status >/dev/null 2>&1; then
+      echo container
+      return 0
+    fi
+    if docker info >/dev/null 2>&1; then
+      echo docker
+      return 0
+    fi
+    if podman info >/dev/null 2>&1; then
+      echo podman
+      return 0
+    fi
+    if nerdctl info >/dev/null 2>&1; then
+      echo nerdctl
+      return 0
+    fi
+    return 1
   fi
   if podman info >/dev/null 2>&1; then
     echo podman
+    return 0
+  fi
+  if docker info >/dev/null 2>&1; then
+    echo docker
     return 0
   fi
   if nerdctl info >/dev/null 2>&1; then
@@ -128,7 +147,21 @@ opal_args_include_engine() {
   return 1
 }
 
-if [[ "${OPAL_TEST_COMMAND}" == "run" ]] && ! opal_args_include_engine; then
+active_scenarios_require_runtime() {
+  local scenario effective_command
+  for scenario in "${ACTIVE_SCENARIOS[@]}"; do
+    effective_command="$(jq -r '.command // empty' <<<"${scenario}")"
+    if [[ -z "${effective_command}" ]]; then
+      effective_command="${OPAL_TEST_COMMAND}"
+    fi
+    if [[ "${effective_command}" != "plan" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if active_scenarios_require_runtime && [[ "${OPAL_TEST_COMMAND}" == "run" ]] && ! opal_args_include_engine; then
   if detected_engine="$(detect_runtime_engine)"; then
     OPAL_ARGS+=("--engine" "${detected_engine}")
   else

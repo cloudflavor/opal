@@ -95,7 +95,7 @@ ensure_toolchain() {
 }
 
 ensure_toolchain
-cargo build --release --locked --target "${TARGET_TRIPLE}"
+cargo build -p opal --bin opal --release --locked --target "${TARGET_TRIPLE}"
 EOF
   chmod +x "${CONTAINER_HELPER}"
   CONTAINER_HELPER_CONTAINER="/work/${CONTAINER_HELPER#"${REPO_ROOT}/"}"
@@ -214,7 +214,7 @@ run_container_build() {
 build_local_target() {
   local target="$1"
   rustup target add "${target}" >/dev/null
-  cargo build --release --locked --target "${target}"
+  cargo build -p opal --bin opal --release --locked --target "${target}"
 }
 
 build_linux_target() {

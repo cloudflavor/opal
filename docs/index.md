@@ -15,9 +15,9 @@ The markdown files in `docs/` are embedded into the Opal binary at build time. I
 
 ```
 opal/
+├─ crates/        # Rust workspace members, currently `opal`
 ├─ docs/          # Packaged documentation displayed inside the TUI help window
 ├─ notes/         # Local developer notes (ignored from version control)
-├─ src/           # Application source
 └─ .opal/         # Optional repo-scoped config/secrets (runtime data lives in $OPAL_HOME/<run-id>/…)
 ```
 

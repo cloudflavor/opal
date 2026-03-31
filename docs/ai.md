@@ -70,7 +70,7 @@ This keeps the first version deterministic and easier to trust.
 
 Implemented now:
 
-- shared `src/ai/` module layout
+- shared `crates/opal/src/ai/` module layout
 - provider selection/config scaffolding
 - `ollama` provider implementation
 - `codex` provider implementation

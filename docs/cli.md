@@ -172,6 +172,18 @@ Opens the history/log browser for previous runs.
 - Context directory
 - Defaults to the current working directory
 
+### `opal mcp`
+
+Starts the MCP server over stdio.
+
+This command is intended for MCP clients that launch Opal as a subprocess and speak JSON-RPC over stdin/stdout.
+
+Example:
+
+```bash
+opal mcp
+```
+
 ## Related environment variables
 
 These are not command-line flags, but they change CLI/runtime behavior and are worth knowing:
