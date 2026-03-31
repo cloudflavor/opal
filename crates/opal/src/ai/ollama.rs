@@ -1,6 +1,6 @@
 use super::{AiChunk, AiError, AiProviderKind, AiRequest, AiResult};
-use reqwest::{Client, Response};
 use reqwest::header::ACCEPT;
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::mem;
 use std::time::Duration;
@@ -22,10 +22,7 @@ struct OllamaGenerateChunk {
     error: Option<String>,
 }
 
-pub async fn analyze<F>(
-    request: &AiRequest,
-    on_chunk: F,
-) -> Result<AiResult, AiError>
+pub async fn analyze<F>(request: &AiRequest, on_chunk: F) -> Result<AiResult, AiError>
 where
     F: FnMut(AiChunk) + Send,
 {
@@ -90,7 +87,10 @@ where
             message: if body.trim().is_empty() {
                 format!("Ollama request failed with status {status}")
             } else {
-                format!("Ollama request failed with status {status}: {}", body.trim())
+                format!(
+                    "Ollama request failed with status {status}: {}",
+                    body.trim()
+                )
             },
         });
     }
@@ -99,7 +99,8 @@ where
     loop {
         let Some(chunk) = response.chunk().await.map_err(|err| AiError {
             message: format!("failed to read Ollama stream: {err}"),
-        })? else {
+        })?
+        else {
             break;
         };
         buffer.extend_from_slice(&chunk);
@@ -142,11 +143,7 @@ where
     Ok(())
 }
 
-fn parse_stream_line<F>(
-    line: &[u8],
-    text: &mut String,
-    on_chunk: &mut F,
-) -> Result<(), AiError>
+fn parse_stream_line<F>(line: &[u8], text: &mut String, on_chunk: &mut F) -> Result<(), AiError>
 where
     F: FnMut(AiChunk),
 {

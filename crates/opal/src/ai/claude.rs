@@ -1,9 +1,6 @@
 use super::{AiChunk, AiError, AiRequest, AiResult};
 
-pub async fn analyze<F>(
-    _request: &AiRequest,
-    _on_chunk: F,
-) -> Result<AiResult, AiError>
+pub async fn analyze<F>(_request: &AiRequest, _on_chunk: F) -> Result<AiResult, AiError>
 where
     F: FnMut(AiChunk) + Send,
 {

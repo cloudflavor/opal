@@ -21,10 +21,7 @@ struct CodexEventParams {
     delta: Option<String>,
 }
 
-pub async fn analyze<F>(
-    request: &AiRequest,
-    mut on_chunk: F,
-) -> Result<AiResult, AiError>
+pub async fn analyze<F>(request: &AiRequest, mut on_chunk: F) -> Result<AiResult, AiError>
 where
     F: FnMut(AiChunk) + Send,
 {
@@ -54,9 +51,12 @@ where
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(request.prompt.as_bytes()).await.map_err(|err| AiError {
-            message: format!("failed to write prompt to Codex CLI: {err}"),
-        })?;
+        stdin
+            .write_all(request.prompt.as_bytes())
+            .await
+            .map_err(|err| AiError {
+                message: format!("failed to write prompt to Codex CLI: {err}"),
+            })?;
         stdin.flush().await.map_err(|err| AiError {
             message: format!("failed to write prompt to Codex CLI: {err}"),
         })?;

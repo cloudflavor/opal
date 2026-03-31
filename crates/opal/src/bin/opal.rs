@@ -25,9 +25,7 @@ fn maybe_handle_mcp_meta_flag() -> Result<bool> {
             print!("{}", mcp_help_text()?);
             Ok(true)
         }
-        [subcommand, flag]
-            if subcommand == "mcp" && (flag == "--version" || flag == "-V") =>
-        {
+        [subcommand, flag] if subcommand == "mcp" && (flag == "--version" || flag == "-V") => {
             println!("opal mcp {}", env!("CARGO_PKG_VERSION"));
             Ok(true)
         }
