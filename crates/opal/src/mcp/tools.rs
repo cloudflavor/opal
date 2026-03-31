@@ -108,6 +108,22 @@ pub(crate) fn list_tools() -> Value {
                 }
             },
             {
+                "name": "opal_logs_search",
+                "title": "Search recorded Opal job logs",
+                "description": "Searches recorded Opal job logs for recurring failures or exact strings.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "run_id": { "type": "string" },
+                        "job": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "case_sensitive": { "type": "boolean" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
                 "name": "opal_plan_explain",
                 "title": "Explain a job's plan status",
                 "description": "Explains why a job is included, skipped, or blocked in the evaluated plan.",
@@ -162,6 +178,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_failed_jobs" => Ok(failed_jobs_tool(arguments)?),
         "opal_history_list" => Ok(history_list_tool(arguments)?),
         "opal_run_diff" => Ok(run_diff_tool(arguments)?),
+        "opal_logs_search" => Ok(logs_search_tool(arguments)?),
         "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
         "opal_engine_status" => Ok(engine_status_tool(app, arguments)?),
         other => Ok(error_tool_result(
@@ -329,6 +346,91 @@ fn run_diff_tool(arguments: Value) -> Result<Value> {
     Ok(tool_result(
         render_run_diff_summary(&diff),
         json!(diff),
+        false,
+    ))
+}
+
+fn logs_search_tool(arguments: Value) -> Result<Value> {
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .context("missing query")?;
+    let run_id = arguments.get("run_id").and_then(Value::as_str);
+    let job_name = arguments.get("job").and_then(Value::as_str);
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(20);
+    let case_sensitive = arguments
+        .get("case_sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let history = load_history()?;
+    let mut matches = Vec::new();
+    let mut read_errors = Vec::new();
+    let mut scanned_jobs = 0usize;
+
+    for entry in history.iter().rev() {
+        if run_id.is_some_and(|run_id| entry.run_id != run_id) {
+            continue;
+        }
+        for job in &entry.jobs {
+            if job_name.is_some_and(|job_name| job.name != job_name) {
+                continue;
+            }
+            scanned_jobs += 1;
+            match read_job_log(entry, job) {
+                Ok(log) => {
+                    if let Some(log_match) = find_log_match(entry, job, &log, query, case_sensitive)
+                    {
+                        matches.push(log_match);
+                        if matches.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => read_errors.push(LogSearchReadError {
+                    run_id: entry.run_id.clone(),
+                    job: job.name.clone(),
+                    error: err.to_string(),
+                }),
+            }
+        }
+        if matches.len() >= limit {
+            break;
+        }
+    }
+
+    let text = if matches.is_empty() {
+        format!("No recorded job logs matched query '{query}'")
+    } else {
+        format!(
+            "Found {} log match(es) for query '{}' across {} scanned job(s)",
+            matches.len(),
+            query,
+            scanned_jobs
+        )
+    };
+
+    Ok(tool_result(
+        text,
+        json!({
+            "query": query,
+            "case_sensitive": case_sensitive,
+            "filters": {
+                "run_id": run_id,
+                "job": job_name,
+                "limit": limit,
+            },
+            "matches": matches,
+            "returned_matches": matches.len(),
+            "scanned_jobs": scanned_jobs,
+            "read_errors": read_errors,
+        }),
         false,
     ))
 }
@@ -519,6 +621,30 @@ struct ChangedRunJob {
     current_status: &'static str,
 }
 
+#[derive(serde::Serialize)]
+struct LogSearchMatch {
+    run_id: String,
+    finished_at: String,
+    job: String,
+    stage: String,
+    status: &'static str,
+    line_matches: usize,
+    matching_lines: Vec<LogSearchLineMatch>,
+}
+
+#[derive(serde::Serialize)]
+struct LogSearchLineMatch {
+    line_number: usize,
+    text: String,
+}
+
+#[derive(serde::Serialize)]
+struct LogSearchReadError {
+    run_id: String,
+    job: String,
+    error: String,
+}
+
 fn selected_run_pair(
     history: &[HistoryEntry],
     run_id: Option<&str>,
@@ -697,6 +823,49 @@ fn render_run_diff_summary(diff: &RunDiffSummary) -> String {
         ));
     }
     lines.join("\n")
+}
+
+fn find_log_match(
+    entry: &HistoryEntry,
+    job: &crate::history::HistoryJob,
+    log: &str,
+    query: &str,
+    case_sensitive: bool,
+) -> Option<LogSearchMatch> {
+    let mut matching_lines = Vec::new();
+    let mut line_matches = 0usize;
+    for (index, line) in log.lines().enumerate() {
+        if line_matches_query(line, query, case_sensitive) {
+            line_matches += 1;
+            if matching_lines.len() < 3 {
+                matching_lines.push(LogSearchLineMatch {
+                    line_number: index + 1,
+                    text: line.to_string(),
+                });
+            }
+        }
+    }
+    if line_matches == 0 {
+        return None;
+    }
+    Some(LogSearchMatch {
+        run_id: entry.run_id.clone(),
+        finished_at: entry.finished_at.clone(),
+        job: job.name.clone(),
+        stage: job.stage.clone(),
+        status: history_status_label(job.status),
+        line_matches,
+        matching_lines,
+    })
+}
+
+fn line_matches_query(line: &str, query: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        line.contains(query)
+    } else {
+        line.to_ascii_lowercase()
+            .contains(&query.to_ascii_lowercase())
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -983,6 +1152,7 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "opal_failed_jobs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run_diff"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_logs_search"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan_explain"));
         assert!(
             tools
@@ -1614,6 +1784,174 @@ mod tests {
             .as_array()
             .expect("changed jobs");
         assert!(changed.is_empty());
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn logs_search_tool_finds_matches_across_runs() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-logs-search");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        let build_log = opal_home.join("build.log");
+        let docs_log = opal_home.join("docs.log");
+        fs::write(&build_log, "all good\nwarning: retry later\n").expect("write build log");
+        fs::write(&docs_log, "fatal: dependency missing\nfatal: docs failed\n")
+            .expect("write docs log");
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-1".to_string(),
+                    finished_at: "earlier".to_string(),
+                    status: HistoryStatus::Failed,
+                    jobs: vec![HistoryJob {
+                        name: "build".to_string(),
+                        stage: "build".to_string(),
+                        status: HistoryStatus::Success,
+                        log_hash: "abc123".to_string(),
+                        log_path: Some(build_log.display().to_string()),
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    }],
+                },
+                HistoryEntry {
+                    run_id: "run-2".to_string(),
+                    finished_at: "latest".to_string(),
+                    status: HistoryStatus::Failed,
+                    jobs: vec![HistoryJob {
+                        name: "docs".to_string(),
+                        stage: "test".to_string(),
+                        status: HistoryStatus::Failed,
+                        log_hash: "def456".to_string(),
+                        log_path: Some(docs_log.display().to_string()),
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    }],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_logs_search",
+                    "arguments": {
+                        "query": "fatal"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["returned_matches"], 1);
+        assert_eq!(result["structuredContent"]["matches"][0]["run_id"], "run-2");
+        assert_eq!(result["structuredContent"]["matches"][0]["job"], "docs");
+        assert_eq!(result["structuredContent"]["matches"][0]["line_matches"], 2);
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn logs_search_tool_honors_job_and_case_filters() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-logs-search-filters");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        let build_log = opal_home.join("build.log");
+        let docs_log = opal_home.join("docs.log");
+        fs::write(&build_log, "Fatal build issue\n").expect("write build log");
+        fs::write(&docs_log, "fatal docs issue\n").expect("write docs log");
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-1".to_string(),
+                finished_at: "now".to_string(),
+                status: HistoryStatus::Failed,
+                jobs: vec![
+                    HistoryJob {
+                        name: "build".to_string(),
+                        stage: "build".to_string(),
+                        status: HistoryStatus::Failed,
+                        log_hash: "abc123".to_string(),
+                        log_path: Some(build_log.display().to_string()),
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    },
+                    HistoryJob {
+                        name: "docs".to_string(),
+                        stage: "test".to_string(),
+                        status: HistoryStatus::Failed,
+                        log_hash: "def456".to_string(),
+                        log_path: Some(docs_log.display().to_string()),
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    },
+                ],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_logs_search",
+                    "arguments": {
+                        "query": "Fatal",
+                        "job": "build",
+                        "case_sensitive": true
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["returned_matches"], 1);
+        assert_eq!(result["structuredContent"]["matches"][0]["job"], "build");
+        assert_eq!(
+            result["structuredContent"]["matches"][0]["matching_lines"][0]["text"],
+            "Fatal build issue"
+        );
         unsafe {
             env::remove_var("OPAL_HOME");
         }

@@ -88,6 +88,9 @@ In the current Opal implementation, the most important parts are:
 - `opal_run_diff`
   - compares the latest two runs by default, or two selected runs when `run_id` and `base_run_id` are provided
   - helps an agent see whether a rerun changed overall status, job outcomes, or job presence
+- `opal_logs_search`
+  - searches recorded job logs with optional run and job filters
+  - helps an agent spot recurring failure strings before opening full job logs one by one
 - `opal_plan_explain`
   - explains why a job is included, skipped, or blocked in the evaluated plan
   - helps an agent answer selector and rule questions without inferring from raw plan output
@@ -175,6 +178,7 @@ For Opal, the core tools are:
 - `opal_view`
 - `opal_history_list`
 - `opal_failed_jobs`
+- `opal_logs_search`
 - `opal_plan_explain`
 - `opal_engine_status`
 
@@ -451,8 +455,6 @@ If designing an agent-first Opal MCP experience, the following additions would b
   - add filters for date, branch, and pipeline file on top of the current status and job-name filters
 - `opal_job_rerun`
   - rerun one job plus required upstream closure from an existing run
-- `opal_logs_search`
-  - search across historical logs for recurring failures
 
 These are not required to use Opal effectively, but they would make agent workflows much more powerful.
 
