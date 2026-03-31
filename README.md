@@ -67,6 +67,8 @@ opal view
 opal mcp
 ```
 
+The MCP server currently exposes planning, run execution, run inspection, history listing, and failed-job lookup tools for agent workflows.
+
 When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
 
 By default, Opal expects `.gitlab-ci.yml` in the current working directory and prepares each job from a snapshot of that current working tree.

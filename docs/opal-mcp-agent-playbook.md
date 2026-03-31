@@ -79,6 +79,12 @@ In the current Opal implementation, the most important parts are:
 - `opal_view`
   - inspects the latest or a selected recorded run
   - can include job logs and runtime summaries
+- `opal_history_list`
+  - returns recorded runs with optional run-status and job-name filters
+  - lets an agent narrow history before choosing a run to inspect
+- `opal_failed_jobs`
+  - returns the failed jobs for the latest or a selected recorded run
+  - lets an agent jump directly to actionable failures before inspecting full run details
 
 ### Resources
 
@@ -158,6 +164,8 @@ For Opal, the core tools are:
 - `opal_plan`
 - `opal_run`
 - `opal_view`
+- `opal_history_list`
+- `opal_failed_jobs`
 
 Pay attention to arguments such as:
 
@@ -428,10 +436,8 @@ Use this as the default playbook.
 
 If designing an agent-first Opal MCP experience, the following additions would be especially valuable:
 
-- `opal_history_list`
-  - filter by date, status, branch, pipeline file, or job name
-- `opal_failed_jobs`
-  - return just the failed or blocked jobs for a run
+- richer `opal_history_list`
+  - add filters for date, branch, and pipeline file on top of the current status and job-name filters
 - `opal_run_diff`
   - compare two runs and summarize what changed
 - `opal_job_rerun`

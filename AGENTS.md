@@ -29,6 +29,13 @@
 - Add or update focused regression coverage when there is an established nearby test pattern.
 - Update `docs/gitlab-parity.md` to reflect the new state immediately.
 
+## Validation Workflow
+
+- Validate repository changes with Opal against the local `.gitlab-ci.yml`, not only with ad hoc direct commands.
+- Prefer `opal plan` first to confirm the affected job closure, then `opal run --job <name>` for the narrowest relevant pipeline slice.
+- For Rust-only changes, treat `rust-checks` as the default validation entry point unless the change clearly requires additional jobs such as `unit-tests`, `extended-tests`, `e2e-tests`, or `ui-docs-check`.
+- If direct commands are used for fast local iteration, still confirm the relevant pipeline slice with Opal before considering the task complete.
+
 ## Decision Standard
 
 - Prefer behavior that reduces surprising local-vs-GitLab differences for common repository pipelines.
