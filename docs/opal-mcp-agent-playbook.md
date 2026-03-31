@@ -82,6 +82,7 @@ In the current Opal implementation, the most important parts are:
 - `opal_history_list`
   - returns recorded runs with optional run-status and job-name filters
   - lets an agent narrow history before choosing a run to inspect
+  - also supports RFC3339 `since` / `until` filters for time-bounded run discovery
 - `opal_failed_jobs`
   - returns the failed jobs for the latest or a selected recorded run
   - lets an agent jump directly to actionable failures before inspecting full run details
@@ -452,7 +453,7 @@ Use this as the default playbook.
 If designing an agent-first Opal MCP experience, the following additions would be especially valuable:
 
 - richer `opal_history_list`
-  - add filters for date, branch, and pipeline file on top of the current status and job-name filters
+  - add branch and pipeline-file filters on top of the current status, job-name, and date-range filters
 - `opal_job_rerun`
   - rerun one job plus required upstream closure from an existing run
 

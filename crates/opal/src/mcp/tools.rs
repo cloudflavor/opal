@@ -91,6 +91,8 @@ pub(crate) fn list_tools() -> Value {
                             "enum": ["success", "failed", "skipped", "running"]
                         },
                         "job": { "type": "string" },
+                        "since": { "type": "string" },
+                        "until": { "type": "string" },
                         "limit": { "type": "integer", "minimum": 1 }
                     }
                 }
@@ -294,6 +296,8 @@ fn failed_jobs_tool(arguments: Value) -> Result<Value> {
 fn history_list_tool(arguments: Value) -> Result<Value> {
     let status = history_status_from_value(arguments.get("status"))?;
     let job_name = arguments.get("job").and_then(Value::as_str);
+    let since = history_time_filter(arguments.get("since"), "since")?;
+    let until = history_time_filter(arguments.get("until"), "until")?;
     let limit = arguments
         .get("limit")
         .and_then(Value::as_u64)
@@ -307,10 +311,12 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
         .rev()
         .filter(|entry| matches_status(entry, status))
         .filter(|entry| matches_job_name(entry, job_name))
+        .filter(|entry| matches_finished_at(entry, since.as_deref(), until.as_deref()))
         .take(limit)
         .collect::<Vec<_>>();
 
-    let filter_summary = history_filter_summary(status, job_name, limit);
+    let filter_summary =
+        history_filter_summary(status, job_name, since.as_deref(), until.as_deref(), limit);
     let text = if runs.is_empty() {
         format!("No recorded Opal runs matched {filter_summary}")
     } else {
@@ -328,6 +334,8 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
             "filters": {
                 "status": status.map(history_status_label),
                 "job": job_name,
+                "since": since,
+                "until": until,
                 "limit": limit,
             },
             "total_runs": total_runs,
@@ -574,6 +582,8 @@ fn matches_job_name(entry: &HistoryEntry, job_name: Option<&str>) -> bool {
 fn history_filter_summary(
     status: Option<HistoryStatus>,
     job_name: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
     limit: usize,
 ) -> String {
     let mut filters = Vec::new();
@@ -583,8 +593,42 @@ fn history_filter_summary(
     if let Some(job_name) = job_name {
         filters.push(format!("job={job_name}"));
     }
+    if let Some(since) = since {
+        filters.push(format!("since={since}"));
+    }
+    if let Some(until) = until {
+        filters.push(format!("until={until}"));
+    }
     filters.push(format!("limit={limit}"));
     filters.join(", ")
+}
+
+fn history_time_filter(value: Option<&Value>, key: &str) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(text) = value.as_str() else {
+        anyhow::bail!("history {key} filter must be a string");
+    };
+    if !looks_like_rfc3339_utc(text) {
+        anyhow::bail!("history {key} filter must be an RFC3339 UTC timestamp");
+    }
+    Ok(Some(text.to_string()))
+}
+
+fn matches_finished_at(entry: &HistoryEntry, since: Option<&str>, until: Option<&str>) -> bool {
+    since.is_none_or(|since| entry.finished_at.as_str() >= since)
+        && until.is_none_or(|until| entry.finished_at.as_str() <= until)
+}
+
+fn looks_like_rfc3339_utc(value: &str) -> bool {
+    value.len() >= 20
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.as_bytes().get(13) == Some(&b':')
+        && value.as_bytes().get(16) == Some(&b':')
+        && value.ends_with('Z')
 }
 
 #[derive(serde::Serialize)]
@@ -1549,6 +1593,74 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["run_id"], "run-2");
         assert_eq!(result["structuredContent"]["filters"]["job"], "rust-checks");
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn history_list_tool_filters_runs_by_date_range() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-history-list-date");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-1".to_string(),
+                    finished_at: "2026-03-29T12:00:00Z".to_string(),
+                    status: HistoryStatus::Success,
+                    jobs: vec![],
+                },
+                HistoryEntry {
+                    run_id: "run-2".to_string(),
+                    finished_at: "2026-03-30T12:00:00Z".to_string(),
+                    status: HistoryStatus::Failed,
+                    jobs: vec![],
+                },
+                HistoryEntry {
+                    run_id: "run-3".to_string(),
+                    finished_at: "2026-03-31T12:00:00Z".to_string(),
+                    status: HistoryStatus::Success,
+                    jobs: vec![],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_history_list",
+                    "arguments": {
+                        "since": "2026-03-30T00:00:00Z",
+                        "until": "2026-03-30T23:59:59Z"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        let runs = result["structuredContent"]["runs"]
+            .as_array()
+            .expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "run-2");
+        assert_eq!(
+            result["structuredContent"]["filters"]["since"],
+            "2026-03-30T00:00:00Z"
+        );
+        assert_eq!(
+            result["structuredContent"]["filters"]["until"],
+            "2026-03-30T23:59:59Z"
+        );
         unsafe {
             env::remove_var("OPAL_HOME");
         }
