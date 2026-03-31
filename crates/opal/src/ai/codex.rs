@@ -1,10 +1,11 @@
 use super::{AiChunk, AiError, AiProviderKind, AiRequest, AiResult};
 use serde::Deserialize;
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::fs;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 #[derive(Debug, Deserialize)]
 struct CodexJsonEvent {
@@ -20,10 +21,13 @@ struct CodexEventParams {
     delta: Option<String>,
 }
 
-pub fn analyze(
+pub async fn analyze<F>(
     request: &AiRequest,
-    on_chunk: &mut dyn FnMut(AiChunk),
-) -> Result<AiResult, AiError> {
+    mut on_chunk: F,
+) -> Result<AiResult, AiError>
+where
+    F: FnMut(AiChunk) + Send,
+{
     let command = request.command.as_deref().ok_or_else(|| AiError {
         message: "internal error: missing Codex command".to_string(),
     })?;
@@ -50,12 +54,12 @@ pub fn analyze(
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(request.prompt.as_bytes())
-            .and_then(|_| stdin.flush())
-            .map_err(|err| AiError {
-                message: format!("failed to write prompt to Codex CLI: {err}"),
-            })?;
+        stdin.write_all(request.prompt.as_bytes()).await.map_err(|err| AiError {
+            message: format!("failed to write prompt to Codex CLI: {err}"),
+        })?;
+        stdin.flush().await.map_err(|err| AiError {
+            message: format!("failed to write prompt to Codex CLI: {err}"),
+        })?;
     }
 
     let stdout = child.stdout.take().ok_or_else(|| AiError {
@@ -67,7 +71,7 @@ pub fn analyze(
 
     loop {
         line.clear();
-        let read = reader.read_line(&mut line).map_err(|err| AiError {
+        let read = reader.read_line(&mut line).await.map_err(|err| AiError {
             message: format!("failed to read Codex output: {err}"),
         })?;
         if read == 0 {
@@ -87,7 +91,7 @@ pub fn analyze(
         }
     }
 
-    let output = child.wait_with_output().map_err(|err| AiError {
+    let output = child.wait_with_output().await.map_err(|err| AiError {
         message: format!("failed to wait for Codex CLI: {err}"),
     })?;
     if !output.status.success() {
@@ -101,8 +105,10 @@ pub fn analyze(
         });
     }
 
-    let final_text = fs::read_to_string(&output_path).unwrap_or_else(|_| streamed.clone());
-    let _ = fs::remove_file(&output_path);
+    let final_text = fs::read_to_string(&output_path)
+        .await
+        .unwrap_or_else(|_| streamed.clone());
+    let _ = fs::remove_file(&output_path).await;
 
     Ok(AiResult {
         provider: AiProviderKind::Codex,

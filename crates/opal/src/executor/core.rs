@@ -601,7 +601,7 @@ impl ExecutorCore {
         DisplayFormatter::new(self.use_color)
     }
 
-    pub(crate) fn analyze_job_with_default_provider(
+    pub(crate) async fn analyze_job_with_default_provider(
         &self,
         plan: &ExecutionPlan,
         job_name: &str,
@@ -628,7 +628,7 @@ impl ExecutorCore {
             ui.analysis_started(job_name, provider_label);
         }
 
-        let outcome = (|| -> Result<Option<PathBuf>> {
+        let outcome = async {
             if provider_kind == AiProviderKind::Ollama
                 && self
                     .config
@@ -683,6 +683,7 @@ impl ExecutorCore {
                     ui.analysis_chunk(job_name, &text);
                 }
             })
+            .await
             .map_err(|err| anyhow::anyhow!(err.message))?;
 
             if let Some(path) = &save_path {
@@ -693,7 +694,8 @@ impl ExecutorCore {
             }
 
             Ok(save_path)
-        })();
+        }
+        .await;
 
         if let Some(ui) = ui {
             match outcome {

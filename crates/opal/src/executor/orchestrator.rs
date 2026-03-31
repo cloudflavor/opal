@@ -786,8 +786,9 @@ fn spawn_analysis(
     name: String,
     source_name: String,
 ) {
-    tokio::task::spawn_blocking(move || {
-        exec.analyze_job_with_default_provider(&plan, &name, &source_name, ui.as_deref());
+    tokio::spawn(async move {
+        exec.analyze_job_with_default_provider(&plan, &name, &source_name, ui.as_deref())
+            .await;
     });
 }
 

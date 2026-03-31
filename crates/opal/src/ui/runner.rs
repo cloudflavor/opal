@@ -604,9 +604,11 @@ impl UiRunner {
     fn spawn_local_analysis(&self, snapshot: super::state::AiAnalysisSnapshot, preview_only: bool) {
         let tx = self.tx.clone();
         let workdir = self.state.workdir().to_path_buf();
-        std::thread::spawn(move || {
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
             let job_name = snapshot.job_name.clone();
-            let result = (|| -> Result<()> {
+            let analysis_tx = tx.clone();
+            let result: Result<()> = async move {
                 let settings = OpalConfig::load(&workdir)?;
                 let secrets = SecretsStore::load(&workdir)?;
                 let provider = settings
@@ -645,7 +647,7 @@ impl UiRunner {
                     }
                     text.push_str("# Prompt\n\n");
                     text.push_str(rendered.prompt.trim());
-                    let _ = tx.send(UiEvent::AiPromptReady {
+                    let _ = analysis_tx.send(UiEvent::AiPromptReady {
                         name: snapshot.job_name,
                         prompt: text,
                     });
@@ -663,7 +665,7 @@ impl UiRunner {
                         .join("analysis")
                         .join(format!("{provider_label}.md"))
                 });
-                let _ = tx.send(UiEvent::AnalysisStarted {
+                let _ = analysis_tx.send(UiEvent::AnalysisStarted {
                     name: snapshot.job_name.clone(),
                     provider: provider_label.to_string(),
                 });
@@ -689,11 +691,12 @@ impl UiRunner {
                 };
                 let result = ai::analyze_with_default_provider(&request, |chunk| {
                     let ai::AiChunk::Text(text) = chunk;
-                    let _ = tx.send(UiEvent::AnalysisChunk {
+                    let _ = analysis_tx.send(UiEvent::AnalysisChunk {
                         name: snapshot.job_name.clone(),
                         delta: text,
                     });
                 })
+                .await
                 .map_err(|err| anyhow::anyhow!(err.message))?;
                 if let Some(path) = &save_path {
                     if let Some(parent) = path.parent() {
@@ -701,14 +704,15 @@ impl UiRunner {
                     }
                     std::fs::write(path, &result.text)?;
                 }
-                let _ = tx.send(UiEvent::AnalysisFinished {
+                let _ = analysis_tx.send(UiEvent::AnalysisFinished {
                     name: snapshot.job_name,
                     final_text: result.text,
                     saved_path: save_path,
                     error: None,
                 });
                 Ok(())
-            })();
+            }
+            .await;
 
             if let Err(err) = result {
                 let _ = tx.send(UiEvent::AnalysisFinished {
