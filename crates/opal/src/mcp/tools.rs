@@ -5,11 +5,14 @@ use crate::app::view::{
     find_history_entry, find_job, latest_history_entry, load_history, read_job_log,
     read_runtime_summary,
 };
+use crate::config::OpalConfig;
 use crate::history::{HistoryEntry, HistoryStatus};
-use crate::{EngineChoice, PlanArgs, RunArgs, ViewArgs};
+use crate::{EngineChoice, EngineKind, PlanArgs, RunArgs, ViewArgs};
 use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub(crate) fn list_tools() -> Value {
@@ -93,6 +96,18 @@ pub(crate) fn list_tools() -> Value {
                 }
             },
             {
+                "name": "opal_run_diff",
+                "title": "Compare recorded Opal runs",
+                "description": "Compares two recorded Opal runs and summarizes overall and per-job changes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": { "type": "string" },
+                        "base_run_id": { "type": "string" }
+                    }
+                }
+            },
+            {
                 "name": "opal_plan_explain",
                 "title": "Explain a job's plan status",
                 "description": "Explains why a job is included, skipped, or blocked in the evaluated plan.",
@@ -107,6 +122,17 @@ pub(crate) fn list_tools() -> Value {
                         "jobs": { "type": "array", "items": { "type": "string" } }
                     },
                     "required": ["job"]
+                }
+            },
+            {
+                "name": "opal_engine_status",
+                "title": "Report local Opal engine availability",
+                "description": "Reports Opal's configured default engine, auto resolution, and per-engine local availability.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workdir": { "type": "string" }
+                    }
                 }
             }
         ]
@@ -135,7 +161,9 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_view" => Ok(view_tool(arguments)?),
         "opal_failed_jobs" => Ok(failed_jobs_tool(arguments)?),
         "opal_history_list" => Ok(history_list_tool(arguments)?),
+        "opal_run_diff" => Ok(run_diff_tool(arguments)?),
         "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
+        "opal_engine_status" => Ok(engine_status_tool(app, arguments)?),
         other => Ok(error_tool_result(
             format!("unknown tool: {other}"),
             Value::Null,
@@ -292,6 +320,19 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
+fn run_diff_tool(arguments: Value) -> Result<Value> {
+    let run_id = arguments.get("run_id").and_then(Value::as_str);
+    let base_run_id = arguments.get("base_run_id").and_then(Value::as_str);
+    let history = load_history()?;
+    let (base_run, head_run) = selected_run_pair(&history, run_id, base_run_id)?;
+    let diff = compare_runs(&base_run, &head_run);
+    Ok(tool_result(
+        render_run_diff_summary(&diff),
+        json!(diff),
+        false,
+    ))
+}
+
 fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let job = arguments
         .get("job")
@@ -302,6 +343,54 @@ fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     Ok(tool_result(
         explanation.summary,
         json!(explanation.details),
+        false,
+    ))
+}
+
+fn engine_status_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+    let workdir = app.resolve_workdir(
+        arguments
+            .get("workdir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+    );
+    let settings = OpalConfig::load(&workdir)?;
+    let configured_default = settings.default_engine().unwrap_or(EngineChoice::Auto);
+    let resolved_auto = resolved_engine_choice(EngineChoice::Auto, &settings);
+    let engines = [
+        EngineChoice::Container,
+        EngineChoice::Docker,
+        EngineChoice::Podman,
+        EngineChoice::Nerdctl,
+        EngineChoice::Orbstack,
+    ]
+    .into_iter()
+    .map(engine_status_entry)
+    .collect::<Vec<_>>();
+
+    let available = engines
+        .iter()
+        .filter(|engine| engine.available && engine.supported)
+        .map(|engine| engine.choice.to_string())
+        .collect::<Vec<_>>();
+    let summary = format!(
+        "Configured default engine is {}; auto resolves to {}; available supported engines: {}",
+        configured_default.as_str(),
+        engine_kind_name(resolved_auto),
+        if available.is_empty() {
+            "none".to_string()
+        } else {
+            available.join(", ")
+        }
+    );
+
+    Ok(tool_result(
+        summary,
+        json!({
+            "configured_default": configured_default.as_str(),
+            "resolved_auto": engine_kind_name(resolved_auto),
+            "engines": engines,
+        }),
         false,
     ))
 }
@@ -394,6 +483,387 @@ fn history_filter_summary(
     }
     filters.push(format!("limit={limit}"));
     filters.join(", ")
+}
+
+#[derive(serde::Serialize)]
+struct RunDiffSummary {
+    base_run: RunDiffRun,
+    head_run: RunDiffRun,
+    overall_status_changed: bool,
+    changed_jobs: Vec<ChangedRunJob>,
+    added_jobs: Vec<RunDiffJob>,
+    removed_jobs: Vec<RunDiffJob>,
+    unchanged_jobs: usize,
+}
+
+#[derive(serde::Serialize)]
+struct RunDiffRun {
+    run_id: String,
+    finished_at: String,
+    status: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct RunDiffJob {
+    name: String,
+    stage: String,
+    status: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct ChangedRunJob {
+    name: String,
+    previous_stage: String,
+    current_stage: String,
+    previous_status: &'static str,
+    current_status: &'static str,
+}
+
+fn selected_run_pair(
+    history: &[HistoryEntry],
+    run_id: Option<&str>,
+    base_run_id: Option<&str>,
+) -> Result<(HistoryEntry, HistoryEntry)> {
+    if history.is_empty() {
+        anyhow::bail!("no Opal history entries found");
+    }
+    if base_run_id.is_some() && run_id.is_none() {
+        anyhow::bail!("run_id is required when base_run_id is provided");
+    }
+
+    match (run_id, base_run_id) {
+        (Some(run_id), Some(base_run_id)) => Ok((
+            history_entry_by_run_id(history, base_run_id)?.clone(),
+            history_entry_by_run_id(history, run_id)?.clone(),
+        )),
+        (Some(run_id), None) => {
+            let index = history_index_by_run_id(history, run_id)?;
+            let base = history
+                .get(
+                    index
+                        .checked_sub(1)
+                        .context("selected run has no previous recorded run")?,
+                )
+                .context("selected run has no previous recorded run")?;
+            Ok((base.clone(), history[index].clone()))
+        }
+        (None, None) => {
+            let head_index = history
+                .len()
+                .checked_sub(1)
+                .context("no Opal history entries found")?;
+            let base_index = head_index
+                .checked_sub(1)
+                .context("need at least two recorded runs to compare history")?;
+            Ok((history[base_index].clone(), history[head_index].clone()))
+        }
+        (None, Some(_)) => unreachable!("checked above"),
+    }
+}
+
+fn history_entry_by_run_id<'a>(
+    history: &'a [HistoryEntry],
+    run_id: &str,
+) -> Result<&'a HistoryEntry> {
+    let index = history_index_by_run_id(history, run_id)?;
+    Ok(&history[index])
+}
+
+fn history_index_by_run_id(history: &[HistoryEntry], run_id: &str) -> Result<usize> {
+    history
+        .iter()
+        .position(|entry| entry.run_id == run_id)
+        .with_context(|| format!("run '{run_id}' not found in Opal history"))
+}
+
+fn compare_runs(base_run: &HistoryEntry, head_run: &HistoryEntry) -> RunDiffSummary {
+    let base_jobs = base_run
+        .jobs
+        .iter()
+        .map(|job| (job.name.as_str(), job))
+        .collect::<BTreeMap<_, _>>();
+    let head_jobs = head_run
+        .jobs
+        .iter()
+        .map(|job| (job.name.as_str(), job))
+        .collect::<BTreeMap<_, _>>();
+    let names = base_jobs
+        .keys()
+        .chain(head_jobs.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    let mut changed_jobs = Vec::new();
+    let mut added_jobs = Vec::new();
+    let mut removed_jobs = Vec::new();
+    let mut unchanged_jobs = 0usize;
+
+    for name in names {
+        match (base_jobs.get(name), head_jobs.get(name)) {
+            (Some(previous), Some(current)) => {
+                if previous.status != current.status || previous.stage != current.stage {
+                    changed_jobs.push(ChangedRunJob {
+                        name: name.to_string(),
+                        previous_stage: previous.stage.clone(),
+                        current_stage: current.stage.clone(),
+                        previous_status: history_status_label(previous.status),
+                        current_status: history_status_label(current.status),
+                    });
+                } else {
+                    unchanged_jobs += 1;
+                }
+            }
+            (None, Some(current)) => added_jobs.push(run_diff_job(current)),
+            (Some(previous), None) => removed_jobs.push(run_diff_job(previous)),
+            (None, None) => {}
+        }
+    }
+
+    RunDiffSummary {
+        base_run: run_diff_run(base_run),
+        head_run: run_diff_run(head_run),
+        overall_status_changed: base_run.status != head_run.status,
+        changed_jobs,
+        added_jobs,
+        removed_jobs,
+        unchanged_jobs,
+    }
+}
+
+fn run_diff_run(run: &HistoryEntry) -> RunDiffRun {
+    RunDiffRun {
+        run_id: run.run_id.clone(),
+        finished_at: run.finished_at.clone(),
+        status: history_status_label(run.status),
+    }
+}
+
+fn run_diff_job(job: &crate::history::HistoryJob) -> RunDiffJob {
+    RunDiffJob {
+        name: job.name.clone(),
+        stage: job.stage.clone(),
+        status: history_status_label(job.status),
+    }
+}
+
+fn render_run_diff_summary(diff: &RunDiffSummary) -> String {
+    let mut lines = vec![format!(
+        "Compared run {} against {}",
+        diff.head_run.run_id, diff.base_run.run_id
+    )];
+    if diff.overall_status_changed {
+        lines.push(format!(
+            "Overall status changed: {} -> {}",
+            diff.base_run.status, diff.head_run.status
+        ));
+    } else {
+        lines.push(format!("Overall status stayed {}", diff.head_run.status));
+    }
+    lines.push(format!(
+        "Job changes: {} changed, {} added, {} removed, {} unchanged",
+        diff.changed_jobs.len(),
+        diff.added_jobs.len(),
+        diff.removed_jobs.len(),
+        diff.unchanged_jobs
+    ));
+    if !diff.changed_jobs.is_empty() {
+        lines.push(format!(
+            "Changed jobs: {}",
+            diff.changed_jobs
+                .iter()
+                .map(|job| job.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !diff.added_jobs.is_empty() {
+        lines.push(format!(
+            "Added jobs: {}",
+            diff.added_jobs
+                .iter()
+                .map(|job| job.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !diff.removed_jobs.is_empty() {
+        lines.push(format!(
+            "Removed jobs: {}",
+            diff.removed_jobs
+                .iter()
+                .map(|job| job.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines.join("\n")
+}
+
+#[derive(serde::Serialize)]
+struct EngineStatusEntry {
+    choice: &'static str,
+    runtime: &'static str,
+    binary: &'static str,
+    supported: bool,
+    available: bool,
+    note: Option<String>,
+}
+
+impl EngineChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            EngineChoice::Auto => "auto",
+            EngineChoice::Container => "container",
+            EngineChoice::Docker => "docker",
+            EngineChoice::Podman => "podman",
+            EngineChoice::Nerdctl => "nerdctl",
+            EngineChoice::Orbstack => "orbstack",
+        }
+    }
+}
+
+fn engine_status_entry(choice: EngineChoice) -> EngineStatusEntry {
+    let runtime = resolved_engine_choice(choice, &OpalConfig::default());
+    let (supported, note) = engine_support(choice);
+    let binary = engine_binary(choice);
+    EngineStatusEntry {
+        choice: choice.as_str(),
+        runtime: engine_kind_name(runtime),
+        binary,
+        supported,
+        available: command_exists(binary),
+        note,
+    }
+}
+
+fn resolved_engine_choice(choice: EngineChoice, settings: &OpalConfig) -> EngineKind {
+    let selected = if choice == EngineChoice::Auto {
+        settings.default_engine().unwrap_or(EngineChoice::Auto)
+    } else {
+        choice
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        match selected {
+            EngineChoice::Auto | EngineChoice::Container => EngineKind::ContainerCli,
+            EngineChoice::Docker => EngineKind::Docker,
+            EngineChoice::Podman => EngineKind::Podman,
+            EngineChoice::Nerdctl => EngineKind::Nerdctl,
+            EngineChoice::Orbstack => EngineKind::Orbstack,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match selected {
+            EngineChoice::Auto | EngineChoice::Podman => EngineKind::Podman,
+            EngineChoice::Docker => EngineKind::Docker,
+            EngineChoice::Nerdctl => EngineKind::Nerdctl,
+            EngineChoice::Orbstack | EngineChoice::Container => EngineKind::Docker,
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = settings;
+        let _ = selected;
+        EngineKind::Docker
+    }
+}
+
+fn engine_support(choice: EngineChoice) -> (bool, Option<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        if choice == EngineChoice::Nerdctl {
+            return (
+                false,
+                Some("Opal treats nerdctl as Linux-specific on macOS".to_string()),
+            );
+        }
+        return (true, orbstack_or_container_note(choice));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match choice {
+            EngineChoice::Container => (
+                false,
+                Some("Opal falls back to docker when container is selected on Linux".to_string()),
+            ),
+            EngineChoice::Orbstack => (
+                true,
+                Some("Opal maps Orbstack to the docker runtime on Linux".to_string()),
+            ),
+            _ => (true, orbstack_or_container_note(choice)),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let note = Some("Opal falls back to docker on this platform".to_string());
+        let _ = choice;
+        (true, note)
+    }
+}
+
+fn orbstack_or_container_note(choice: EngineChoice) -> Option<String> {
+    match choice {
+        EngineChoice::Orbstack => Some(
+            "Orbstack uses the docker CLI; availability does not distinguish backend identity"
+                .to_string(),
+        ),
+        EngineChoice::Container => {
+            Some("Container runtime uses the Apple container CLI".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn engine_binary(choice: EngineChoice) -> &'static str {
+    match choice {
+        EngineChoice::Auto => "docker",
+        EngineChoice::Container => "container",
+        EngineChoice::Docker | EngineChoice::Orbstack => "docker",
+        EngineChoice::Podman => "podman",
+        EngineChoice::Nerdctl => "nerdctl",
+    }
+}
+
+fn engine_kind_name(kind: EngineKind) -> &'static str {
+    match kind {
+        EngineKind::ContainerCli => "container",
+        EngineKind::Docker => "docker",
+        EngineKind::Podman => "podman",
+        EngineKind::Nerdctl => "nerdctl",
+        EngineKind::Orbstack => "orbstack",
+    }
+}
+
+fn command_exists(program: &str) -> bool {
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|dir| command_in_dir(&dir, program))
+}
+
+fn command_in_dir(dir: &Path, program: &str) -> bool {
+    let candidate = dir.join(program);
+    if candidate.is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        const EXTS: [&str; 3] = ["exe", "cmd", "bat"];
+        return EXTS
+            .iter()
+            .map(|ext| dir.join(format!("{program}.{ext}")))
+            .any(|path| path.is_file());
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn plan_args_from_value(value: Value) -> Result<PlanArgs> {
@@ -499,6 +969,7 @@ mod tests {
     use crate::runtime;
     use serde_json::json;
     use std::env;
+    use std::ffi::OsString;
     use std::fs;
     use tempfile::tempdir;
 
@@ -511,7 +982,13 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "opal_view"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_failed_jobs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_run_diff"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan_explain"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "opal_engine_status")
+        );
     }
 
     #[test]
@@ -908,6 +1385,241 @@ mod tests {
     }
 
     #[test]
+    fn run_diff_tool_compares_latest_two_runs() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-run-diff-latest");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-1".to_string(),
+                    finished_at: "earlier".to_string(),
+                    status: HistoryStatus::Failed,
+                    jobs: vec![
+                        HistoryJob {
+                            name: "build".to_string(),
+                            stage: "build".to_string(),
+                            status: HistoryStatus::Success,
+                            log_hash: "abc123".to_string(),
+                            log_path: None,
+                            artifact_dir: None,
+                            artifacts: Vec::new(),
+                            caches: Vec::new(),
+                            container_name: None,
+                            service_network: None,
+                            service_containers: Vec::new(),
+                            runtime_summary_path: None,
+                            env_vars: Vec::new(),
+                        },
+                        HistoryJob {
+                            name: "docs".to_string(),
+                            stage: "test".to_string(),
+                            status: HistoryStatus::Failed,
+                            log_hash: "def456".to_string(),
+                            log_path: None,
+                            artifact_dir: None,
+                            artifacts: Vec::new(),
+                            caches: Vec::new(),
+                            container_name: None,
+                            service_network: None,
+                            service_containers: Vec::new(),
+                            runtime_summary_path: None,
+                            env_vars: Vec::new(),
+                        },
+                    ],
+                },
+                HistoryEntry {
+                    run_id: "run-2".to_string(),
+                    finished_at: "later".to_string(),
+                    status: HistoryStatus::Success,
+                    jobs: vec![
+                        HistoryJob {
+                            name: "build".to_string(),
+                            stage: "build".to_string(),
+                            status: HistoryStatus::Success,
+                            log_hash: "ghi789".to_string(),
+                            log_path: None,
+                            artifact_dir: None,
+                            artifacts: Vec::new(),
+                            caches: Vec::new(),
+                            container_name: None,
+                            service_network: None,
+                            service_containers: Vec::new(),
+                            runtime_summary_path: None,
+                            env_vars: Vec::new(),
+                        },
+                        HistoryJob {
+                            name: "docs".to_string(),
+                            stage: "docs".to_string(),
+                            status: HistoryStatus::Success,
+                            log_hash: "jkl012".to_string(),
+                            log_path: None,
+                            artifact_dir: None,
+                            artifacts: Vec::new(),
+                            caches: Vec::new(),
+                            container_name: None,
+                            service_network: None,
+                            service_containers: Vec::new(),
+                            runtime_summary_path: None,
+                            env_vars: Vec::new(),
+                        },
+                        HistoryJob {
+                            name: "lint".to_string(),
+                            stage: "test".to_string(),
+                            status: HistoryStatus::Skipped,
+                            log_hash: "mno345".to_string(),
+                            log_path: None,
+                            artifact_dir: None,
+                            artifacts: Vec::new(),
+                            caches: Vec::new(),
+                            container_name: None,
+                            service_network: None,
+                            service_containers: Vec::new(),
+                            runtime_summary_path: None,
+                            env_vars: Vec::new(),
+                        },
+                    ],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_run_diff",
+                    "arguments": {}
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["base_run"]["run_id"], "run-1");
+        assert_eq!(result["structuredContent"]["head_run"]["run_id"], "run-2");
+        assert_eq!(result["structuredContent"]["overall_status_changed"], true);
+        assert_eq!(
+            result["structuredContent"]["changed_jobs"][0]["name"],
+            "docs"
+        );
+        assert_eq!(result["structuredContent"]["added_jobs"][0]["name"], "lint");
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn run_diff_tool_honors_explicit_base_run_id() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-run-diff-explicit");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-1".to_string(),
+                    finished_at: "first".to_string(),
+                    status: HistoryStatus::Success,
+                    jobs: vec![HistoryJob {
+                        name: "build".to_string(),
+                        stage: "build".to_string(),
+                        status: HistoryStatus::Success,
+                        log_hash: "abc123".to_string(),
+                        log_path: None,
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    }],
+                },
+                HistoryEntry {
+                    run_id: "run-2".to_string(),
+                    finished_at: "second".to_string(),
+                    status: HistoryStatus::Failed,
+                    jobs: vec![HistoryJob {
+                        name: "build".to_string(),
+                        stage: "build".to_string(),
+                        status: HistoryStatus::Failed,
+                        log_hash: "def456".to_string(),
+                        log_path: None,
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    }],
+                },
+                HistoryEntry {
+                    run_id: "run-3".to_string(),
+                    finished_at: "third".to_string(),
+                    status: HistoryStatus::Success,
+                    jobs: vec![HistoryJob {
+                        name: "build".to_string(),
+                        stage: "build".to_string(),
+                        status: HistoryStatus::Success,
+                        log_hash: "ghi789".to_string(),
+                        log_path: None,
+                        artifact_dir: None,
+                        artifacts: Vec::new(),
+                        caches: Vec::new(),
+                        container_name: None,
+                        service_network: None,
+                        service_containers: Vec::new(),
+                        runtime_summary_path: None,
+                        env_vars: Vec::new(),
+                    }],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_run_diff",
+                    "arguments": {
+                        "run_id": "run-3",
+                        "base_run_id": "run-1"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["base_run"]["run_id"], "run-1");
+        assert_eq!(result["structuredContent"]["head_run"]["run_id"], "run-3");
+        assert_eq!(result["structuredContent"]["overall_status_changed"], false);
+        let changed = result["structuredContent"]["changed_jobs"]
+            .as_array()
+            .expect("changed jobs");
+        assert!(changed.is_empty());
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
     fn plan_explain_tool_reports_selected_dependency_closure() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
@@ -1027,5 +1739,73 @@ mod tests {
             result["structuredContent"]["job"]["resolved_name"],
             "never-job"
         );
+    }
+
+    #[test]
+    fn engine_status_tool_reports_configured_default_and_available_binaries() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().join("repo");
+        let opal_home = dir.path().join("opal-home-engine-status");
+        let bin_dir = dir.path().join("bin");
+        fs::create_dir_all(workdir.join(".opal")).expect("repo config dir");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::write(
+            workdir.join(".opal").join("config.toml"),
+            "[engine]\ndefault = \"docker\"\n",
+        )
+        .expect("write config");
+        fs::write(bin_dir.join("docker"), "").expect("docker binary");
+        fs::write(bin_dir.join("podman"), "").expect("podman binary");
+
+        let original_path: Option<OsString> = env::var_os("PATH");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("PATH", &bin_dir);
+        }
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_engine_status",
+                    "arguments": {
+                        "workdir": workdir.display().to_string()
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["configured_default"], "docker");
+        let engines = result["structuredContent"]["engines"]
+            .as_array()
+            .expect("engines array");
+        let docker = engines
+            .iter()
+            .find(|engine| engine["choice"] == "docker")
+            .expect("docker entry");
+        let container = engines
+            .iter()
+            .find(|engine| engine["choice"] == "container")
+            .expect("container entry");
+        assert_eq!(docker["available"], true);
+        assert_eq!(container["available"], false);
+
+        if let Some(path) = original_path {
+            unsafe {
+                env::set_var("PATH", path);
+            }
+        } else {
+            unsafe {
+                env::remove_var("PATH");
+            }
+        }
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
     }
 }

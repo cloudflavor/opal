@@ -178,7 +178,7 @@ Starts the MCP server over stdio.
 
 This command is intended for MCP clients that launch Opal as a subprocess and speak JSON-RPC over stdin/stdout.
 
-The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, and `opal_plan_explain`.
+The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, `opal_run_diff`, `opal_plan_explain`, and `opal_engine_status`.
 
 Example:
 

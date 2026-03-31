@@ -122,7 +122,7 @@ fn initialize_result() -> Value {
             "name": "opal",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use the Opal MCP tools to plan runs, explain job planning decisions, execute pipelines, inspect recorded history and logs, list recent runs, and quickly identify failed jobs in the latest or a selected run."
+        "instructions": "Use the Opal MCP tools to plan runs, explain job planning decisions, execute pipelines, inspect recorded history and logs, compare recent runs, list recent runs, and quickly identify failed jobs in the latest or a selected run."
     })
 }
 
