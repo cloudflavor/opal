@@ -82,6 +82,7 @@ In the current Opal implementation, the most important parts are:
 - `opal_view`
   - inspects the latest or a selected recorded run for the current checkout
   - can include job logs and runtime summaries
+  - switches to a background operation when log or runtime-summary content is requested
 - `opal_history_list`
   - returns recorded runs for the current checkout with optional run-status, job-name, branch, pipeline-file, and RFC3339 date-range filters
   - lets an agent narrow history before choosing a run to inspect
@@ -248,7 +249,7 @@ The agent should use the plan to answer:
 
 Use `opal_run` with targeted jobs whenever possible.
 
-Because some operations can outlive a single MCP request window, treat `opal_run`, `opal_job_rerun`, and `opal_logs_search` as asynchronous:
+Because some operations can outlive a single MCP request window, treat `opal_run`, `opal_job_rerun`, `opal_logs_search`, and `opal_view` with `include_log` or `include_runtime_summary` as asynchronous:
 
 - start the operation
 - capture the returned `operation_id`

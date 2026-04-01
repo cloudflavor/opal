@@ -7,7 +7,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let workspace_root = manifest_dir.join("../..");
     let fallback_root = manifest_dir.join("embedded");
-    let docs_src = required_dir(workspace_root.join("docs"));
+    let docs_src = preferred_required_dir(workspace_root.join("docs"), manifest_dir.join("docs"));
     let prompts_src = preferred_dir(
         workspace_root.join("prompts").join("ai"),
         fallback_root.join("prompts").join("ai"),
@@ -44,6 +44,14 @@ fn required_dir(path: PathBuf) -> PathBuf {
         path.display()
     );
     path
+}
+
+fn preferred_required_dir(primary: PathBuf, fallback: PathBuf) -> PathBuf {
+    if primary.is_dir() {
+        primary
+    } else {
+        required_dir(fallback)
+    }
 }
 
 fn preferred_dir(primary: PathBuf, fallback: PathBuf) -> PathBuf {

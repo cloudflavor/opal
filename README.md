@@ -67,7 +67,7 @@ opal view
 opal mcp
 ```
 
-The MCP server currently exposes planning, background operations with status polling for run, rerun, and log-search requests, run inspection, history listing with status, job, branch, pipeline-file, and date-range filters, failed-job lookup, run-diff, plan-explanation, and engine-status tools for agent workflows. History-oriented MCP views are scoped to the current checkout, so `latest` and resource browsing do not mix runs from unrelated repositories sharing the same `OPAL_HOME`.
+The MCP server currently exposes planning, background operations with status polling for run, rerun, log-search, and heavy log-inspection requests, run inspection, history listing with status, job, branch, pipeline-file, and date-range filters, failed-job lookup, run-diff, plan-explanation, and engine-status tools for agent workflows. History-oriented MCP views are scoped to the current checkout, so `latest` and resource browsing do not mix runs from unrelated repositories sharing the same `OPAL_HOME`.
 
 When `opal plan` runs in an interactive terminal, it now opens in your pager by default. Use `--no-pager` to print directly or `--json` for machine-readable output.
 
