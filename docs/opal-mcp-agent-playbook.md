@@ -74,25 +74,28 @@ In the current Opal implementation, the most important parts are:
   - evaluates a local `.gitlab-ci.yml`
   - returns either a formatted plan or JSON plan
 - `opal_run`
-  - runs the local pipeline without the TUI
-  - returns a recorded run summary
+  - starts a local pipeline run without the TUI
+  - returns a background operation handle
+- `opal_run_status`
+  - polls a background run or rerun operation
+  - returns `running`, `succeeded`, or `failed` plus the final recorded run when available
 - `opal_view`
-  - inspects the latest or a selected recorded run
+  - inspects the latest or a selected recorded run for the current checkout
   - can include job logs and runtime summaries
 - `opal_history_list`
-  - returns recorded runs with optional run-status, job-name, branch, pipeline-file, and RFC3339 date-range filters
+  - returns recorded runs for the current checkout with optional run-status, job-name, branch, pipeline-file, and RFC3339 date-range filters
   - lets an agent narrow history before choosing a run to inspect
 - `opal_failed_jobs`
-  - returns the failed jobs for the latest or a selected recorded run
+  - returns the failed jobs for the latest or a selected recorded run for the current checkout
   - lets an agent jump directly to actionable failures before inspecting full run details
 - `opal_run_diff`
   - compares the latest two runs by default, or two selected runs when `run_id` and `base_run_id` are provided
   - helps an agent see whether a rerun changed overall status, job outcomes, or job presence
 - `opal_logs_search`
-  - searches recorded job logs with optional run and job filters
+  - starts a background search of recorded job logs with optional run and job filters
   - helps an agent spot recurring failure strings before opening full job logs one by one
 - `opal_job_rerun`
-  - reruns a job name from the latest or a selected recorded run against the current checkout
+  - starts a rerun of a job name from the latest or a selected recorded run against the current checkout
   - lets an agent retry one historical job name while still relying on Opal's normal dependency closure and current local pipeline state
 - `opal_plan_explain`
   - explains why a job is included, skipped, or blocked in the evaluated plan
@@ -110,6 +113,8 @@ Opal also exposes history and run resources that are ideal for browsing prior st
 - `opal://runs/<run_id>`
 - `opal://runs/<run_id>/jobs/<job>/log`
 - `opal://runs/<run_id>/jobs/<job>/runtime-summary`
+
+These resources are scoped to the current checkout, so agents do not accidentally inspect runs from other repositories that share the same `OPAL_HOME`.
 
 These resources are especially valuable for agents because they support discovery and inspection without guessing run IDs or job names.
 
@@ -178,6 +183,7 @@ For Opal, the core tools are:
 
 - `opal_plan`
 - `opal_run`
+- `opal_run_status`
 - `opal_view`
 - `opal_history_list`
 - `opal_failed_jobs`
@@ -241,6 +247,13 @@ The agent should use the plan to answer:
 ### 6. Run narrowly first
 
 Use `opal_run` with targeted jobs whenever possible.
+
+Because some operations can outlive a single MCP request window, treat `opal_run`, `opal_job_rerun`, and `opal_logs_search` as asynchronous:
+
+- start the operation
+- capture the returned `operation_id`
+- poll `opal_run_status`
+- only inspect the final recorded run after the operation reaches `succeeded` or `failed`
 
 Do not default to a full pipeline run if the task can be narrowed.
 

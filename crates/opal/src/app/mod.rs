@@ -1,4 +1,4 @@
-mod context;
+pub(crate) mod context;
 pub(crate) mod plan;
 pub(crate) mod run;
 pub(crate) mod view;

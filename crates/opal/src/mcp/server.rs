@@ -77,14 +77,14 @@ impl McpServer {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 call_tool(&self.app, params).await
             }
-            "resources/list" => list_resources(),
+            "resources/list" => list_resources(&self.app),
             "resources/read" => {
                 let uri = message
                     .get("params")
                     .and_then(|value| value.get("uri"))
                     .and_then(Value::as_str)
                     .context("missing resource URI")?;
-                read_resource(uri)
+                read_resource(&self.app, uri)
             }
             "shutdown" => {
                 self.shutdown_requested = true;

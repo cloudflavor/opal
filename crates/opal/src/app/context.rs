@@ -1,10 +1,12 @@
 use crate::config::OpalConfig;
+use crate::git;
 use crate::pipeline::RuleContext;
 use crate::secrets::SecretsStore;
 use crate::{EngineChoice, EngineKind, GitLabRemoteConfig};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn resolve_pipeline_path(workdir: &Path, pipeline: Option<PathBuf>) -> PathBuf {
@@ -30,6 +32,14 @@ pub(crate) fn rule_context_for_workdir(workdir: &Path) -> RuleContext {
         ctx_env.extend(secrets.env_pairs());
     }
     RuleContext::from_env(workdir, ctx_env, run_manual)
+}
+
+pub(crate) fn history_scope_root(workdir: &Path) -> String {
+    let root = git::repository_root(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    fs::canonicalize(&root)
+        .unwrap_or(root)
+        .display()
+        .to_string()
 }
 
 pub(crate) fn resolve_engine_choice(choice: EngineChoice, settings: &OpalConfig) -> EngineChoice {
@@ -87,9 +97,10 @@ pub(crate) fn resolve_engine(_: EngineChoice) -> EngineKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_engine_choice, rule_context_for_workdir};
+    use super::{history_scope_root, resolve_engine_choice, rule_context_for_workdir};
     use crate::EngineChoice;
     use crate::config::{EngineSettings, OpalConfig};
+    use crate::git::test_support::init_repo_with_commit_and_tag;
     use anyhow::Result;
     use std::fs;
     use tempfile::tempdir;
@@ -138,5 +149,18 @@ mod tests {
             resolve_engine_choice(EngineChoice::Auto, &settings),
             EngineChoice::Docker
         );
+    }
+
+    #[test]
+    fn history_scope_uses_repository_root_when_available() -> Result<()> {
+        let dir = init_repo_with_commit_and_tag("v0.1.0")?;
+        let nested = dir.path().join("nested").join("child");
+        fs::create_dir_all(&nested)?;
+
+        assert_eq!(
+            history_scope_root(&nested),
+            dir.path().canonicalize()?.display().to_string()
+        );
+        Ok(())
     }
 }

@@ -56,6 +56,7 @@ impl HistoryStore {
         run_id: &str,
         summaries: &[JobSummary],
         resources: &HashMap<String, HistoryResources>,
+        scope_root: Option<String>,
         ref_name: Option<String>,
         pipeline_file: Option<String>,
     ) -> Option<HistoryEntry> {
@@ -66,6 +67,7 @@ impl HistoryStore {
             run_id: run_id.to_string(),
             finished_at,
             status: pipeline_status(summaries),
+            scope_root,
             ref_name,
             pipeline_file,
             jobs: summaries
@@ -208,6 +210,7 @@ mod tests {
                 "run-123",
                 &summaries,
                 &resources,
+                Some("/tmp/repo".into()),
                 Some("main".into()),
                 Some(".gitlab-ci.yml".into()),
             )
@@ -215,6 +218,7 @@ mod tests {
 
         assert_eq!(entry.run_id, "run-123");
         assert_eq!(entry.status, HistoryStatus::Success);
+        assert_eq!(entry.scope_root.as_deref(), Some("/tmp/repo"));
         assert_eq!(entry.ref_name.as_deref(), Some("main"));
         assert_eq!(entry.pipeline_file.as_deref(), Some(".gitlab-ci.yml"));
         assert_eq!(entry.jobs.len(), 1);

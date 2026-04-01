@@ -3,40 +3,53 @@ use super::context::{
     resolve_engine, resolve_engine_choice, resolve_gitlab_remote, resolve_pipeline_path,
     validate_engine_choice,
 };
-use super::view::{find_history_entry, find_job, latest_history_entry};
+use super::view::{
+    find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
+    load_history_for_workdir,
+};
 use crate::config::OpalConfig;
 use crate::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
 };
-use crate::history::{self, HistoryEntry};
-use crate::runtime;
+use crate::history::HistoryEntry;
 use crate::{EngineKind, ExecutorConfig, RunArgs};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
 pub(crate) async fn execute(app: &OpalApp, args: RunArgs) -> Result<()> {
-    let config = build_executor_config(app, prepare_run_args(args)?, true)?;
+    let config = build_executor_config(app, prepare_run_args(app, args)?, true)?;
     execute_with_config(config).await
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RunCapture {
     pub history_entry: Option<HistoryEntry>,
+    pub result: Option<serde_json::Value>,
+    pub result_summary: Option<String>,
     pub error: Option<String>,
 }
 
 pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapture {
-    let before = history::load(&runtime::history_path()).unwrap_or_default();
+    let prepared = match prepare_run_args(app, args)
+        .and_then(|args| build_executor_config(app, args, false))
+    {
+        Ok(config) => config,
+        Err(err) => {
+            return RunCapture {
+                history_entry: None,
+                result: None,
+                result_summary: None,
+                error: Some(err.to_string()),
+            };
+        }
+    };
+    let before = load_history_for_workdir(&prepared.workdir).unwrap_or_default();
     let known_run_ids = before
         .iter()
         .map(|entry| entry.run_id.clone())
         .collect::<HashSet<_>>();
-    let result =
-        match prepare_run_args(args).and_then(|args| build_executor_config(app, args, false)) {
-            Ok(config) => execute_with_config(config).await,
-            Err(err) => Err(err),
-        };
-    let after = history::load(&runtime::history_path()).unwrap_or_default();
+    let result = execute_with_config(prepared.clone()).await;
+    let after = load_history_for_workdir(&prepared.workdir).unwrap_or_default();
     let history_entry = after
         .iter()
         .rev()
@@ -45,11 +58,14 @@ pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapt
 
     RunCapture {
         history_entry,
+        result: None,
+        result_summary: None,
         error: result.err().map(|err| err.to_string()),
     }
 }
 
-fn prepare_run_args(mut args: RunArgs) -> Result<RunArgs> {
+fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
+    let resolved_workdir = app.resolve_workdir(args.workdir.clone());
     match (&args.rerun_job, &args.rerun_run_id) {
         (None, Some(_)) => anyhow::bail!("--rerun-run-id requires --rerun-job"),
         (Some(_), _) if !args.jobs.is_empty() => {
@@ -58,9 +74,10 @@ fn prepare_run_args(mut args: RunArgs) -> Result<RunArgs> {
         (None, None) => return Ok(args),
         (Some(job_name), _) => {
             let entry = match args.rerun_run_id.as_deref() {
-                Some(run_id) => find_history_entry(run_id)?
+                Some(run_id) => find_history_entry_for_workdir(&resolved_workdir, run_id)?
                     .with_context(|| format!("run '{run_id}' not found in Opal history"))?,
-                None => latest_history_entry()?.context("no Opal history entries found")?,
+                None => latest_history_entry_for_workdir(&resolved_workdir)?
+                    .context("no Opal history entries found")?,
             };
             find_job(&entry, job_name).with_context(|| {
                 format!(
@@ -155,11 +172,12 @@ async fn execute_with_config(config: ExecutorConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::prepare_run_args;
-    use crate::EngineChoice;
-    use crate::RunArgs;
+    use crate::app::OpalApp;
+    use crate::app::context::history_scope_root;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
+    use crate::{EngineChoice, RunArgs};
     use std::env;
     use std::fs;
     use tempfile::tempdir;
@@ -191,12 +209,14 @@ mod tests {
         unsafe {
             env::set_var("OPAL_HOME", &opal_home);
         }
+        let app = OpalApp::from_current_dir().expect("app");
         save(
             &runtime::history_path(),
             &[HistoryEntry {
                 run_id: "run-1".to_string(),
                 finished_at: "2026-03-31T12:00:00Z".to_string(),
                 status: HistoryStatus::Failed,
+                scope_root: Some(history_scope_root(&app.resolve_workdir(None))),
                 ref_name: None,
                 pipeline_file: None,
                 jobs: vec![HistoryJob {
@@ -220,7 +240,7 @@ mod tests {
 
         let mut args = base_run_args();
         args.rerun_job = Some("rust-checks".to_string());
-        let prepared = prepare_run_args(args).expect("prepare rerun args");
+        let prepared = prepare_run_args(&app, args).expect("prepare rerun args");
 
         assert_eq!(prepared.jobs, vec!["rust-checks"]);
         unsafe {
@@ -234,7 +254,8 @@ mod tests {
         args.rerun_job = Some("rust-checks".to_string());
         args.jobs = vec!["build".to_string()];
 
-        let err = prepare_run_args(args)
+        let app = OpalApp::from_current_dir().expect("app");
+        let err = prepare_run_args(&app, args)
             .err()
             .expect("conflicting rerun args");
         assert!(

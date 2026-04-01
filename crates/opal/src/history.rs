@@ -9,6 +9,8 @@ pub struct HistoryEntry {
     pub finished_at: String,
     pub status: HistoryStatus,
     #[serde(default)]
+    pub scope_root: Option<String>,
+    #[serde(default)]
     pub ref_name: Option<String>,
     #[serde(default)]
     pub pipeline_file: Option<String>,

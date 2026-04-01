@@ -11,6 +11,7 @@ mod workspace;
 
 use super::{orchestrator, paths};
 use crate::ai::{self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt};
+use crate::app::context::history_scope_root;
 use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
 use crate::env::{build_job_env, collect_env_vars, expand_env_list};
@@ -421,6 +422,7 @@ impl ExecutorCore {
             .env_value("CI_COMMIT_REF_NAME")
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
+        let scope_root = Some(history_scope_root(&self.config.workdir));
         let pipeline_file = Some(recorded_pipeline_file(
             &self.config.workdir,
             &self.config.pipeline,
@@ -429,6 +431,7 @@ impl ExecutorCore {
             &self.run_id,
             summaries,
             &resource_map,
+            scope_root,
             ref_name,
             pipeline_file,
         )

@@ -3,7 +3,7 @@ mod runner;
 mod state;
 pub mod types;
 
-use crate::history;
+use crate::app::view::load_history_for_workdir;
 use crate::history::HistoryEntry;
 use crate::runtime;
 use crate::ui::types::UiEvent;
@@ -38,12 +38,16 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
     runner.run()
 }
 
-pub fn view_pipeline_logs(_root: &Path) -> Result<()> {
+pub fn view_pipeline_logs(root: &Path) -> Result<()> {
     let history_path = runtime::history_path();
-    let history = history::load(&history_path)
+    let history = load_history_for_workdir(root)
         .with_context(|| format!("failed to load history at {}", history_path.display()))?;
     if history.is_empty() {
-        anyhow::bail!("no history entries found at {}", history_path.display());
+        anyhow::bail!(
+            "no history entries found at {} for {}",
+            history_path.display(),
+            root.display()
+        );
     }
     let current_run_id = history
         .last()

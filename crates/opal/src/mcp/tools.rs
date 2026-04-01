@@ -2,8 +2,8 @@ use crate::app::OpalApp;
 use crate::app::plan::{explain as explain_plan, render as render_plan};
 use crate::app::run::execute_and_capture;
 use crate::app::view::{
-    find_history_entry, find_job, latest_history_entry, load_history, read_job_log,
-    read_runtime_summary,
+    find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
+    load_history_for_workdir, read_job_log, read_runtime_summary,
 };
 use crate::config::OpalConfig;
 use crate::history::{HistoryEntry, HistoryStatus};
@@ -58,8 +58,8 @@ pub(crate) fn list_tools() -> Value {
             },
             {
                 "name": "opal_run_status",
-                "title": "Inspect a background Opal run operation",
-                "description": "Returns the current or final status for a background Opal MCP run operation.",
+                "title": "Inspect a background Opal operation",
+                "description": "Returns the current or final status for a background Opal MCP operation, including run, rerun, and log-search requests.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -128,7 +128,7 @@ pub(crate) fn list_tools() -> Value {
             {
                 "name": "opal_logs_search",
                 "title": "Search recorded Opal job logs",
-                "description": "Searches recorded Opal job logs for recurring failures or exact strings.",
+                "description": "Starts a background search of recorded Opal job logs for recurring failures or exact strings.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -215,11 +215,11 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         }
         "opal_run" => Ok(run_tool(app, arguments).await),
         "opal_run_status" => Ok(run_status_tool(arguments)?),
-        "opal_view" => Ok(view_tool(arguments)?),
-        "opal_failed_jobs" => Ok(failed_jobs_tool(arguments)?),
-        "opal_history_list" => Ok(history_list_tool(arguments)?),
-        "opal_run_diff" => Ok(run_diff_tool(arguments)?),
-        "opal_logs_search" => Ok(logs_search_tool(arguments)?),
+        "opal_view" => Ok(view_tool(app, arguments)?),
+        "opal_failed_jobs" => Ok(failed_jobs_tool(app, arguments)?),
+        "opal_history_list" => Ok(history_list_tool(app, arguments)?),
+        "opal_run_diff" => Ok(run_diff_tool(app, arguments)?),
+        "opal_logs_search" => Ok(logs_search_tool(app, arguments).await),
         "opal_job_rerun" => Ok(job_rerun_tool(app, arguments).await),
         "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
         "opal_engine_status" => Ok(engine_status_tool(app, arguments)?),
@@ -264,15 +264,19 @@ fn run_status_tool(arguments: Value) -> Result<Value> {
         .context("missing operation_id")?;
     let operation = run_operations()
         .get(operation_id)
-        .with_context(|| format!("run operation '{operation_id}' not found"))?;
+        .with_context(|| format!("background operation '{operation_id}' not found"))?;
+    let mut structured = json!({ "operation": operation });
+    if let Some(result) = operation.result.clone() {
+        structured["result"] = result;
+    }
     Ok(tool_result(
         render_run_operation_summary(&operation),
-        json!({ "operation": operation }),
+        structured,
         false,
     ))
 }
 
-fn view_tool(arguments: Value) -> Result<Value> {
+fn view_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let job_name = arguments.get("job").and_then(Value::as_str);
     let include_log = arguments
@@ -284,7 +288,7 @@ fn view_tool(arguments: Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let entry = selected_history_entry(run_id)?;
+    let entry = selected_history_entry(app, run_id)?;
 
     let mut structured = Map::new();
     structured.insert("run".to_string(), history_entry_json(&entry));
@@ -316,9 +320,9 @@ fn view_tool(arguments: Value) -> Result<Value> {
     Ok(tool_result(text, Value::Object(structured), false))
 }
 
-fn failed_jobs_tool(arguments: Value) -> Result<Value> {
+fn failed_jobs_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
-    let entry = selected_history_entry(run_id)?;
+    let entry = selected_history_entry(app, run_id)?;
     let failed_jobs = failed_jobs(&entry);
     let failed_names = failed_jobs
         .iter()
@@ -346,7 +350,7 @@ fn failed_jobs_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
-fn history_list_tool(arguments: Value) -> Result<Value> {
+fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let status = history_status_from_value(arguments.get("status"))?;
     let job_name = arguments.get("job").and_then(Value::as_str);
     let branch = arguments.get("branch").and_then(Value::as_str);
@@ -359,7 +363,7 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
         .map(|value| value as usize)
         .unwrap_or(20);
 
-    let history = load_history()?;
+    let history = load_history_for_workdir(&app.resolve_workdir(None))?;
     let total_runs = history.len();
     let runs = history
         .into_iter()
@@ -411,10 +415,10 @@ fn history_list_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
-fn run_diff_tool(arguments: Value) -> Result<Value> {
+fn run_diff_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let base_run_id = arguments.get("base_run_id").and_then(Value::as_str);
-    let history = load_history()?;
+    let history = load_history_for_workdir(&app.resolve_workdir(None))?;
     let (base_run, head_run) = selected_run_pair(&history, run_id, base_run_id)?;
     let diff = compare_runs(&base_run, &head_run);
     Ok(tool_result(
@@ -424,45 +428,61 @@ fn run_diff_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
-fn logs_search_tool(arguments: Value) -> Result<Value> {
-    let query = arguments
-        .get("query")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|query| !query.is_empty())
-        .context("missing query")?;
-    let run_id = arguments.get("run_id").and_then(Value::as_str);
-    let job_name = arguments.get("job").and_then(Value::as_str);
-    let limit = arguments
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize)
-        .unwrap_or(20);
-    let case_sensitive = arguments
-        .get("case_sensitive")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+async fn logs_search_tool(app: &OpalApp, arguments: Value) -> Value {
+    let request = match log_search_request_from_value(app, arguments) {
+        Ok(request) => request,
+        Err(err) => return error_tool_result(err.to_string(), Value::Null),
+    };
+    let operation = run_operations().start(
+        RunOperationRequest {
+            tool: "opal_logs_search",
+            requested_jobs: request.job_name.iter().cloned().collect(),
+            requested_job: request.job_name.clone(),
+            source_run_id: request.run_id.clone(),
+        },
+        async move { execute_log_search(request) },
+    );
+    tool_result(
+        format!(
+            "Started background log search operation {}. Poll opal_run_status with this operation_id.",
+            operation.operation_id
+        ),
+        json!({ "operation": operation }),
+        false,
+    )
+}
 
-    let history = load_history()?;
+fn log_search_tool_result(request: &LogSearchRequest) -> Result<ToolResultPayload> {
+    let history = load_history_for_workdir(&request.workdir)?;
+    let query = request.query.as_str();
     let mut matches = Vec::new();
     let mut read_errors = Vec::new();
     let mut scanned_jobs = 0usize;
 
     for entry in history.iter().rev() {
-        if run_id.is_some_and(|run_id| entry.run_id != run_id) {
+        if request
+            .run_id
+            .as_deref()
+            .is_some_and(|run_id| entry.run_id != run_id)
+        {
             continue;
         }
         for job in &entry.jobs {
-            if job_name.is_some_and(|job_name| job.name != job_name) {
+            if request
+                .job_name
+                .as_deref()
+                .is_some_and(|job_name| job.name != job_name)
+            {
                 continue;
             }
             scanned_jobs += 1;
             match read_job_log(entry, job) {
                 Ok(log) => {
-                    if let Some(log_match) = find_log_match(entry, job, &log, query, case_sensitive)
+                    if let Some(log_match) =
+                        find_log_match(entry, job, &log, query, request.case_sensitive)
                     {
                         matches.push(log_match);
-                        if matches.len() >= limit {
+                        if matches.len() >= request.limit {
                             break;
                         }
                     }
@@ -474,7 +494,7 @@ fn logs_search_tool(arguments: Value) -> Result<Value> {
                 }),
             }
         }
-        if matches.len() >= limit {
+        if matches.len() >= request.limit {
             break;
         }
     }
@@ -490,27 +510,78 @@ fn logs_search_tool(arguments: Value) -> Result<Value> {
         )
     };
 
-    Ok(tool_result(
-        text,
-        json!({
-            "query": query,
-            "case_sensitive": case_sensitive,
-            "filters": {
-                "run_id": run_id,
-                "job": job_name,
-                "limit": limit,
-            },
-            "matches": matches,
-            "returned_matches": matches.len(),
-            "scanned_jobs": scanned_jobs,
-            "read_errors": read_errors,
-        }),
-        false,
-    ))
+    let structured = json!({
+        "query": query,
+        "case_sensitive": request.case_sensitive,
+        "filters": {
+            "run_id": request.run_id.clone(),
+            "job": request.job_name.clone(),
+            "limit": request.limit,
+        },
+        "matches": matches,
+        "returned_matches": matches.len(),
+        "scanned_jobs": scanned_jobs,
+        "read_errors": read_errors,
+    });
+
+    Ok(ToolResultPayload { text, structured })
+}
+
+fn log_search_request_from_value(app: &OpalApp, arguments: Value) -> Result<LogSearchRequest> {
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(ToOwned::to_owned)
+        .context("missing query")?;
+    let run_id = arguments
+        .get("run_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let job_name = arguments
+        .get("job")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(20);
+    let case_sensitive = arguments
+        .get("case_sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(LogSearchRequest {
+        workdir: app.resolve_workdir(None),
+        query,
+        run_id,
+        job_name,
+        limit,
+        case_sensitive,
+    })
+}
+
+fn execute_log_search(request: LogSearchRequest) -> crate::app::run::RunCapture {
+    match log_search_tool_result(&request) {
+        Ok(payload) => crate::app::run::RunCapture {
+            history_entry: None,
+            error: None,
+            result: Some(payload.structured),
+            result_summary: Some(payload.text),
+        },
+        Err(err) => crate::app::run::RunCapture {
+            history_entry: None,
+            error: Some(err.to_string()),
+            result: None,
+            result_summary: None,
+        },
+    }
 }
 
 async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
-    let request = match job_rerun_request(&arguments) {
+    let request = match job_rerun_request(app, &arguments) {
         Ok(request) => request,
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
@@ -633,6 +704,8 @@ struct RunOperation {
     requested_job: Option<String>,
     source_run_id: Option<String>,
     run: Option<HistoryEntry>,
+    result: Option<Value>,
+    result_summary: Option<String>,
     error: Option<String>,
 }
 
@@ -664,6 +737,8 @@ impl RunOperations {
             requested_job: request.requested_job,
             source_run_id: request.source_run_id,
             run: None,
+            result: None,
+            result_summary: None,
             error: None,
         };
         let operation_id = operation.operation_id.clone();
@@ -702,6 +777,8 @@ impl RunOperations {
             "succeeded"
         };
         operation.run = capture.history_entry;
+        operation.result = capture.result;
+        operation.result_summary = capture.result_summary;
         operation.error = capture.error;
     }
 
@@ -744,29 +821,31 @@ fn render_run_operation_summary(operation: &RunOperation) -> String {
     match (
         operation.status,
         operation.run.as_ref(),
+        operation.result_summary.as_deref(),
         operation.error.as_deref(),
     ) {
-        ("running", _, _) => format!(
+        ("running", _, _, _) => format!(
             "Opal background operation {} is still running",
             operation.operation_id
         ),
-        ("succeeded", Some(run), _) => format!(
+        ("succeeded", Some(run), _, _) => format!(
             "Opal background operation {} completed as run {} with status {:?}",
             operation.operation_id, run.run_id, run.status
         ),
-        ("succeeded", None, _) => format!(
+        ("succeeded", None, Some(summary), _) => summary.to_string(),
+        ("succeeded", None, None, _) => format!(
             "Opal background operation {} completed without a recorded history entry",
             operation.operation_id
         ),
-        ("failed", Some(run), Some(error)) => format!(
+        ("failed", Some(run), _, Some(error)) => format!(
             "Opal background operation {} finished as run {} with status {:?}: {error}",
             operation.operation_id, run.run_id, run.status
         ),
-        ("failed", None, Some(error)) => format!(
+        ("failed", None, _, Some(error)) => format!(
             "Opal background operation {} failed before recording history: {error}",
             operation.operation_id
         ),
-        (_, _, Some(error)) => format!(
+        (_, _, _, Some(error)) => format!(
             "Opal background operation {} finished with error: {error}",
             operation.operation_id
         ),
@@ -777,15 +856,32 @@ fn render_run_operation_summary(operation: &RunOperation) -> String {
     }
 }
 
+struct LogSearchRequest {
+    workdir: PathBuf,
+    query: String,
+    run_id: Option<String>,
+    job_name: Option<String>,
+    limit: usize,
+    case_sensitive: bool,
+}
+
+struct ToolResultPayload {
+    text: String,
+    structured: Value,
+}
+
 fn history_entry_json(entry: &HistoryEntry) -> Value {
     json!(entry)
 }
 
-fn selected_history_entry(run_id: Option<&str>) -> Result<HistoryEntry> {
+fn selected_history_entry(app: &OpalApp, run_id: Option<&str>) -> Result<HistoryEntry> {
+    let workdir = app.resolve_workdir(None);
     match run_id {
-        Some(run_id) => find_history_entry(run_id)?
+        Some(run_id) => find_history_entry_for_workdir(&workdir, run_id)?
             .with_context(|| format!("run '{run_id}' not found in Opal history")),
-        None => latest_history_entry()?.context("no Opal history entries found"),
+        None => {
+            latest_history_entry_for_workdir(&workdir)?.context("no Opal history entries found")
+        }
     }
 }
 
@@ -1189,14 +1285,14 @@ fn line_matches_query(line: &str, query: &str, case_sensitive: bool) -> bool {
     }
 }
 
-fn job_rerun_request(arguments: &Value) -> Result<JobRerunRequest> {
+fn job_rerun_request(app: &OpalApp, arguments: &Value) -> Result<JobRerunRequest> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let requested_job = arguments
         .get("job")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .context("missing job")?;
-    let source_run = selected_history_entry(run_id)?;
+    let source_run = selected_history_entry(app, run_id)?;
     let source_job = find_job(&source_run, &requested_job)
         .cloned()
         .with_context(|| {
@@ -1298,7 +1394,7 @@ fn engine_support(choice: EngineChoice) -> (bool, Option<String>) {
                 Some("Opal treats nerdctl as Linux-specific on macOS".to_string()),
             );
         }
-        return (true, orbstack_or_container_note(choice));
+        (true, orbstack_or_container_note(choice))
     }
 
     #[cfg(target_os = "linux")]
@@ -1489,6 +1585,7 @@ fn _view_args_from_value(value: Value) -> ViewArgs {
 mod tests {
     use super::{call_tool, job_rerun_request, list_tools, run_args_from_value, run_operations};
     use crate::app::OpalApp;
+    use crate::app::context::history_scope_root;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
@@ -1497,6 +1594,41 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use tempfile::tempdir;
+
+    fn current_history_scope() -> String {
+        let app = OpalApp::from_current_dir().expect("app");
+        history_scope_root(&app.resolve_workdir(None))
+    }
+
+    fn wait_for_background_operation(
+        runtime: &tokio::runtime::Runtime,
+        app: &OpalApp,
+        operation_id: &str,
+    ) -> Value {
+        runtime.block_on(async {
+            for _ in 0..50 {
+                let status = call_tool(
+                    app,
+                    json!({
+                        "name": "opal_run_status",
+                        "arguments": {
+                            "operation_id": operation_id
+                        }
+                    }),
+                )
+                .await
+                .expect("status");
+                let state = status["structuredContent"]["operation"]["status"]
+                    .as_str()
+                    .expect("status");
+                if state != "running" {
+                    return status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!("background operation did not reach a terminal state");
+        })
+    }
 
     #[test]
     fn tools_list_exposes_run_plan_and_view() {
@@ -1535,7 +1667,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_status_tool_reports_background_failure() {
-        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         run_operations().clear();
         let dir = tempdir().expect("tempdir");
         fs::write(
@@ -1621,6 +1752,7 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "now".to_string(),
                 status: HistoryStatus::Success,
+                scope_root: Some(current_history_scope()),
                 ref_name: None,
                 pipeline_file: None,
                 jobs: vec![HistoryJob {
@@ -1682,6 +1814,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -1704,6 +1837,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "now".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![
@@ -1783,6 +1917,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -1805,6 +1940,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -1865,6 +2001,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -1873,6 +2010,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -1881,6 +2019,7 @@ mod tests {
                     run_id: "run-3".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -1933,6 +2072,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -1955,6 +2095,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2019,6 +2160,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "2026-03-29T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -2027,6 +2169,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "2026-03-30T12:00:00Z".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -2035,6 +2178,7 @@ mod tests {
                     run_id: "run-3".to_string(),
                     finished_at: "2026-03-31T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![],
@@ -2093,6 +2237,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "2026-03-29T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: Some("main".to_string()),
                     pipeline_file: Some(".gitlab-ci.yml".to_string()),
                     jobs: vec![],
@@ -2101,6 +2246,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "2026-03-30T12:00:00Z".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: Some("release".to_string()),
                     pipeline_file: Some(".gitlab-ci.yml".to_string()),
                     jobs: vec![],
@@ -2109,6 +2255,7 @@ mod tests {
                     run_id: "run-3".to_string(),
                     finished_at: "2026-03-31T12:00:00Z".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: Some("main".to_string()),
                     pipeline_file: Some("pipelines/docs.yml".to_string()),
                     jobs: vec![],
@@ -2149,6 +2296,64 @@ mod tests {
     }
 
     #[test]
+    fn history_list_tool_ignores_runs_from_other_scopes() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-history-list-scope");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[
+                HistoryEntry {
+                    run_id: "run-local".to_string(),
+                    finished_at: "2026-03-30T12:00:00Z".to_string(),
+                    status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
+                    ref_name: Some("main".to_string()),
+                    pipeline_file: Some(".gitlab-ci.yml".to_string()),
+                    jobs: vec![],
+                },
+                HistoryEntry {
+                    run_id: "run-foreign".to_string(),
+                    finished_at: "2026-03-31T12:00:00Z".to_string(),
+                    status: HistoryStatus::Failed,
+                    scope_root: Some("/tmp/other-repo".to_string()),
+                    ref_name: Some("main".to_string()),
+                    pipeline_file: Some(".gitlab-ci.yml".to_string()),
+                    jobs: vec![],
+                },
+            ],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_history_list",
+                    "arguments": {}
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["total_runs"], 1);
+        let runs = result["structuredContent"]["runs"]
+            .as_array()
+            .expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "run-local");
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
     fn run_diff_tool_compares_latest_two_runs() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
@@ -2164,6 +2369,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![
@@ -2203,6 +2409,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "later".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![
@@ -2299,6 +2506,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "first".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2321,6 +2529,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "second".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2343,6 +2552,7 @@ mod tests {
                     run_id: "run-3".to_string(),
                     finished_at: "third".to_string(),
                     status: HistoryStatus::Success,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2414,6 +2624,7 @@ mod tests {
                     run_id: "run-1".to_string(),
                     finished_at: "earlier".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2436,6 +2647,7 @@ mod tests {
                     run_id: "run-2".to_string(),
                     finished_at: "latest".to_string(),
                     status: HistoryStatus::Failed,
+                    scope_root: Some(current_history_scope()),
                     ref_name: None,
                     pipeline_file: None,
                     jobs: vec![HistoryJob {
@@ -2460,7 +2672,7 @@ mod tests {
 
         let app = OpalApp::from_current_dir().expect("app");
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let result = runtime
+        let start = runtime
             .block_on(call_tool(
                 &app,
                 json!({
@@ -2472,11 +2684,28 @@ mod tests {
             ))
             .expect("call tool");
 
-        assert_eq!(result["isError"], false);
-        assert_eq!(result["structuredContent"]["returned_matches"], 1);
-        assert_eq!(result["structuredContent"]["matches"][0]["run_id"], "run-2");
-        assert_eq!(result["structuredContent"]["matches"][0]["job"], "docs");
-        assert_eq!(result["structuredContent"]["matches"][0]["line_matches"], 2);
+        assert_eq!(start["isError"], false);
+        let operation_id = start["structuredContent"]["operation"]["operation_id"]
+            .as_str()
+            .expect("operation id");
+        let result = wait_for_background_operation(&runtime, &app, operation_id);
+        assert_eq!(
+            result["structuredContent"]["operation"]["tool"],
+            "opal_logs_search"
+        );
+        assert_eq!(result["structuredContent"]["result"]["returned_matches"], 1);
+        assert_eq!(
+            result["structuredContent"]["result"]["matches"][0]["run_id"],
+            "run-2"
+        );
+        assert_eq!(
+            result["structuredContent"]["result"]["matches"][0]["job"],
+            "docs"
+        );
+        assert_eq!(
+            result["structuredContent"]["result"]["matches"][0]["line_matches"],
+            2
+        );
         unsafe {
             env::remove_var("OPAL_HOME");
         }
@@ -2501,6 +2730,7 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "now".to_string(),
                 status: HistoryStatus::Failed,
+                scope_root: Some(current_history_scope()),
                 ref_name: None,
                 pipeline_file: None,
                 jobs: vec![
@@ -2541,7 +2771,7 @@ mod tests {
 
         let app = OpalApp::from_current_dir().expect("app");
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let result = runtime
+        let start = runtime
             .block_on(call_tool(
                 &app,
                 json!({
@@ -2555,11 +2785,18 @@ mod tests {
             ))
             .expect("call tool");
 
-        assert_eq!(result["isError"], false);
-        assert_eq!(result["structuredContent"]["returned_matches"], 1);
-        assert_eq!(result["structuredContent"]["matches"][0]["job"], "build");
+        assert_eq!(start["isError"], false);
+        let operation_id = start["structuredContent"]["operation"]["operation_id"]
+            .as_str()
+            .expect("operation id");
+        let result = wait_for_background_operation(&runtime, &app, operation_id);
+        assert_eq!(result["structuredContent"]["result"]["returned_matches"], 1);
         assert_eq!(
-            result["structuredContent"]["matches"][0]["matching_lines"][0]["text"],
+            result["structuredContent"]["result"]["matches"][0]["job"],
+            "build"
+        );
+        assert_eq!(
+            result["structuredContent"]["result"]["matches"][0]["matching_lines"][0]["text"],
             "Fatal build issue"
         );
         unsafe {
@@ -2582,6 +2819,7 @@ mod tests {
                 run_id: "run-1".to_string(),
                 finished_at: "2026-03-31T12:00:00Z".to_string(),
                 status: HistoryStatus::Failed,
+                scope_root: Some(current_history_scope()),
                 ref_name: None,
                 pipeline_file: None,
                 jobs: vec![HistoryJob {
@@ -2603,10 +2841,14 @@ mod tests {
         )
         .expect("save history");
 
-        let request = job_rerun_request(&json!({
-            "job": "rust-checks",
-            "engine": "docker"
-        }))
+        let app = OpalApp::from_current_dir().expect("app");
+        let request = job_rerun_request(
+            &app,
+            &json!({
+                "job": "rust-checks",
+                "engine": "docker"
+            }),
+        )
         .expect("job rerun request");
 
         assert_eq!(request.source_run.run_id, "run-1");
