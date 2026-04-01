@@ -34,10 +34,12 @@ rust-checks:
   needs:
     - job: fetch-sources
       artifacts: false
+  variables:
+    CARGO_INCREMENTAL: "0"
   script:
     - cargo check --workspace --all-targets --locked
     - cargo fmt --all -- --check
-    - CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+    - cargo clippy --workspace --all-targets -- -D warnings
 
 ui-docs-check:
   stage: test
