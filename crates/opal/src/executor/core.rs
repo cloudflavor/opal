@@ -40,6 +40,11 @@ use tokio::sync::mpsc;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
 
+pub struct ExecutionOutcome {
+    pub history_entry: Option<HistoryEntry>,
+    pub result: Result<()>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
     pub config: ExecutorConfig,
@@ -171,8 +176,16 @@ impl ExecutorCore {
         Ok(core)
     }
 
-    pub async fn run(&self) -> Result<()> {
-        let plan = Arc::new(self.plan_jobs()?);
+    pub async fn run(&self) -> ExecutionOutcome {
+        let plan = match self.plan_jobs() {
+            Ok(plan) => Arc::new(plan),
+            Err(err) => {
+                return ExecutionOutcome {
+                    history_entry: None,
+                    result: Err(err),
+                };
+            }
+        };
         let resource_map = self.collect_job_resources(&plan);
         let display = self.display();
         let plan_text = collect_pipeline_plan(&display, &plan).join("\n");
@@ -204,7 +217,7 @@ impl ExecutorCore {
                     runner: self.ui_runner_info_for_job(&planned.instance.job),
                 })
                 .collect();
-            Some(UiHandle::start(
+            match UiHandle::start(
                 jobs,
                 history_snapshot,
                 self.run_id.clone(),
@@ -212,7 +225,15 @@ impl ExecutorCore {
                 plan_text,
                 self.config.workdir.clone(),
                 self.config.pipeline.clone(),
-            )?)
+            ) {
+                Ok(handle) => Some(handle),
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         } else {
             None
         };
@@ -244,20 +265,25 @@ impl ExecutorCore {
             handle.pipeline_finished();
         }
 
-        if let Some(commands) = ui_command_rx.as_mut() {
-            orchestrator::handle_restart_commands(
+        if let Some(commands) = ui_command_rx.as_mut()
+            && let Err(err) = orchestrator::handle_restart_commands(
                 self,
                 plan.clone(),
                 ui_bridge.clone(),
                 commands,
                 &mut summaries,
             )
-            .await?;
+            .await
+        {
+            return ExecutionOutcome {
+                history_entry: None,
+                result: Err(err),
+            };
         }
 
         let history_entry = self.record_pipeline_history(&summaries, &resource_map);
-        if let (Some(entry), Some(ui)) = (history_entry, ui_bridge.as_deref()) {
-            ui.history_updated(entry);
+        if let (Some(entry), Some(ui)) = (history_entry.as_ref(), ui_bridge.as_deref()) {
+            ui.history_updated(entry.clone());
         }
 
         if let Some(handle) = ui_handle {
@@ -273,7 +299,10 @@ impl ExecutorCore {
                 display::print_line,
             );
         }
-        result
+        ExecutionOutcome {
+            history_entry,
+            result,
+        }
     }
 
     fn plan_jobs(&self) -> Result<ExecutionPlan> {

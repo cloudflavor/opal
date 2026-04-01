@@ -75,6 +75,7 @@ pub(crate) fn list_tools() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "workdir": { "type": "string" },
                         "run_id": { "type": "string" },
                         "job": { "type": "string" },
                         "include_log": { "type": "boolean" },
@@ -89,6 +90,7 @@ pub(crate) fn list_tools() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "workdir": { "type": "string" },
                         "run_id": { "type": "string" }
                     }
                 }
@@ -104,6 +106,7 @@ pub(crate) fn list_tools() -> Value {
                             "type": "string",
                             "enum": ["success", "failed", "skipped", "running"]
                         },
+                        "workdir": { "type": "string" },
                         "job": { "type": "string" },
                         "branch": { "type": "string" },
                         "pipeline_file": { "type": "string" },
@@ -120,6 +123,7 @@ pub(crate) fn list_tools() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "workdir": { "type": "string" },
                         "run_id": { "type": "string" },
                         "base_run_id": { "type": "string" }
                     }
@@ -132,6 +136,7 @@ pub(crate) fn list_tools() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "workdir": { "type": "string" },
                         "query": { "type": "string" },
                         "run_id": { "type": "string" },
                         "job": { "type": "string" },

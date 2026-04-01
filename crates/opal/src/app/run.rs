@@ -3,22 +3,19 @@ use super::context::{
     resolve_engine, resolve_engine_choice, resolve_gitlab_remote, resolve_pipeline_path,
     validate_engine_choice,
 };
-use super::view::{
-    find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
-    load_history_for_workdir,
-};
+use super::view::{find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir};
 use crate::config::OpalConfig;
 use crate::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
+    core::ExecutionOutcome,
 };
 use crate::history::HistoryEntry;
 use crate::{EngineKind, ExecutorConfig, RunArgs};
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 
 pub(crate) async fn execute(app: &OpalApp, args: RunArgs) -> Result<()> {
     let config = build_executor_config(app, prepare_run_args(app, args)?, true)?;
-    execute_with_config(config).await
+    execute_with_config(config).await.result
 }
 
 #[derive(Debug, Clone)]
@@ -43,25 +40,7 @@ pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapt
             };
         }
     };
-    let before = load_history_for_workdir(&prepared.workdir).unwrap_or_default();
-    let known_run_ids = before
-        .iter()
-        .map(|entry| entry.run_id.clone())
-        .collect::<HashSet<_>>();
-    let result = execute_with_config(prepared.clone()).await;
-    let after = load_history_for_workdir(&prepared.workdir).unwrap_or_default();
-    let history_entry = after
-        .iter()
-        .rev()
-        .find(|entry| !known_run_ids.contains(&entry.run_id))
-        .cloned();
-
-    RunCapture {
-        history_entry,
-        result: None,
-        result_summary: None,
-        error: result.err().map(|err| err.to_string()),
-    }
+    run_capture_from_outcome(execute_with_config(prepared).await)
 }
 
 fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
@@ -136,48 +115,102 @@ fn build_executor_config(
     })
 }
 
-async fn execute_with_config(config: ExecutorConfig) -> Result<()> {
+async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
     let engine_kind = config.engine;
     let run_result = match engine_kind {
         EngineKind::ContainerCli => {
             let executor = ContainerExecutor::new(config.clone())
-                .with_context(|| "failed create container executor")?;
-            executor.run().await
+                .with_context(|| "failed create container executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         }
         EngineKind::Docker => {
             let executor = DockerExecutor::new(config.clone())
-                .with_context(|| "failed create docker executor")?;
-            executor.run().await
+                .with_context(|| "failed create docker executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         }
         EngineKind::Podman => {
             let executor = PodmanExecutor::new(config.clone())
-                .with_context(|| "failed create podman executor")?;
-            executor.run().await
+                .with_context(|| "failed create podman executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         }
         EngineKind::Nerdctl => {
             let executor = NerdctlExecutor::new(config.clone())
-                .with_context(|| "failed create nerdctl executor")?;
-            executor.run().await
+                .with_context(|| "failed create nerdctl executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         }
         EngineKind::Orbstack => {
             let executor = OrbstackExecutor::new(config.clone())
-                .with_context(|| "failed create orbstack executor")?;
-            executor.run().await
+                .with_context(|| "failed create orbstack executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
         }
     };
 
-    run_result.with_context(|| "failed to run pipeline")
+    ExecutionOutcome {
+        history_entry: run_result.history_entry,
+        result: run_result.result.with_context(|| "failed to run pipeline"),
+    }
+}
+
+fn run_capture_from_outcome(outcome: ExecutionOutcome) -> RunCapture {
+    RunCapture {
+        history_entry: outcome.history_entry,
+        result: None,
+        result_summary: None,
+        error: outcome.result.err().map(|err| err.to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_run_args;
+    use super::{prepare_run_args, run_capture_from_outcome};
     use crate::app::OpalApp;
     use crate::app::context::history_scope_root;
+    use crate::executor::core::ExecutionOutcome;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
     use crate::{EngineChoice, RunArgs};
+    use anyhow::anyhow;
     use std::env;
     use std::fs;
     use tempfile::tempdir;
@@ -262,5 +295,59 @@ mod tests {
             err.to_string()
                 .contains("--rerun-job cannot be combined with --job")
         );
+    }
+
+    #[test]
+    fn run_capture_preserves_history_entry_for_failed_runs() {
+        let entry = HistoryEntry {
+            run_id: "run-failed".to_string(),
+            finished_at: "now".to_string(),
+            status: HistoryStatus::Failed,
+            scope_root: Some("/tmp/repo".to_string()),
+            ref_name: Some("main".to_string()),
+            pipeline_file: Some(".gitlab-ci.yml".to_string()),
+            jobs: vec![],
+        };
+
+        let capture = run_capture_from_outcome(ExecutionOutcome {
+            history_entry: Some(entry.clone()),
+            result: Err(anyhow!("boom")),
+        });
+
+        assert_eq!(
+            capture
+                .history_entry
+                .as_ref()
+                .map(|run| run.run_id.as_str()),
+            Some("run-failed")
+        );
+        assert_eq!(capture.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn run_capture_uses_executor_reported_history_entry_directly() {
+        let entry = HistoryEntry {
+            run_id: "run-actual".to_string(),
+            finished_at: "now".to_string(),
+            status: HistoryStatus::Success,
+            scope_root: Some("/tmp/repo".to_string()),
+            ref_name: Some("main".to_string()),
+            pipeline_file: Some(".gitlab-ci.yml".to_string()),
+            jobs: vec![],
+        };
+
+        let capture = run_capture_from_outcome(ExecutionOutcome {
+            history_entry: Some(entry.clone()),
+            result: Ok(()),
+        });
+
+        assert_eq!(
+            capture
+                .history_entry
+                .as_ref()
+                .map(|run| run.run_id.as_str()),
+            Some("run-actual")
+        );
+        assert!(capture.error.is_none());
     }
 }

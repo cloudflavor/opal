@@ -1,5 +1,5 @@
 use super::container_arch::default_container_cli_arch;
-use super::core::ExecutorCore;
+use super::core::{ExecutionOutcome, ExecutorCore};
 use crate::engine::EngineCommandContext;
 use crate::{EngineKind, ExecutorConfig};
 use anyhow::Result;
@@ -20,7 +20,7 @@ impl ContainerExecutor {
         Ok(Self { core })
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&self) -> ExecutionOutcome {
         self.core.run().await
     }
 
