@@ -1,6 +1,6 @@
 use crate::app::OpalApp;
 use crate::app::plan::{explain as explain_plan, render as render_plan};
-use crate::app::run::execute_and_capture;
+use crate::app::run::{RunCapture, execute_and_capture};
 use crate::app::view::{
     find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
     load_history_for_workdir, read_job_log, read_runtime_summary,
@@ -220,7 +220,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         }
         "opal_run" => Ok(run_tool(app, arguments).await),
         "opal_run_status" => Ok(run_status_tool(arguments)?),
-        "opal_view" => Ok(view_tool(app, arguments)?),
+        "opal_view" => Ok(view_tool(app, arguments).await),
         "opal_failed_jobs" => Ok(failed_jobs_tool(app, arguments)?),
         "opal_history_list" => Ok(history_list_tool(app, arguments)?),
         "opal_run_diff" => Ok(run_diff_tool(app, arguments)?),
@@ -281,20 +281,38 @@ fn run_status_tool(arguments: Value) -> Result<Value> {
     ))
 }
 
-fn view_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
-    let run_id = arguments.get("run_id").and_then(Value::as_str);
-    let job_name = arguments.get("job").and_then(Value::as_str);
-    let include_log = arguments
-        .get("include_log")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let include_runtime_summary = arguments
-        .get("include_runtime_summary")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+async fn view_tool(app: &OpalApp, arguments: Value) -> Value {
+    let request = match view_request_from_value(app, arguments) {
+        Ok(request) => request,
+        Err(err) => return error_tool_result(err.to_string(), Value::Null),
+    };
+    if !request.include_log && !request.include_runtime_summary {
+        return match view_tool_result(&request) {
+            Ok(payload) => tool_result(payload.text, payload.structured, false),
+            Err(err) => error_tool_result(err.to_string(), Value::Null),
+        };
+    }
+    let operation = run_operations().start(
+        RunOperationRequest {
+            tool: "opal_view",
+            requested_jobs: request.job_name.iter().cloned().collect(),
+            requested_job: request.job_name.clone(),
+            source_run_id: request.run_id.clone(),
+        },
+        async move { execute_view_request(request) },
+    );
+    tool_result(
+        format!(
+            "Started background view operation {}. Poll opal_run_status with this operation_id.",
+            operation.operation_id
+        ),
+        json!({ "operation": operation }),
+        false,
+    )
+}
 
-    let entry = selected_history_entry(app, run_id)?;
-
+fn view_tool_result(request: &ViewRequest) -> Result<ToolResultPayload> {
+    let entry = selected_history_entry_for_workdir(&request.workdir, request.run_id.as_deref())?;
     let mut structured = Map::new();
     structured.insert("run".to_string(), history_entry_json(&entry));
 
@@ -303,17 +321,17 @@ fn view_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
         entry.run_id, entry.finished_at, entry.status
     );
 
-    if let Some(job_name) = job_name {
+    if let Some(job_name) = request.job_name.as_deref() {
         let job = find_job(&entry, job_name)
             .with_context(|| format!("job '{job_name}' not found in run '{}'", entry.run_id))?;
         structured.insert("job".to_string(), json!(job));
         text.push_str(&format!("\nSelected job: {} ({:?})", job.name, job.status));
-        if include_log {
+        if request.include_log {
             let log = read_job_log(&entry, job)?;
             structured.insert("job_log".to_string(), json!(log));
             text.push_str("\nIncluded job log.");
         }
-        if include_runtime_summary {
+        if request.include_runtime_summary {
             let summary = read_runtime_summary(job)?;
             structured.insert("runtime_summary".to_string(), json!(summary));
             text.push_str("\nIncluded runtime summary.");
@@ -322,12 +340,15 @@ fn view_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
         text.push_str(&format!("\nJobs recorded: {}", entry.jobs.len()));
     }
 
-    Ok(tool_result(text, Value::Object(structured), false))
+    Ok(ToolResultPayload {
+        text,
+        structured: Value::Object(structured),
+    })
 }
 
 fn failed_jobs_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
-    let entry = selected_history_entry(app, run_id)?;
+    let entry = selected_history_entry_for_arguments(app, &arguments, run_id)?;
     let failed_jobs = failed_jobs(&entry);
     let failed_names = failed_jobs
         .iter()
@@ -368,7 +389,7 @@ fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
         .map(|value| value as usize)
         .unwrap_or(20);
 
-    let history = load_history_for_workdir(&app.resolve_workdir(None))?;
+    let history = load_history_for_workdir(&requested_workdir(app, &arguments))?;
     let total_runs = history.len();
     let runs = history
         .into_iter()
@@ -423,7 +444,7 @@ fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
 fn run_diff_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let base_run_id = arguments.get("base_run_id").and_then(Value::as_str);
-    let history = load_history_for_workdir(&app.resolve_workdir(None))?;
+    let history = load_history_for_workdir(&requested_workdir(app, &arguments))?;
     let (base_run, head_run) = selected_run_pair(&history, run_id, base_run_id)?;
     let diff = compare_runs(&base_run, &head_run);
     Ok(tool_result(
@@ -559,7 +580,7 @@ fn log_search_request_from_value(app: &OpalApp, arguments: Value) -> Result<LogS
         .unwrap_or(false);
 
     Ok(LogSearchRequest {
-        workdir: app.resolve_workdir(None),
+        workdir: requested_workdir(app, &arguments),
         query,
         run_id,
         job_name,
@@ -568,15 +589,15 @@ fn log_search_request_from_value(app: &OpalApp, arguments: Value) -> Result<LogS
     })
 }
 
-fn execute_log_search(request: LogSearchRequest) -> crate::app::run::RunCapture {
+fn execute_log_search(request: LogSearchRequest) -> RunCapture {
     match log_search_tool_result(&request) {
-        Ok(payload) => crate::app::run::RunCapture {
+        Ok(payload) => RunCapture {
             history_entry: None,
             error: None,
             result: Some(payload.structured),
             result_summary: Some(payload.text),
         },
-        Err(err) => crate::app::run::RunCapture {
+        Err(err) => RunCapture {
             history_entry: None,
             error: Some(err.to_string()),
             result: None,
@@ -730,7 +751,7 @@ struct RunOperations {
 impl RunOperations {
     fn start<F>(&self, request: RunOperationRequest, future: F) -> RunOperation
     where
-        F: std::future::Future<Output = crate::app::run::RunCapture> + Send + 'static,
+        F: std::future::Future<Output = RunCapture> + Send + 'static,
     {
         let operation = RunOperation {
             operation_id: next_operation_id(),
@@ -768,7 +789,7 @@ impl RunOperations {
             .and_then(|operations| operations.get(operation_id).cloned())
     }
 
-    fn finish(&self, operation_id: &str, capture: crate::app::run::RunCapture) {
+    fn finish(&self, operation_id: &str, capture: RunCapture) {
         let Ok(mut operations) = self.inner.lock() else {
             return;
         };
@@ -870,6 +891,14 @@ struct LogSearchRequest {
     case_sensitive: bool,
 }
 
+struct ViewRequest {
+    workdir: PathBuf,
+    run_id: Option<String>,
+    job_name: Option<String>,
+    include_log: bool,
+    include_runtime_summary: bool,
+}
+
 struct ToolResultPayload {
     text: String,
     structured: Value,
@@ -879,14 +908,71 @@ fn history_entry_json(entry: &HistoryEntry) -> Value {
     json!(entry)
 }
 
-fn selected_history_entry(app: &OpalApp, run_id: Option<&str>) -> Result<HistoryEntry> {
-    let workdir = app.resolve_workdir(None);
+fn requested_workdir(app: &OpalApp, arguments: &Value) -> PathBuf {
+    app.resolve_workdir(
+        arguments
+            .get("workdir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+    )
+}
+
+fn selected_history_entry_for_arguments(
+    app: &OpalApp,
+    arguments: &Value,
+    run_id: Option<&str>,
+) -> Result<HistoryEntry> {
+    let workdir = requested_workdir(app, arguments);
+    selected_history_entry_for_workdir(&workdir, run_id)
+}
+
+fn selected_history_entry_for_workdir(
+    workdir: &Path,
+    run_id: Option<&str>,
+) -> Result<HistoryEntry> {
     match run_id {
-        Some(run_id) => find_history_entry_for_workdir(&workdir, run_id)?
+        Some(run_id) => find_history_entry_for_workdir(workdir, run_id)?
             .with_context(|| format!("run '{run_id}' not found in Opal history")),
-        None => {
-            latest_history_entry_for_workdir(&workdir)?.context("no Opal history entries found")
-        }
+        None => latest_history_entry_for_workdir(workdir)?.context("no Opal history entries found"),
+    }
+}
+
+fn view_request_from_value(app: &OpalApp, arguments: Value) -> Result<ViewRequest> {
+    Ok(ViewRequest {
+        workdir: requested_workdir(app, &arguments),
+        run_id: arguments
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        job_name: arguments
+            .get("job")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        include_log: arguments
+            .get("include_log")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        include_runtime_summary: arguments
+            .get("include_runtime_summary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn execute_view_request(request: ViewRequest) -> RunCapture {
+    match view_tool_result(&request) {
+        Ok(payload) => RunCapture {
+            history_entry: None,
+            result: Some(payload.structured),
+            result_summary: Some(payload.text),
+            error: None,
+        },
+        Err(err) => RunCapture {
+            history_entry: None,
+            result: None,
+            result_summary: None,
+            error: Some(err.to_string()),
+        },
     }
 }
 
@@ -1297,7 +1383,7 @@ fn job_rerun_request(app: &OpalApp, arguments: &Value) -> Result<JobRerunRequest
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .context("missing job")?;
-    let source_run = selected_history_entry(app, run_id)?;
+    let source_run = selected_history_entry_for_arguments(app, arguments, run_id)?;
     let source_job = find_job(&source_run, &requested_job)
         .cloned()
         .with_context(|| {
@@ -1741,7 +1827,130 @@ mod tests {
     }
 
     #[test]
-    fn view_tool_returns_selected_job_details() {
+    fn view_tool_returns_selected_job_details_synchronously_without_log_reads() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-view-tool-metadata");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-1".to_string(),
+                finished_at: "now".to_string(),
+                status: HistoryStatus::Success,
+                scope_root: Some(current_history_scope()),
+                ref_name: None,
+                pipeline_file: None,
+                jobs: vec![HistoryJob {
+                    name: "build".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Success,
+                    log_hash: "abc123".to_string(),
+                    log_path: None,
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
+                    runtime_summary_path: None,
+                    env_vars: Vec::new(),
+                }],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_view",
+                    "arguments": {
+                        "run_id": "run-1",
+                        "job": "build"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["job"]["name"], "build");
+        assert!(result["structuredContent"].get("job_log").is_none());
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn view_tool_uses_explicit_workdir_history_scope() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().join("repo");
+        let opal_home = dir.path().join("opal-home-view-explicit-workdir");
+        fs::create_dir_all(&workdir).expect("workdir");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-explicit".to_string(),
+                finished_at: "now".to_string(),
+                status: HistoryStatus::Success,
+                scope_root: Some(history_scope_root(&workdir)),
+                ref_name: None,
+                pipeline_file: None,
+                jobs: vec![HistoryJob {
+                    name: "build".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Success,
+                    log_hash: "abc123".to_string(),
+                    log_path: None,
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
+                    runtime_summary_path: None,
+                    env_vars: Vec::new(),
+                }],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_view",
+                    "arguments": {
+                        "workdir": workdir.display().to_string(),
+                        "run_id": "run-explicit",
+                        "job": "build"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["run"]["run_id"], "run-explicit");
+        assert_eq!(result["structuredContent"]["job"]["name"], "build");
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn view_tool_returns_selected_job_details_via_background_operation() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
         let opal_home = dir.path().join("opal-home-view-tool");
@@ -1781,7 +1990,7 @@ mod tests {
 
         let app = OpalApp::from_current_dir().expect("app");
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let result = runtime
+        let start = runtime
             .block_on(call_tool(
                 &app,
                 json!({
@@ -1795,9 +2004,23 @@ mod tests {
             ))
             .expect("call tool");
 
-        assert_eq!(result["isError"], false);
-        assert_eq!(result["structuredContent"]["job"]["name"], "build");
-        assert_eq!(result["structuredContent"]["job_log"], "hello log");
+        assert_eq!(start["isError"], false);
+        let operation_id = start["structuredContent"]["operation"]["operation_id"]
+            .as_str()
+            .expect("operation id");
+        let result = wait_for_background_operation(&runtime, &app, operation_id);
+        assert_eq!(
+            result["structuredContent"]["operation"]["tool"],
+            "opal_view"
+        );
+        assert_eq!(
+            result["structuredContent"]["result"]["job"]["name"],
+            "build"
+        );
+        assert_eq!(
+            result["structuredContent"]["result"]["job_log"],
+            "hello log"
+        );
         unsafe {
             env::remove_var("OPAL_HOME");
         }
@@ -2056,6 +2279,55 @@ mod tests {
             .expect("runs array");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["run_id"], "run-3");
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn history_list_tool_uses_explicit_workdir_history_scope() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().join("repo");
+        let opal_home = dir.path().join("opal-home-history-list-workdir");
+        fs::create_dir_all(&workdir).expect("workdir");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-explicit".to_string(),
+                finished_at: "latest".to_string(),
+                status: HistoryStatus::Success,
+                scope_root: Some(history_scope_root(&workdir)),
+                ref_name: None,
+                pipeline_file: None,
+                jobs: vec![],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_history_list",
+                    "arguments": {
+                        "workdir": workdir.display().to_string()
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        let runs = result["structuredContent"]["runs"]
+            .as_array()
+            .expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "run-explicit");
         unsafe {
             env::remove_var("OPAL_HOME");
         }
@@ -2810,6 +3082,77 @@ mod tests {
     }
 
     #[test]
+    fn logs_search_tool_uses_explicit_workdir_history_scope() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().join("repo");
+        let opal_home = dir.path().join("opal-home-logs-search-workdir");
+        fs::create_dir_all(&workdir).expect("workdir");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        let log_path = opal_home.join("build.log");
+        fs::write(&log_path, "fatal explicit workdir issue\n").expect("write log");
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-explicit".to_string(),
+                finished_at: "now".to_string(),
+                status: HistoryStatus::Failed,
+                scope_root: Some(history_scope_root(&workdir)),
+                ref_name: None,
+                pipeline_file: None,
+                jobs: vec![HistoryJob {
+                    name: "build".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Failed,
+                    log_hash: "abc123".to_string(),
+                    log_path: Some(log_path.display().to_string()),
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
+                    runtime_summary_path: None,
+                    env_vars: Vec::new(),
+                }],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let start = runtime
+            .block_on(call_tool(
+                &app,
+                json!({
+                    "name": "opal_logs_search",
+                    "arguments": {
+                        "workdir": workdir.display().to_string(),
+                        "query": "explicit workdir"
+                    }
+                }),
+            ))
+            .expect("call tool");
+
+        assert_eq!(start["isError"], false);
+        let operation_id = start["structuredContent"]["operation"]["operation_id"]
+            .as_str()
+            .expect("operation id");
+        let result = wait_for_background_operation(&runtime, &app, operation_id);
+        assert_eq!(result["structuredContent"]["result"]["returned_matches"], 1);
+        assert_eq!(
+            result["structuredContent"]["result"]["matches"][0]["run_id"],
+            "run-explicit"
+        );
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
     fn job_rerun_request_uses_recorded_job_name() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
@@ -2860,6 +3203,64 @@ mod tests {
         assert_eq!(request.source_job.name, "rust-checks");
         assert_eq!(request.run_args.jobs, vec!["rust-checks"]);
         assert_eq!(request.run_args.engine, crate::EngineChoice::Docker);
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
+    }
+
+    #[test]
+    fn job_rerun_request_uses_explicit_workdir_history_scope() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().join("repo");
+        let opal_home = dir.path().join("opal-home-job-rerun-explicit-workdir");
+        fs::create_dir_all(&workdir).expect("workdir");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        save(
+            &runtime::history_path(),
+            &[HistoryEntry {
+                run_id: "run-explicit".to_string(),
+                finished_at: "2026-03-31T12:00:00Z".to_string(),
+                status: HistoryStatus::Failed,
+                scope_root: Some(history_scope_root(&workdir)),
+                ref_name: None,
+                pipeline_file: None,
+                jobs: vec![HistoryJob {
+                    name: "rust-checks".to_string(),
+                    stage: "test".to_string(),
+                    status: HistoryStatus::Failed,
+                    log_hash: "abc123".to_string(),
+                    log_path: None,
+                    artifact_dir: None,
+                    artifacts: Vec::new(),
+                    caches: Vec::new(),
+                    container_name: None,
+                    service_network: None,
+                    service_containers: Vec::new(),
+                    runtime_summary_path: None,
+                    env_vars: Vec::new(),
+                }],
+            }],
+        )
+        .expect("save history");
+
+        let app = OpalApp::from_current_dir().expect("app");
+        let request = job_rerun_request(
+            &app,
+            &json!({
+                "workdir": workdir.display().to_string(),
+                "run_id": "run-explicit",
+                "job": "rust-checks"
+            }),
+        )
+        .expect("request");
+
+        assert_eq!(request.source_run.run_id, "run-explicit");
+        assert_eq!(request.source_job.name, "rust-checks");
+        assert_eq!(request.run_args.workdir, Some(workdir));
         unsafe {
             env::remove_var("OPAL_HOME");
         }
