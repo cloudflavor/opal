@@ -581,7 +581,7 @@ impl ExecutorCore {
         log_path: &Path,
         elapsed: f32,
     ) {
-        if self.config.emit_console_output {
+        if self.live_console_output_enabled() {
             let display = self.display();
             display::print_line(format!("    script stored at {}", script_path.display()));
             display::print_line(format!("    log file stored at {}", log_path.display()));
@@ -646,6 +646,10 @@ impl ExecutorCore {
 
     fn display(&self) -> DisplayFormatter {
         DisplayFormatter::new(self.use_color)
+    }
+
+    fn live_console_output_enabled(&self) -> bool {
+        self.config.emit_console_output && !self.config.enable_tui
     }
 
     pub(crate) async fn analyze_job_with_default_provider(

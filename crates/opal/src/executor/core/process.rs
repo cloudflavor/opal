@@ -41,7 +41,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         cap_add,
         cap_drop,
     } = ctx;
-    if exec.config.emit_console_output {
+    if exec.live_console_output_enabled() {
         let display = exec.display();
         display::print_line(display.format_mounts(mounts));
         display::print_line(display.logs_header());
@@ -50,7 +50,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
     }
 
     let container_script = exec.container_path_rel(script_path)?;
-    if exec.verbose_scripts && exec.config.emit_console_output {
+    if exec.verbose_scripts && exec.live_console_output_enabled() {
         let display = exec.display();
         let script_label = display.bold_yellow("    script file:");
         display::print_line(format!("{} {}", script_label, container_script.display()));
@@ -92,7 +92,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         job.name.as_str(),
         log_path,
         ui,
-        exec.config.emit_console_output,
+        exec.live_console_output_enabled(),
         &LogFormatter::new(exec.use_color).with_secrets(&exec.secrets),
     )?;
 

@@ -29,7 +29,7 @@ pub(super) fn log_job_start(
         ui.job_started(&planned.instance.job.name);
     }
 
-    if exec.config.emit_console_output {
+    if exec.live_console_output_enabled() {
         let display = exec.display();
         if exec.stage_tracker.start(&planned.instance.stage_name) {
             if exec.stage_tracker.position(&planned.instance.stage_name) > 0 {
@@ -204,6 +204,24 @@ mod tests {
         .expect("image resolves");
 
         assert_eq!(image.name, "registry.example.com/linux:latest");
+    }
+
+    #[test]
+    fn live_console_output_is_disabled_when_tui_is_enabled() {
+        let mut exec = test_core();
+        exec.config.enable_tui = true;
+        exec.config.emit_console_output = true;
+
+        assert!(!exec.live_console_output_enabled());
+    }
+
+    #[test]
+    fn live_console_output_remains_enabled_for_no_tui_runs() {
+        let mut exec = test_core();
+        exec.config.enable_tui = false;
+        exec.config.emit_console_output = true;
+
+        assert!(exec.live_console_output_enabled());
     }
 
     fn test_core() -> ExecutorCore {
