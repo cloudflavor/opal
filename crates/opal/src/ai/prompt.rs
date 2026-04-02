@@ -39,6 +39,34 @@ pub fn render_job_analysis_prompt(
     })
 }
 
+pub async fn render_job_analysis_prompt_async(
+    workdir: &Path,
+    settings: &AiSettingsConfig,
+    context: &AiContext,
+) -> Result<RenderedPrompt> {
+    let vars = template_vars(context);
+    let system_template = load_template_async(
+        workdir,
+        settings.prompts.system_file.as_deref(),
+        "system.md",
+    )
+    .await?;
+    let prompt_template = load_template_async(
+        workdir,
+        settings.prompts.job_analysis_file.as_deref(),
+        "job-analysis.md",
+    )
+    .await?;
+
+    let system = render_template(&system_template, &vars).trim().to_string();
+    let prompt = render_template(&prompt_template, &vars);
+
+    Ok(RenderedPrompt {
+        system: (!system.is_empty()).then_some(system),
+        prompt,
+    })
+}
+
 fn load_template(
     workdir: &Path,
     override_path: Option<&str>,
@@ -47,6 +75,26 @@ fn load_template(
     if let Some(path) = override_path.filter(|value| !value.trim().is_empty()) {
         let path = resolve_prompt_path(workdir, path);
         return fs::read_to_string(&path)
+            .with_context(|| format!("failed to read AI prompt template {}", path.display()));
+    }
+
+    let file = EMBEDDED_PROMPTS
+        .get_file(embedded_name)
+        .with_context(|| format!("embedded AI prompt {embedded_name} not found"))?;
+    file.contents_utf8()
+        .map(|text| text.to_string())
+        .with_context(|| format!("embedded AI prompt {embedded_name} is not valid utf-8"))
+}
+
+async fn load_template_async(
+    workdir: &Path,
+    override_path: Option<&str>,
+    embedded_name: &str,
+) -> Result<String> {
+    if let Some(path) = override_path.filter(|value| !value.trim().is_empty()) {
+        let path = resolve_prompt_path(workdir, path);
+        return tokio::fs::read_to_string(&path)
+            .await
             .with_context(|| format!("failed to read AI prompt template {}", path.display()));
     }
 
@@ -97,7 +145,7 @@ fn render_template(template: &str, vars: &HashMap<&'static str, String>) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{render_job_analysis_prompt, render_template};
+    use super::{render_job_analysis_prompt, render_job_analysis_prompt_async, render_template};
     use crate::ai::AiContext;
     use crate::config::AiSettingsConfig;
     use std::collections::HashMap;
@@ -130,5 +178,36 @@ mod tests {
         assert!(rendered.prompt.contains("unit-tests"));
         assert!(rendered.prompt.contains("error: linker failed"));
         assert!(rendered.system.is_some());
+    }
+
+    #[test]
+    fn render_job_analysis_prompt_async_matches_sync_defaults() {
+        let dir = tempdir().expect("tempdir");
+        let context = AiContext {
+            job_name: "unit-tests".into(),
+            source_name: "unit-tests".into(),
+            stage: "test".into(),
+            job_yaml: "unit-tests:\n  script:\n    - cargo test".into(),
+            runner_summary: "engine=container arch=arm64 vcpu=6 ram=3g".into(),
+            pipeline_summary: "dependencies: fetch-sources".into(),
+            runtime_summary: Some("container: opal-unit-tests-01".into()),
+            log_excerpt: "error: linker failed".into(),
+            failure_hint: Some("container command exited with status Some(101)".into()),
+        };
+
+        let sync_rendered =
+            render_job_analysis_prompt(dir.path(), &AiSettingsConfig::default(), &context)
+                .expect("sync render prompt");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let async_rendered = runtime
+            .block_on(render_job_analysis_prompt_async(
+                dir.path(),
+                &AiSettingsConfig::default(),
+                &context,
+            ))
+            .expect("async render prompt");
+
+        assert_eq!(async_rendered.system, sync_rendered.system);
+        assert_eq!(async_rendered.prompt, sync_rendered.prompt);
     }
 }

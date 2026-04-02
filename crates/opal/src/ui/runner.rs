@@ -35,6 +35,7 @@ pub(super) struct UiRunner {
     pipeline_finished: bool,
     exit_requested: bool,
     abort_sent: bool,
+    pending_history_preview: Option<PathBuf>,
 }
 
 impl UiRunner {
@@ -72,6 +73,7 @@ impl UiRunner {
             pipeline_finished: false,
             exit_requested: false,
             abort_sent: false,
+            pending_history_preview: None,
         })
     }
 
@@ -242,6 +244,10 @@ impl UiRunner {
                 UiEvent::AiPromptReady { name, prompt } => {
                     self.state.ai_prompt_ready(&name, prompt)
                 }
+                UiEvent::HistoryPreviewReady { title, path, lines } => {
+                    self.pending_history_preview = Some(path.clone());
+                    self.state.set_history_preview_lines(title, &path, lines);
+                }
                 UiEvent::PipelineFinished => self.pipeline_finished = true,
             }
         }
@@ -353,15 +359,7 @@ impl UiRunner {
                         match action {
                             HistoryAction::SelectJob(idx) => self.state.select_job(idx),
                             HistoryAction::ViewLog { title, path } => {
-                                if let Err(err) =
-                                    self.state.load_history_preview(title.clone(), &path)
-                                {
-                                    self.state.set_history_preview_message(
-                                        title,
-                                        &path,
-                                        format!("failed to load log: {err}"),
-                                    );
-                                }
+                                self.spawn_history_preview_load(title, path);
                             }
                             HistoryAction::ViewRun(run_id) => {
                                 if let Err(err) = self.state.view_history_run(&run_id) {
@@ -372,6 +370,8 @@ impl UiRunner {
                                         &empty,
                                         err.to_string(),
                                     );
+                                } else {
+                                    self.refresh_history_preview();
                                 }
                             }
                             HistoryAction::ViewHistoryJob { run_id, job_name } => {
@@ -383,18 +383,12 @@ impl UiRunner {
                                         &empty,
                                         err.to_string(),
                                     );
+                                } else {
+                                    self.refresh_history_preview();
                                 }
                             }
                             HistoryAction::ViewDir { title, path } => {
-                                if let Err(err) =
-                                    self.state.load_directory_preview(title.clone(), &path)
-                                {
-                                    self.state.set_history_preview_message(
-                                        title,
-                                        &path,
-                                        format!("failed to read directory: {err}"),
-                                    );
-                                }
+                                self.spawn_directory_preview_load(title, path);
                             }
                             HistoryAction::ViewFile { title, path } => {
                                 if let Err(err) = self.suspend_terminal(|| {
@@ -434,12 +428,30 @@ impl UiRunner {
         }
 
         match key.code {
-            KeyCode::Char('j') | KeyCode::Char('J') => self.state.next_job(),
-            KeyCode::Char('k') | KeyCode::Char('K') => self.state.previous_job(),
-            KeyCode::Char('h') => self.state.previous_job(),
-            KeyCode::Char('l') => self.state.next_job(),
-            KeyCode::Left => self.state.previous_job(),
-            KeyCode::Right => self.state.next_job(),
+            KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.state.next_job();
+                self.refresh_history_preview();
+            }
+            KeyCode::Char('k') | KeyCode::Char('K') => {
+                self.state.previous_job();
+                self.refresh_history_preview();
+            }
+            KeyCode::Char('h') => {
+                self.state.previous_job();
+                self.refresh_history_preview();
+            }
+            KeyCode::Char('l') => {
+                self.state.next_job();
+                self.refresh_history_preview();
+            }
+            KeyCode::Left => {
+                self.state.previous_job();
+                self.refresh_history_preview();
+            }
+            KeyCode::Right => {
+                self.state.next_job();
+                self.refresh_history_preview();
+            }
             KeyCode::Char('x') => {
                 if let Some(name) = self.state.cancelable_job_name() {
                     let _ = self.commands.send(UiCommand::CancelJob { name });
@@ -452,6 +464,7 @@ impl UiRunner {
                     self.state.scroll_logs_line_down();
                 } else {
                     self.state.next_job();
+                    self.refresh_history_preview();
                 }
             }
             KeyCode::Up => {
@@ -461,6 +474,7 @@ impl UiRunner {
                     self.state.scroll_logs_line_up();
                 } else {
                     self.state.previous_job();
+                    self.refresh_history_preview();
                 }
             }
             KeyCode::PageDown => self.state.scroll_logs_page_down(),
@@ -506,7 +520,8 @@ impl UiRunner {
             KeyCode::Char('a') => {
                 if let Some((name, source_name)) = self.state.analysis_action_request() {
                     if self.state.history_view_active() {
-                        if let Some(snapshot) = self.state.analysis_snapshot() {
+                        let handle = tokio::runtime::Handle::current();
+                        if let Some(snapshot) = handle.block_on(self.state.analysis_snapshot()) {
                             self.spawn_local_analysis(snapshot, false);
                         }
                     } else {
@@ -522,7 +537,8 @@ impl UiRunner {
                 }
                 if let Some((name, source_name)) = self.state.ai_prompt_preview_request() {
                     if self.state.history_view_active() {
-                        if let Some(snapshot) = self.state.analysis_snapshot() {
+                        let handle = tokio::runtime::Handle::current();
+                        if let Some(snapshot) = handle.block_on(self.state.analysis_snapshot()) {
                             self.spawn_local_analysis(snapshot, true);
                         }
                     } else {
@@ -545,6 +561,41 @@ impl UiRunner {
         }
 
         Ok(())
+    }
+
+    fn refresh_history_preview(&mut self) {
+        let Some((title, path)) = self.state.desired_history_preview() else {
+            self.pending_history_preview = None;
+            return;
+        };
+        if self.pending_history_preview.as_ref() == Some(&path) {
+            return;
+        }
+        self.spawn_history_preview_load(title, path);
+    }
+
+    fn spawn_history_preview_load(&mut self, title: String, path: PathBuf) {
+        self.pending_history_preview = Some(path.clone());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let lines = match UiState::load_history_preview_lines(&path).await {
+                Ok(lines) => lines,
+                Err(err) => vec![format!("failed to load log: {err}")],
+            };
+            let _ = tx.send(UiEvent::HistoryPreviewReady { title, path, lines });
+        });
+    }
+
+    fn spawn_directory_preview_load(&mut self, title: String, path: PathBuf) {
+        self.pending_history_preview = Some(path.clone());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let lines = match UiState::load_directory_preview_lines(&path).await {
+                Ok(lines) => lines,
+                Err(err) => vec![format!("failed to read directory: {err}")],
+            };
+            let _ = tx.send(UiEvent::HistoryPreviewReady { title, path, lines });
+        });
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) {
@@ -609,8 +660,8 @@ impl UiRunner {
             let job_name = snapshot.job_name.clone();
             let analysis_tx = tx.clone();
             let result: Result<()> = async move {
-                let settings = OpalConfig::load(&workdir)?;
-                let secrets = SecretsStore::load(&workdir)?;
+                let settings = OpalConfig::load_async(&workdir).await?;
+                let secrets = SecretsStore::load_async(&workdir).await?;
                 let provider = settings
                     .ai_settings()
                     .default_provider
@@ -636,8 +687,12 @@ impl UiRunner {
                     log_excerpt: snapshot.log_excerpt,
                     failure_hint: snapshot.failure_hint,
                 };
-                let rendered =
-                    ai::render_job_analysis_prompt(&workdir, settings.ai_settings(), &context)?;
+                let rendered = ai::render_job_analysis_prompt_async(
+                    &workdir,
+                    settings.ai_settings(),
+                    &context,
+                )
+                .await?;
                 if preview_only {
                     let mut text = String::new();
                     if let Some(system) = rendered.system {
@@ -700,9 +755,9 @@ impl UiRunner {
                 .map_err(|err| anyhow::anyhow!(err.message))?;
                 if let Some(path) = &save_path {
                     if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        tokio::fs::create_dir_all(parent).await?;
                     }
-                    std::fs::write(path, &result.text)?;
+                    tokio::fs::write(path, &result.text).await?;
                 }
                 let _ = analysis_tx.send(UiEvent::AnalysisFinished {
                     name: snapshot.job_name,

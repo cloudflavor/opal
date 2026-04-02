@@ -14,7 +14,8 @@ use crate::{EngineKind, ExecutorConfig, RunArgs};
 use anyhow::{Context, Result};
 
 pub(crate) async fn execute(app: &OpalApp, args: RunArgs) -> Result<()> {
-    let config = build_executor_config(app, prepare_run_args(app, args)?, true)?;
+    let prepared_args = prepare_run_args(app, args).await?;
+    let config = build_executor_config(app, prepared_args, true).await?;
     execute_with_config(config).await.result
 }
 
@@ -27,9 +28,18 @@ pub(crate) struct RunCapture {
 }
 
 pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapture {
-    let prepared = match prepare_run_args(app, args)
-        .and_then(|args| build_executor_config(app, args, false))
-    {
+    let prepared_args = match prepare_run_args(app, args).await {
+        Ok(args) => args,
+        Err(err) => {
+            return RunCapture {
+                history_entry: None,
+                result: None,
+                result_summary: None,
+                error: Some(err.to_string()),
+            };
+        }
+    };
+    let prepared = match build_executor_config(app, prepared_args, false).await {
         Ok(config) => config,
         Err(err) => {
             return RunCapture {
@@ -43,7 +53,7 @@ pub(crate) async fn execute_and_capture(app: &OpalApp, args: RunArgs) -> RunCapt
     run_capture_from_outcome(execute_with_config(prepared).await)
 }
 
-fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
+async fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
     let resolved_workdir = app.resolve_workdir(args.workdir.clone());
     match (&args.rerun_job, &args.rerun_run_id) {
         (None, Some(_)) => anyhow::bail!("--rerun-run-id requires --rerun-job"),
@@ -53,9 +63,11 @@ fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
         (None, None) => return Ok(args),
         (Some(job_name), _) => {
             let entry = match args.rerun_run_id.as_deref() {
-                Some(run_id) => find_history_entry_for_workdir(&resolved_workdir, run_id)?
+                Some(run_id) => find_history_entry_for_workdir(&resolved_workdir, run_id)
+                    .await?
                     .with_context(|| format!("run '{run_id}' not found in Opal history"))?,
-                None => latest_history_entry_for_workdir(&resolved_workdir)?
+                None => latest_history_entry_for_workdir(&resolved_workdir)
+                    .await?
                     .context("no Opal history entries found")?,
             };
             find_job(&entry, job_name).with_context(|| {
@@ -70,7 +82,7 @@ fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
     Ok(args)
 }
 
-fn build_executor_config(
+async fn build_executor_config(
     app: &OpalApp,
     args: RunArgs,
     emit_console_output: bool,
@@ -93,7 +105,7 @@ fn build_executor_config(
 
     let resolved_workdir = app.resolve_workdir(workdir);
     let resolved_pipeline = resolve_pipeline_path(&resolved_workdir, pipeline);
-    let settings = OpalConfig::load(&resolved_workdir)?;
+    let settings = OpalConfig::load_async(&resolved_workdir).await?;
     let engine = resolve_engine_choice(engine, &settings);
     validate_engine_choice(engine)?;
     let engine_kind = resolve_engine(engine);
@@ -120,6 +132,7 @@ async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
     let run_result = match engine_kind {
         EngineKind::ContainerCli => {
             let executor = ContainerExecutor::new(config.clone())
+                .await
                 .with_context(|| "failed create container executor");
             match executor {
                 Ok(executor) => executor.run().await,
@@ -133,6 +146,7 @@ async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
         }
         EngineKind::Docker => {
             let executor = DockerExecutor::new(config.clone())
+                .await
                 .with_context(|| "failed create docker executor");
             match executor {
                 Ok(executor) => executor.run().await,
@@ -146,6 +160,7 @@ async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
         }
         EngineKind::Podman => {
             let executor = PodmanExecutor::new(config.clone())
+                .await
                 .with_context(|| "failed create podman executor");
             match executor {
                 Ok(executor) => executor.run().await,
@@ -159,6 +174,7 @@ async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
         }
         EngineKind::Nerdctl => {
             let executor = NerdctlExecutor::new(config.clone())
+                .await
                 .with_context(|| "failed create nerdctl executor");
             match executor {
                 Ok(executor) => executor.run().await,
@@ -172,6 +188,7 @@ async fn execute_with_config(config: ExecutorConfig) -> ExecutionOutcome {
         }
         EngineKind::Orbstack => {
             let executor = OrbstackExecutor::new(config.clone())
+                .await
                 .with_context(|| "failed create orbstack executor");
             match executor {
                 Ok(executor) => executor.run().await,
@@ -273,7 +290,10 @@ mod tests {
 
         let mut args = base_run_args();
         args.rerun_job = Some("rust-checks".to_string());
-        let prepared = prepare_run_args(&app, args).expect("prepare rerun args");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let prepared = runtime
+            .block_on(prepare_run_args(&app, args))
+            .expect("prepare rerun args");
 
         assert_eq!(prepared.jobs, vec!["rust-checks"]);
         unsafe {
@@ -288,7 +308,9 @@ mod tests {
         args.jobs = vec!["build".to_string()];
 
         let app = OpalApp::from_current_dir().expect("app");
-        let err = prepare_run_args(&app, args)
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let err = runtime
+            .block_on(prepare_run_args(&app, args))
             .err()
             .expect("conflicting rerun args");
         assert!(

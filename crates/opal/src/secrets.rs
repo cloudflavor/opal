@@ -55,6 +55,42 @@ impl SecretsStore {
         Ok(Self::default())
     }
 
+    pub async fn load_async(workdir: &Path) -> Result<Self> {
+        let scoped_path = workdir.join(SECRETS_RELATIVE_DIR);
+        if let Ok(metadata) = tokio::fs::metadata(&scoped_path).await {
+            if metadata.is_dir() {
+                return Ok(Self {
+                    root: Some(scoped_path.clone()),
+                    entries: load_secret_entries_async(&scoped_path).await?,
+                });
+            }
+            if metadata.is_file() {
+                let entries = load_dotenv_file_entries_async(&scoped_path).await?;
+                if !entries.is_empty() {
+                    return Ok(Self {
+                        root: None,
+                        entries,
+                    });
+                }
+            }
+        }
+
+        let legacy_dir = workdir.join(LEGACY_SECRETS_RELATIVE_DIR);
+        if let Ok(metadata) = tokio::fs::metadata(&legacy_dir).await
+            && metadata.is_dir()
+        {
+            let entries = load_secret_entries_async(&legacy_dir).await?;
+            if !entries.is_empty() {
+                return Ok(Self {
+                    root: Some(legacy_dir),
+                    entries,
+                });
+            }
+        }
+
+        Ok(Self::default())
+    }
+
     pub fn has_secrets(&self) -> bool {
         !self.entries.is_empty()
     }
@@ -134,9 +170,65 @@ fn load_secret_entries(dir: &Path) -> Result<Vec<SecretEntry>> {
     Ok(entries)
 }
 
+async fn load_secret_entries_async(dir: &Path) -> Result<Vec<SecretEntry>> {
+    let mut entries = Vec::new();
+    let mut read_dir = tokio::fs::read_dir(dir)
+        .await
+        .with_context(|| format!("failed to read secrets directory at {}", dir.display()))?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        let path = entry.path();
+        let metadata = entry.metadata().await?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !is_env_var_name(&name) {
+            continue;
+        }
+        let bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("failed to read secret {}", path.display()))?;
+        let value = String::from_utf8(bytes).ok().map(|v| trim_secret_value(&v));
+        entries.push(SecretEntry {
+            name: name.clone(),
+            rel_path: Some(PathBuf::from(name)),
+            value,
+        });
+    }
+    Ok(entries)
+}
+
 fn load_dotenv_file_entries(path: &Path) -> Result<Vec<SecretEntry>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read dotenv secrets file at {}", path.display()))?;
+    parse_dotenv_entries(&content)
+}
+
+async fn load_dotenv_file_entries_async(path: &Path) -> Result<Vec<SecretEntry>> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read dotenv secrets file at {}", path.display()))?;
+    parse_dotenv_entries(&content)
+}
+
+pub fn load_dotenv_env_pairs(path: &Path) -> Result<Vec<(String, String)>> {
+    Ok(load_dotenv_file_entries(path)?
+        .into_iter()
+        .filter_map(|entry| entry.value.map(|value| (entry.name, value)))
+        .collect())
+}
+
+pub async fn load_dotenv_env_pairs_async(path: &Path) -> Result<Vec<(String, String)>> {
+    Ok(load_dotenv_file_entries_async(path)
+        .await?
+        .into_iter()
+        .filter_map(|entry| entry.value.map(|value| (entry.name, value)))
+        .collect())
+}
+
+fn parse_dotenv_entries(content: &str) -> Result<Vec<SecretEntry>> {
     let mut entries = Vec::new();
     for raw_line in content.lines() {
         let line = raw_line.trim();
@@ -159,13 +251,6 @@ fn load_dotenv_file_entries(path: &Path) -> Result<Vec<SecretEntry>> {
         });
     }
     Ok(entries)
-}
-
-pub fn load_dotenv_env_pairs(path: &Path) -> Result<Vec<(String, String)>> {
-    Ok(load_dotenv_file_entries(path)?
-        .into_iter()
-        .filter_map(|entry| entry.value.map(|value| (entry.name, value)))
-        .collect())
 }
 
 fn trim_secret_value(value: &str) -> String {

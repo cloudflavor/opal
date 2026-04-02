@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,8 +72,29 @@ pub fn load(path: &Path) -> Result<Vec<HistoryEntry>> {
     Ok(entries)
 }
 
+pub async fn load_async(path: &Path) -> Result<Vec<HistoryEntry>> {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {:?}", path));
+        }
+    };
+    let entries: Vec<HistoryEntry> = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse history {:?}", path))?;
+    Ok(entries)
+}
+
 pub fn save(path: &Path, entries: &[HistoryEntry]) -> Result<()> {
     let serialized =
         serde_json::to_string_pretty(entries).context("failed to serialize history")?;
     fs::write(path, serialized).with_context(|| format!("failed to write {:?}", path))
+}
+
+pub async fn save_async(path: &Path, entries: &[HistoryEntry]) -> Result<()> {
+    let serialized =
+        serde_json::to_string_pretty(entries).context("failed to serialize history")?;
+    tokio::fs::write(path, serialized)
+        .await
+        .with_context(|| format!("failed to write {:?}", path))
 }

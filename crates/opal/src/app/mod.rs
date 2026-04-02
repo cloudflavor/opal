@@ -28,7 +28,7 @@ impl OpalApp {
         match command {
             Commands::Run(args) => run::execute(self, args).await,
             Commands::Plan(args) => plan::execute(self, args),
-            Commands::View(args) => view::execute(self, args),
+            Commands::View(args) => view::execute(self, args).await,
             Commands::Mcp(_) => crate::mcp::serve_stdio().await,
         }
     }

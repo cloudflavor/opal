@@ -10,7 +10,10 @@ mod stage_tracker;
 mod workspace;
 
 use super::{orchestrator, paths};
-use crate::ai::{self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt};
+use crate::ai::{
+    self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt,
+    render_job_analysis_prompt_async,
+};
 use crate::app::context::history_scope_root;
 use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
@@ -36,6 +39,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::fs as tokio_fs;
 use tokio::sync::mpsc;
 
 pub(super) const CONTAINER_ROOT: &str = "/builds";
@@ -82,28 +86,33 @@ struct JobResourceInfo {
 
 impl ExecutorCore {
     // TODO: this shit does way too much, hard to test if you add fs::create inside of it
-    pub fn new(config: ExecutorConfig) -> Result<Self> {
+    pub async fn new(config: ExecutorConfig) -> Result<Self> {
         let pipeline =
             PipelineSpec::from_path_with_gitlab(&config.pipeline, config.gitlab.as_ref())?;
         let run_id = generate_run_id(&config);
         let runs_root = runtime::runs_root();
-        fs::create_dir_all(&runs_root)
+        tokio_fs::create_dir_all(&runs_root)
+            .await
             .with_context(|| format!("failed to create {:?}", runs_root))?;
 
         let session_dir = runtime::session_dir(&run_id);
-        if session_dir.exists() {
-            fs::remove_dir_all(&session_dir)
+        if tokio_fs::try_exists(&session_dir).await.unwrap_or(false) {
+            tokio_fs::remove_dir_all(&session_dir)
+                .await
                 .with_context(|| format!("failed to clean {:?}", session_dir))?;
         }
-        fs::create_dir_all(&session_dir)
+        tokio_fs::create_dir_all(&session_dir)
+            .await
             .with_context(|| format!("failed to create {:?}", session_dir))?;
 
         let scripts_dir = session_dir.join("scripts");
-        fs::create_dir_all(&scripts_dir)
+        tokio_fs::create_dir_all(&scripts_dir)
+            .await
             .with_context(|| format!("failed to create {:?}", scripts_dir))?;
 
         let logs_dir = runtime::logs_dir(&run_id);
-        fs::create_dir_all(&logs_dir)
+        tokio_fs::create_dir_all(&logs_dir)
+            .await
             .with_context(|| format!("failed to create {:?}", logs_dir))?;
 
         let history_store = history_store::HistoryStore::load(runtime::history_path());
@@ -127,11 +136,12 @@ impl ExecutorCore {
             .collect();
         let stage_tracker = stage_tracker::StageTracker::new(&stage_specs);
 
-        let secrets = SecretsStore::load(&config.workdir)?;
+        let secrets = SecretsStore::load_async(&config.workdir).await?;
         shared_env.extend(secrets.env_pairs());
         let artifacts = ArtifactManager::new(session_dir.clone());
         let cache_root = runtime::cache_root();
-        fs::create_dir_all(&cache_root)
+        tokio_fs::create_dir_all(&cache_root)
+            .await
             .with_context(|| format!("failed to create cache root {:?}", cache_root))?;
         let cache = CacheManager::new(cache_root);
         let external_artifacts = config.gitlab.as_ref().map(|cfg| {
@@ -694,7 +704,7 @@ impl ExecutorCore {
                     "Ollama analysis requires [ai.ollama].model in config; Opal does not choose a default model for you"
                 );
             }
-            let rendered = self.render_ai_prompt_parts(plan, job_name, source_name)?;
+            let rendered = self.render_ai_prompt_parts_async(plan, job_name, source_name).await?;
             let prompt = self.secrets.mask_fragment(&rendered.prompt);
             let system = rendered
                 .system
@@ -739,9 +749,9 @@ impl ExecutorCore {
 
             if let Some(path) = &save_path {
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
+                    tokio_fs::create_dir_all(parent).await?;
                 }
-                fs::write(path, result.text)?;
+                tokio_fs::write(path, result.text).await?;
             }
 
             Ok(save_path)
@@ -750,16 +760,14 @@ impl ExecutorCore {
 
         if let Some(ui) = ui {
             match outcome {
-                Ok(saved_path) => ui.analysis_finished(
-                    job_name,
-                    if let Some(path) = &saved_path {
-                        fs::read_to_string(path).unwrap_or_default()
+                Ok(saved_path) => {
+                    let final_text = if let Some(path) = &saved_path {
+                        tokio_fs::read_to_string(path).await.unwrap_or_default()
                     } else {
                         String::new()
-                    },
-                    saved_path,
-                    None,
-                ),
+                    };
+                    ui.analysis_finished(job_name, final_text, saved_path, None)
+                }
                 Err(err) => {
                     ui.analysis_finished(job_name, String::new(), None, Some(err.to_string()))
                 }
@@ -798,6 +806,23 @@ impl ExecutorCore {
             self.config.settings.ai_settings(),
             &context,
         )
+    }
+
+    async fn render_ai_prompt_parts_async(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+    ) -> Result<crate::ai::RenderedPrompt> {
+        let context = self
+            .build_ai_context_async(plan, job_name, source_name)
+            .await?;
+        render_job_analysis_prompt_async(
+            &self.config.workdir,
+            self.config.settings.ai_settings(),
+            &context,
+        )
+        .await
     }
 
     fn build_ai_context(
@@ -869,6 +894,79 @@ impl ExecutorCore {
         })
     }
 
+    async fn build_ai_context_async(
+        &self,
+        plan: &ExecutionPlan,
+        job_name: &str,
+        source_name: &str,
+    ) -> Result<AiContext> {
+        let planned = plan
+            .nodes
+            .get(job_name)
+            .with_context(|| format!("selected job '{job_name}' not found in execution plan"))?;
+        let runner = self.ui_runner_info_for_job(&planned.instance.job);
+        let runner_summary = format!(
+            "engine={} arch={} vcpu={} ram={}",
+            runner.engine,
+            runner.arch.unwrap_or_else(|| "native/default".to_string()),
+            runner.cpus.unwrap_or_else(|| "engine default".to_string()),
+            runner
+                .memory
+                .unwrap_or_else(|| "engine default".to_string())
+        );
+        let job_yaml = self.load_job_yaml_fragment_async(source_name).await?;
+        let pipeline_summary = format!(
+            "dependencies: {}\nneeds: {}\nallow_failure: {}\ninterruptible: {}",
+            if planned.instance.dependencies.is_empty() {
+                "none".to_string()
+            } else {
+                planned.instance.dependencies.join(", ")
+            },
+            if planned.instance.job.needs.is_empty() {
+                "none".to_string()
+            } else {
+                planned
+                    .instance
+                    .job
+                    .needs
+                    .iter()
+                    .map(|need| {
+                        if need.needs_artifacts {
+                            format!("{} (artifacts)", need.job)
+                        } else {
+                            need.job.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            planned.instance.rule.allow_failure,
+            planned.instance.interruptible,
+        );
+        let runtime_summary = if let Some(path) = self
+            .runtime_state
+            .runtime_objects(job_name)
+            .and_then(|objects| objects.runtime_summary_path)
+        {
+            tokio_fs::read_to_string(path).await.ok()
+        } else {
+            None
+        };
+        let log_excerpt = self.read_job_log_excerpt_async(&planned.log_path).await?;
+
+        Ok(AiContext {
+            job_name: job_name.to_string(),
+            source_name: source_name.to_string(),
+            stage: planned.instance.stage_name.clone(),
+            job_yaml,
+            runner_summary,
+            pipeline_summary,
+            runtime_summary,
+            log_excerpt,
+            failure_hint: None,
+        })
+    }
+
     fn load_job_yaml_fragment(&self, source_name: &str) -> Result<String> {
         let content = fs::read_to_string(&self.config.pipeline)
             .with_context(|| format!("failed to read {}", self.config.pipeline.display()))?;
@@ -890,8 +988,40 @@ impl ExecutorCore {
         Ok(format!("# job '{source_name}' not found"))
     }
 
+    async fn load_job_yaml_fragment_async(&self, source_name: &str) -> Result<String> {
+        let content = tokio_fs::read_to_string(&self.config.pipeline)
+            .await
+            .with_context(|| format!("failed to read {}", self.config.pipeline.display()))?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+            .with_context(|| format!("failed to parse {}", self.config.pipeline.display()))?;
+        let Some(mapping) = yaml.as_mapping() else {
+            return Ok(format!("# job '{source_name}' not found"));
+        };
+        for (key, value) in mapping {
+            if key.as_str() == Some(source_name) {
+                let mut root = serde_yaml::Mapping::new();
+                root.insert(
+                    serde_yaml::Value::String(source_name.to_string()),
+                    value.clone(),
+                );
+                return Ok(serde_yaml::to_string(&serde_yaml::Value::Mapping(root))?);
+            }
+        }
+        Ok(format!("# job '{source_name}' not found"))
+    }
+
     fn read_job_log_excerpt(&self, path: &Path) -> Result<String> {
         let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read log {}", path.display()))?;
+        let tail_lines = self.config.settings.ai_settings().tail_lines.max(50);
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(tail_lines);
+        Ok(lines[start..].join("\n"))
+    }
+
+    async fn read_job_log_excerpt_async(&self, path: &Path) -> Result<String> {
+        let content = tokio_fs::read_to_string(path)
+            .await
             .with_context(|| format!("failed to read log {}", path.display()))?;
         let tail_lines = self.config.settings.ai_settings().tail_lines.max(50);
         let lines: Vec<&str> = content.lines().collect();

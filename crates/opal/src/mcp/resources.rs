@@ -8,8 +8,8 @@ use crate::mcp::uri::{ResourceUri, encode_path_segment, parse_resource_uri};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-pub(crate) fn list_resources(app: &OpalApp) -> Result<Value> {
-    let history = load_history_for_workdir(&app.resolve_workdir(None))?;
+pub(crate) async fn list_resources(app: &OpalApp) -> Result<Value> {
+    let history = load_history_for_workdir(&app.resolve_workdir(None)).await?;
     let mut resources = Vec::new();
     resources.push(json!({
         "uri": "opal://history",
@@ -62,11 +62,11 @@ pub(crate) fn list_resources(app: &OpalApp) -> Result<Value> {
     Ok(json!({ "resources": resources }))
 }
 
-pub(crate) fn read_resource(app: &OpalApp, uri: &str) -> Result<Value> {
+pub(crate) async fn read_resource(app: &OpalApp, uri: &str) -> Result<Value> {
     let workdir = app.resolve_workdir(None);
     match parse_resource_uri(uri)? {
         ResourceUri::History => {
-            let history = load_history_for_workdir(&workdir)?;
+            let history = load_history_for_workdir(&workdir).await?;
             text_resource(
                 uri,
                 "application/json",
@@ -74,29 +74,33 @@ pub(crate) fn read_resource(app: &OpalApp, uri: &str) -> Result<Value> {
             )
         }
         ResourceUri::LatestRun => {
-            let Some(entry) = latest_history_entry_for_workdir(&workdir)? else {
+            let Some(entry) = latest_history_entry_for_workdir(&workdir).await? else {
                 anyhow::bail!("no Opal history entries found");
             };
             run_resource_contents(uri, &entry)
         }
         ResourceUri::Run { run_id } => {
-            let entry = find_history_entry_for_workdir(&workdir, &run_id)?
+            let entry = find_history_entry_for_workdir(&workdir, &run_id)
+                .await?
                 .with_context(|| format!("run '{run_id}' not found in Opal history"))?;
             run_resource_contents(uri, &entry)
         }
         ResourceUri::JobLog { run_id, job_name } => {
-            let entry = find_history_entry_for_workdir(&workdir, &run_id)?
+            let entry = find_history_entry_for_workdir(&workdir, &run_id)
+                .await?
                 .with_context(|| format!("run '{run_id}' not found in Opal history"))?;
             let job = find_job(&entry, &job_name)
                 .with_context(|| format!("job '{job_name}' not found in run '{run_id}'"))?;
-            text_resource(uri, "text/plain", read_job_log(&entry, job)?)
+            text_resource(uri, "text/plain", read_job_log(&entry, job).await?)
         }
         ResourceUri::RuntimeSummary { run_id, job_name } => {
-            let entry = find_history_entry_for_workdir(&workdir, &run_id)?
+            let entry = find_history_entry_for_workdir(&workdir, &run_id)
+                .await?
                 .with_context(|| format!("run '{run_id}' not found in Opal history"))?;
             let job = find_job(&entry, &job_name)
                 .with_context(|| format!("job '{job_name}' not found in run '{run_id}'"))?;
-            let summary = read_runtime_summary(job)?
+            let summary = read_runtime_summary(job)
+                .await?
                 .with_context(|| format!("job '{job_name}' has no runtime summary"))?;
             text_resource(uri, "text/plain", summary)
         }
@@ -181,7 +185,10 @@ mod tests {
         )
         .expect("save history");
 
-        let resources = list_resources(&app).expect("list resources");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let resources = runtime
+            .block_on(list_resources(&app))
+            .expect("list resources");
         let entries = resources["resources"].as_array().expect("resource array");
         assert!(entries.iter().any(|entry| entry["uri"] == "opal://history"));
         assert!(
@@ -206,7 +213,10 @@ mod tests {
         save(&runtime::history_path(), &[]).expect("save history");
 
         let app = OpalApp::from_current_dir().expect("app");
-        let resource = read_resource(&app, "opal://history").expect("read history");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let resource = runtime
+            .block_on(read_resource(&app, "opal://history"))
+            .expect("read history");
         assert_eq!(resource["contents"][0]["mimeType"], "application/json");
         unsafe {
             env::remove_var("OPAL_HOME");

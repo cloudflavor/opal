@@ -24,8 +24,6 @@ use termimad::MadSkin;
 use termimad::minimad::{
     Composite, CompositeStyle, Compound, Line as MarkdownLine, Options, parse_text,
 };
-use walkdir::WalkDir;
-
 static EMBEDDED_DOCS: Dir<'static> = include_dir!("$OPAL_EMBEDDED_DOCS_DIR");
 
 const HISTORY_TREE_MAX_FS_DEPTH: usize = 3;
@@ -1177,15 +1175,12 @@ impl UiState {
         self.history_preview = None;
     }
 
-    pub(super) fn load_history_preview(&mut self, title: String, path: &Path) -> Result<()> {
-        self.history_preview = None;
-        let file =
-            File::open(path).with_context(|| format!("failed to open log {}", path.display()))?;
-        let reader = BufReader::new(file);
-        let mut lines = Vec::new();
-        for line in reader.lines() {
-            lines.push(line.with_context(|| format!("failed to read log {}", path.display()))?);
-        }
+    pub(super) fn set_history_preview_lines(
+        &mut self,
+        title: String,
+        path: &Path,
+        lines: Vec<String>,
+    ) {
         self.history_preview = Some(HistoryPreview {
             title,
             path: path.to_path_buf(),
@@ -1193,7 +1188,6 @@ impl UiState {
             scroll_offset: 0,
         });
         self.focus = PaneFocus::Jobs;
-        Ok(())
     }
 
     pub(super) fn set_history_preview_message(
@@ -1211,50 +1205,6 @@ impl UiState {
         self.focus = PaneFocus::Jobs;
     }
 
-    pub(super) fn load_directory_preview(&mut self, title: String, path: &Path) -> Result<()> {
-        self.history_preview = None;
-        if !path.exists() {
-            self.set_history_preview_message(
-                title,
-                path,
-                format!("directory {} not found", path.display()),
-            );
-            return Ok(());
-        }
-        let mut lines = Vec::new();
-        lines.push(format!("Directory: {}", path.display()));
-        let mut count = 0usize;
-        let max_entries = 600;
-        let max_depth = 5;
-        for entry in WalkDir::new(path).max_depth(max_depth).sort_by_file_name() {
-            let entry = entry.with_context(|| "failed to read directory entry")?;
-            let depth = entry.depth();
-            let indent = "  ".repeat(depth);
-            let name = entry.file_name().to_string_lossy();
-            let marker = if entry.file_type().is_dir() {
-                "[d]"
-            } else {
-                "[f]"
-            };
-            lines.push(format!("{indent}{marker} {name}"));
-            count += 1;
-            if count >= max_entries {
-                lines.push(format!(
-                    "... truncated to {max_entries} entries (use pager to inspect directly)"
-                ));
-                break;
-            }
-        }
-        self.history_preview = Some(HistoryPreview {
-            title,
-            path: path.to_path_buf(),
-            lines,
-            scroll_offset: 0,
-        });
-        self.focus = PaneFocus::Jobs;
-        Ok(())
-    }
-
     pub(super) fn load_text_preview(&mut self, title: String, text: String) {
         self.history_preview = Some(HistoryPreview {
             title,
@@ -1267,25 +1217,76 @@ impl UiState {
 
     pub(super) fn on_active_selection_changed(&mut self) {
         if let Some(view) = &self.history_view {
-            if let Some(job) = view.jobs.get(view.selected) {
-                let path = job.log_path.clone();
-                let title = format!("{} • {}", view.run_id, job.name);
-                if let Err(err) = self.load_history_preview(title.clone(), &path) {
-                    self.set_history_preview_message(
-                        title,
-                        &path,
-                        format!("failed to load log: {err}"),
-                    );
-                }
-            } else {
-                self.history_preview = None;
-            }
+            let _ = view;
+            self.history_preview = None;
         } else {
             self.history_preview = None;
             if let Some(job) = self.jobs.get_mut(self.selected) {
                 job.auto_follow();
             }
         }
+    }
+
+    pub(super) async fn load_history_preview_lines(path: &Path) -> Result<Vec<String>> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("failed to read log {}", path.display()))?;
+        Ok(content.lines().map(str::to_string).collect())
+    }
+
+    pub(super) async fn load_directory_preview_lines(path: &Path) -> Result<Vec<String>> {
+        if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+            return Ok(vec![format!("directory {} not found", path.display())]);
+        }
+
+        let mut lines = vec![format!("Directory: {}", path.display())];
+        let mut count = 0usize;
+        let max_entries = 600usize;
+        let max_depth = 5usize;
+        let mut stack = vec![(path.to_path_buf(), 1usize)];
+
+        while let Some((dir, depth)) = stack.pop() {
+            if depth > max_depth {
+                continue;
+            }
+            let mut read_dir = tokio::fs::read_dir(&dir)
+                .await
+                .with_context(|| format!("failed to read directory {}", dir.display()))?;
+            let mut entries = Vec::new();
+            while let Some(entry) = read_dir.next_entry().await? {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let file_type = entry.file_type().await?;
+                entries.push((name, entry.path(), file_type.is_dir()));
+            }
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+            for (name, entry_path, is_dir) in &entries {
+                let indent = "  ".repeat(depth);
+                let marker = if *is_dir { "[d]" } else { "[f]" };
+                lines.push(format!("{indent}{marker} {name}"));
+                count += 1;
+                if count >= max_entries {
+                    lines.push(format!(
+                        "... truncated to {max_entries} entries (use pager to inspect directly)"
+                    ));
+                    return Ok(lines);
+                }
+                if *is_dir && depth < max_depth {
+                    stack.push((entry_path.clone(), depth + 1));
+                }
+            }
+        }
+
+        Ok(lines)
+    }
+
+    pub(super) fn desired_history_preview(&self) -> Option<(String, PathBuf)> {
+        let view = self.history_view.as_ref()?;
+        let job = view.jobs.get(view.selected)?;
+        Some((
+            format!("{} • {}", view.run_id, job.name),
+            job.log_path.clone(),
+        ))
     }
 
     pub(super) fn clamp_history_selection(&mut self, len: usize) {
@@ -2441,7 +2442,7 @@ impl UiState {
         Some((job.name.clone(), job.source_name.clone()))
     }
 
-    pub(super) fn analysis_snapshot(&self) -> Option<AiAnalysisSnapshot> {
+    pub(super) async fn analysis_snapshot(&self) -> Option<AiAnalysisSnapshot> {
         let job = self.active_job()?;
         let run_id = self
             .history_view
@@ -2466,10 +2467,13 @@ impl UiState {
                 .and_then(|resources| resources.runtime_summary_path.clone())
         };
 
-        let runtime_summary = runtime_summary_path
-            .as_deref()
-            .and_then(|path| fs::read_to_string(path).ok());
-        let log_excerpt = fs::read_to_string(&job.log_path)
+        let runtime_summary = if let Some(path) = runtime_summary_path.as_deref() {
+            tokio::fs::read_to_string(path).await.ok()
+        } else {
+            None
+        };
+        let log_excerpt = tokio::fs::read_to_string(&job.log_path)
+            .await
             .ok()
             .map(|content| {
                 let lines: Vec<&str> = content.lines().collect();
@@ -4189,6 +4193,14 @@ mod tests {
         );
 
         state.view_history_run("run-2").expect("view history run");
+        let (title, path) = state
+            .desired_history_preview()
+            .expect("desired history preview");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let lines = runtime
+            .block_on(UiState::load_history_preview_lines(&path))
+            .expect("load history preview");
+        state.set_history_preview_lines(title, &path, lines);
 
         let view = state.history_view.as_ref().expect("history view");
         assert_eq!(view.selected, 0);
@@ -4258,6 +4270,14 @@ mod tests {
         state
             .view_history_job("run-2", "unit-tests")
             .expect("view history job");
+        let (title, path) = state
+            .desired_history_preview()
+            .expect("desired history preview");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let lines = runtime
+            .block_on(UiState::load_history_preview_lines(&path))
+            .expect("load history preview");
+        state.set_history_preview_lines(title, &path, lines);
 
         let view = state.history_view.as_ref().expect("history view");
         assert_eq!(view.selected, 1);
@@ -4308,6 +4328,14 @@ mod tests {
         state
             .view_history_run("run-latest")
             .expect("open latest history run");
+        let (title, path) = state
+            .desired_history_preview()
+            .expect("desired history preview");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let lines = runtime
+            .block_on(UiState::load_history_preview_lines(&path))
+            .expect("load history preview");
+        state.set_history_preview_lines(title, &path, lines);
 
         assert!(state.history_view.is_some());
         let preview = state.history_preview.as_ref().expect("history preview");

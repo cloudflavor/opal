@@ -221,13 +221,13 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_run" => Ok(run_tool(app, arguments).await),
         "opal_run_status" => Ok(run_status_tool(arguments)?),
         "opal_view" => Ok(view_tool(app, arguments).await),
-        "opal_failed_jobs" => Ok(failed_jobs_tool(app, arguments)?),
-        "opal_history_list" => Ok(history_list_tool(app, arguments)?),
-        "opal_run_diff" => Ok(run_diff_tool(app, arguments)?),
+        "opal_failed_jobs" => Ok(failed_jobs_tool(app, arguments).await?),
+        "opal_history_list" => Ok(history_list_tool(app, arguments).await?),
+        "opal_run_diff" => Ok(run_diff_tool(app, arguments).await?),
         "opal_logs_search" => Ok(logs_search_tool(app, arguments).await),
         "opal_job_rerun" => Ok(job_rerun_tool(app, arguments).await),
         "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
-        "opal_engine_status" => Ok(engine_status_tool(app, arguments)?),
+        "opal_engine_status" => Ok(engine_status_tool(app, arguments).await?),
         other => Ok(error_tool_result(
             format!("unknown tool: {other}"),
             Value::Null,
@@ -287,7 +287,7 @@ async fn view_tool(app: &OpalApp, arguments: Value) -> Value {
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
     if !request.include_log && !request.include_runtime_summary {
-        return match view_tool_result(&request) {
+        return match view_tool_result(&request).await {
             Ok(payload) => tool_result(payload.text, payload.structured, false),
             Err(err) => error_tool_result(err.to_string(), Value::Null),
         };
@@ -299,7 +299,7 @@ async fn view_tool(app: &OpalApp, arguments: Value) -> Value {
             requested_job: request.job_name.clone(),
             source_run_id: request.run_id.clone(),
         },
-        async move { execute_view_request(request) },
+        async move { execute_view_request(request).await },
     );
     tool_result(
         format!(
@@ -311,8 +311,9 @@ async fn view_tool(app: &OpalApp, arguments: Value) -> Value {
     )
 }
 
-fn view_tool_result(request: &ViewRequest) -> Result<ToolResultPayload> {
-    let entry = selected_history_entry_for_workdir(&request.workdir, request.run_id.as_deref())?;
+async fn view_tool_result(request: &ViewRequest) -> Result<ToolResultPayload> {
+    let entry =
+        selected_history_entry_for_workdir(&request.workdir, request.run_id.as_deref()).await?;
     let mut structured = Map::new();
     structured.insert("run".to_string(), history_entry_json(&entry));
 
@@ -327,12 +328,12 @@ fn view_tool_result(request: &ViewRequest) -> Result<ToolResultPayload> {
         structured.insert("job".to_string(), json!(job));
         text.push_str(&format!("\nSelected job: {} ({:?})", job.name, job.status));
         if request.include_log {
-            let log = read_job_log(&entry, job)?;
+            let log = read_job_log(&entry, job).await?;
             structured.insert("job_log".to_string(), json!(log));
             text.push_str("\nIncluded job log.");
         }
         if request.include_runtime_summary {
-            let summary = read_runtime_summary(job)?;
+            let summary = read_runtime_summary(job).await?;
             structured.insert("runtime_summary".to_string(), json!(summary));
             text.push_str("\nIncluded runtime summary.");
         }
@@ -346,9 +347,9 @@ fn view_tool_result(request: &ViewRequest) -> Result<ToolResultPayload> {
     })
 }
 
-fn failed_jobs_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+async fn failed_jobs_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
-    let entry = selected_history_entry_for_arguments(app, &arguments, run_id)?;
+    let entry = selected_history_entry_for_arguments(app, &arguments, run_id).await?;
     let failed_jobs = failed_jobs(&entry);
     let failed_names = failed_jobs
         .iter()
@@ -376,7 +377,7 @@ fn failed_jobs_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     ))
 }
 
-fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+async fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let status = history_status_from_value(arguments.get("status"))?;
     let job_name = arguments.get("job").and_then(Value::as_str);
     let branch = arguments.get("branch").and_then(Value::as_str);
@@ -389,7 +390,7 @@ fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
         .map(|value| value as usize)
         .unwrap_or(20);
 
-    let history = load_history_for_workdir(&requested_workdir(app, &arguments))?;
+    let history = load_history_for_workdir(&requested_workdir(app, &arguments)).await?;
     let total_runs = history.len();
     let runs = history
         .into_iter()
@@ -441,10 +442,10 @@ fn history_list_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     ))
 }
 
-fn run_diff_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+async fn run_diff_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let base_run_id = arguments.get("base_run_id").and_then(Value::as_str);
-    let history = load_history_for_workdir(&requested_workdir(app, &arguments))?;
+    let history = load_history_for_workdir(&requested_workdir(app, &arguments)).await?;
     let (base_run, head_run) = selected_run_pair(&history, run_id, base_run_id)?;
     let diff = compare_runs(&base_run, &head_run);
     Ok(tool_result(
@@ -466,7 +467,7 @@ async fn logs_search_tool(app: &OpalApp, arguments: Value) -> Value {
             requested_job: request.job_name.clone(),
             source_run_id: request.run_id.clone(),
         },
-        async move { execute_log_search(request) },
+        async move { execute_log_search(request).await },
     );
     tool_result(
         format!(
@@ -478,8 +479,8 @@ async fn logs_search_tool(app: &OpalApp, arguments: Value) -> Value {
     )
 }
 
-fn log_search_tool_result(request: &LogSearchRequest) -> Result<ToolResultPayload> {
-    let history = load_history_for_workdir(&request.workdir)?;
+async fn log_search_tool_result(request: &LogSearchRequest) -> Result<ToolResultPayload> {
+    let history = load_history_for_workdir(&request.workdir).await?;
     let query = request.query.as_str();
     let mut matches = Vec::new();
     let mut read_errors = Vec::new();
@@ -502,7 +503,7 @@ fn log_search_tool_result(request: &LogSearchRequest) -> Result<ToolResultPayloa
                 continue;
             }
             scanned_jobs += 1;
-            match read_job_log(entry, job) {
+            match read_job_log(entry, job).await {
                 Ok(log) => {
                     if let Some(log_match) =
                         find_log_match(entry, job, &log, query, request.case_sensitive)
@@ -589,8 +590,8 @@ fn log_search_request_from_value(app: &OpalApp, arguments: Value) -> Result<LogS
     })
 }
 
-fn execute_log_search(request: LogSearchRequest) -> RunCapture {
-    match log_search_tool_result(&request) {
+async fn execute_log_search(request: LogSearchRequest) -> RunCapture {
+    match log_search_tool_result(&request).await {
         Ok(payload) => RunCapture {
             history_entry: None,
             error: None,
@@ -607,7 +608,7 @@ fn execute_log_search(request: LogSearchRequest) -> RunCapture {
 }
 
 async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
-    let request = match job_rerun_request(app, &arguments) {
+    let request = match job_rerun_request(app, &arguments).await {
         Ok(request) => request,
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
@@ -653,14 +654,14 @@ fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     ))
 }
 
-fn engine_status_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+async fn engine_status_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let workdir = app.resolve_workdir(
         arguments
             .get("workdir")
             .and_then(Value::as_str)
             .map(PathBuf::from),
     );
-    let settings = OpalConfig::load(&workdir)?;
+    let settings = OpalConfig::load_async(&workdir).await?;
     let configured_default = settings.default_engine().unwrap_or(EngineChoice::Auto);
     let resolved_auto = resolved_engine_choice(EngineChoice::Auto, &settings);
     let engines = [
@@ -917,23 +918,26 @@ fn requested_workdir(app: &OpalApp, arguments: &Value) -> PathBuf {
     )
 }
 
-fn selected_history_entry_for_arguments(
+async fn selected_history_entry_for_arguments(
     app: &OpalApp,
     arguments: &Value,
     run_id: Option<&str>,
 ) -> Result<HistoryEntry> {
     let workdir = requested_workdir(app, arguments);
-    selected_history_entry_for_workdir(&workdir, run_id)
+    selected_history_entry_for_workdir(&workdir, run_id).await
 }
 
-fn selected_history_entry_for_workdir(
+async fn selected_history_entry_for_workdir(
     workdir: &Path,
     run_id: Option<&str>,
 ) -> Result<HistoryEntry> {
     match run_id {
-        Some(run_id) => find_history_entry_for_workdir(workdir, run_id)?
+        Some(run_id) => find_history_entry_for_workdir(workdir, run_id)
+            .await?
             .with_context(|| format!("run '{run_id}' not found in Opal history")),
-        None => latest_history_entry_for_workdir(workdir)?.context("no Opal history entries found"),
+        None => latest_history_entry_for_workdir(workdir)
+            .await?
+            .context("no Opal history entries found"),
     }
 }
 
@@ -959,8 +963,8 @@ fn view_request_from_value(app: &OpalApp, arguments: Value) -> Result<ViewReques
     })
 }
 
-fn execute_view_request(request: ViewRequest) -> RunCapture {
-    match view_tool_result(&request) {
+async fn execute_view_request(request: ViewRequest) -> RunCapture {
+    match view_tool_result(&request).await {
         Ok(payload) => RunCapture {
             history_entry: None,
             result: Some(payload.structured),
@@ -1376,14 +1380,14 @@ fn line_matches_query(line: &str, query: &str, case_sensitive: bool) -> bool {
     }
 }
 
-fn job_rerun_request(app: &OpalApp, arguments: &Value) -> Result<JobRerunRequest> {
+async fn job_rerun_request(app: &OpalApp, arguments: &Value) -> Result<JobRerunRequest> {
     let run_id = arguments.get("run_id").and_then(Value::as_str);
     let requested_job = arguments
         .get("job")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .context("missing job")?;
-    let source_run = selected_history_entry_for_arguments(app, arguments, run_id)?;
+    let source_run = selected_history_entry_for_arguments(app, arguments, run_id).await?;
     let source_job = find_job(&source_run, &requested_job)
         .cloned()
         .with_context(|| {
@@ -3190,14 +3194,16 @@ mod tests {
         .expect("save history");
 
         let app = OpalApp::from_current_dir().expect("app");
-        let request = job_rerun_request(
-            &app,
-            &json!({
-                "job": "rust-checks",
-                "engine": "docker"
-            }),
-        )
-        .expect("job rerun request");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let request = runtime
+            .block_on(job_rerun_request(
+                &app,
+                &json!({
+                    "job": "rust-checks",
+                    "engine": "docker"
+                }),
+            ))
+            .expect("job rerun request");
 
         assert_eq!(request.source_run.run_id, "run-1");
         assert_eq!(request.source_job.name, "rust-checks");
@@ -3248,15 +3254,17 @@ mod tests {
         .expect("save history");
 
         let app = OpalApp::from_current_dir().expect("app");
-        let request = job_rerun_request(
-            &app,
-            &json!({
-                "workdir": workdir.display().to_string(),
-                "run_id": "run-explicit",
-                "job": "rust-checks"
-            }),
-        )
-        .expect("request");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let request = runtime
+            .block_on(job_rerun_request(
+                &app,
+                &json!({
+                    "workdir": workdir.display().to_string(),
+                    "run_id": "run-explicit",
+                    "job": "rust-checks"
+                }),
+            ))
+            .expect("request");
 
         assert_eq!(request.source_run.run_id, "run-explicit");
         assert_eq!(request.source_job.name, "rust-checks");

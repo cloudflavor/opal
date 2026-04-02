@@ -120,6 +120,11 @@ pub enum UiEvent {
         name: String,
         prompt: String,
     },
+    HistoryPreviewReady {
+        title: String,
+        path: PathBuf,
+        lines: Vec<String>,
+    },
     PipelineFinished,
 }
 

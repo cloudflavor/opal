@@ -38,9 +38,10 @@ pub fn view_history(history: Vec<HistoryEntry>, current_run_id: String) -> Resul
     runner.run()
 }
 
-pub fn view_pipeline_logs(root: &Path) -> Result<()> {
+pub async fn view_pipeline_logs(root: &Path) -> Result<()> {
     let history_path = runtime::history_path();
     let history = load_history_for_workdir(root)
+        .await
         .with_context(|| format!("failed to load history at {}", history_path.display()))?;
     if history.is_empty() {
         anyhow::bail!(

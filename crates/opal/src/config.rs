@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -193,6 +194,24 @@ impl OpalConfig {
                 parsed.resolve_relative_paths(&path);
                 merged.merge(parsed);
             }
+        }
+        Ok(merged)
+    }
+
+    pub async fn load_async(workdir: &Path) -> Result<Self> {
+        let mut merged = OpalConfig::default();
+        for path in runtime::config_dirs(workdir) {
+            let contents = match tokio::fs::read_to_string(&path).await {
+                Ok(contents) => contents,
+                Err(err) if err.kind() == ErrorKind::NotFound => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| format!("failed to read {}", path.display()));
+                }
+            };
+            let mut parsed: OpalConfig = toml::from_str(&contents)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            parsed.resolve_relative_paths(&path);
+            merged.merge(parsed);
         }
         Ok(merged)
     }

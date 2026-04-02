@@ -10,9 +10,9 @@ pub struct DockerExecutor {
 }
 
 impl DockerExecutor {
-    pub fn new(mut config: ExecutorConfig) -> Result<Self> {
+    pub async fn new(mut config: ExecutorConfig) -> Result<Self> {
         config.engine = EngineKind::Docker;
-        let core = ExecutorCore::new(config)?;
+        let core = ExecutorCore::new(config).await?;
         Ok(Self { core })
     }
 

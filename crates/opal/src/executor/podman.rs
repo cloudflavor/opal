@@ -10,9 +10,9 @@ pub struct PodmanExecutor {
 }
 
 impl PodmanExecutor {
-    pub fn new(mut config: ExecutorConfig) -> Result<Self> {
+    pub async fn new(mut config: ExecutorConfig) -> Result<Self> {
         config.engine = EngineKind::Podman;
-        let core = ExecutorCore::new(config)?;
+        let core = ExecutorCore::new(config).await?;
         Ok(Self { core })
     }
 
