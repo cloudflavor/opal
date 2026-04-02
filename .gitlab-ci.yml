@@ -62,6 +62,10 @@ unit-tests:
       artifacts: false
     - job: rust-checks
       artifacts: false
+  cache:
+    key: "$CI_COMMIT_REF_SLUG-unit-tests-cargo"
+    paths:
+      - .cargo/
   script:
     - cargo test --workspace --all-targets --locked
 
