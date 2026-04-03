@@ -93,7 +93,7 @@ pub(super) fn prepare_job_run(
         arch: job_override.as_ref().and_then(|cfg| cfg.arch.clone()),
         privileged: job_override
             .as_ref()
-            .map(|cfg| cfg.privileged)
+            .and_then(|cfg| cfg.privileged)
             .unwrap_or(false),
         cap_add: job_override
             .as_ref()

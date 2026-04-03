@@ -4,7 +4,7 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
-Last updated: 2026-03-26
+Last updated: 2026-04-02
 
 ## Recognized By Opal
 
@@ -316,13 +316,14 @@ These features exist in Opal, but they do not match GitLab completely.
 - `tags` are informational only.
   GitLab uses runner tags for scheduling; Opal logs and ignores them.
 - `image` is subset-only.
+  GitLab documents `image:docker` with `platform` and `user`.
   Opal supports string form, mapping form with `name`, `image:entrypoint`, `image:docker:platform`, and `image:docker:user`.
   On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `image:docker:platform` to the engine's `--platform` selection.
   On the Apple `container` engine, `image:docker:platform` is translated into the corresponding `container run --arch` selection for common `amd64` / `arm64` Linux platform values.
   `image:entrypoint` and `image:docker:user` are forwarded to the local engine's entrypoint/user flags where supported.
   Unsupported image behavior in Opal today includes:
   - `image:kubernetes`
-  - executor-specific image options outside `docker:platform` / `docker:user`
+  - documented executor-specific image options outside `docker:platform` / `docker:user`
 - `services` is subset-only.
   Opal supports string services plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, `services:docker:platform`, and `services:docker:user`.
   On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `services:docker:platform` and `services:docker:user` to the local engine's service container flags.

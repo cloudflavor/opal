@@ -708,7 +708,7 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
                 Ok(ImageConfig {
                     name,
                     docker_platform: docker_cfg.as_ref().and_then(|cfg| cfg.platform.clone()),
-                    docker_user: docker_cfg.and_then(|cfg| cfg.user),
+                    docker_user: docker_cfg.as_ref().and_then(|cfg| cfg.user.clone()),
                     entrypoint,
                 })
             } else {

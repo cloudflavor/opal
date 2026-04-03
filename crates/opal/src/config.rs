@@ -158,7 +158,7 @@ pub struct JobOverrideConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedJobOverride {
     pub arch: Option<String>,
-    pub privileged: bool,
+    pub privileged: Option<bool>,
     pub cap_add: Vec<String>,
     pub cap_drop: Vec<String>,
 }
@@ -262,7 +262,7 @@ impl OpalConfig {
                 resolved.arch = Some(value.clone());
             }
             if let Some(value) = entry.privileged {
-                resolved.privileged = value;
+                resolved.privileged = Some(value);
             }
             if !entry.cap_add.is_empty() {
                 resolved.cap_add = entry.cap_add.clone();
@@ -510,7 +510,7 @@ mod tests {
 
         let resolved = config.job_override_for("deploy").expect("override present");
         assert_eq!(resolved.arch.as_deref(), Some("arm64"));
-        assert!(resolved.privileged);
+        assert_eq!(resolved.privileged, Some(true));
         assert_eq!(resolved.cap_add, vec!["NET_ADMIN"]);
         assert_eq!(resolved.cap_drop, vec!["MKNOD"]);
     }
