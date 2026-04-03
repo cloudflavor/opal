@@ -75,6 +75,7 @@ opal-install-smoke:
     - job: fetch-sources
       artifacts: false
   script:
+    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
     - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
     - $CI_PROJECT_DIR/.opal-installed/bin/opal --version
 
@@ -90,6 +91,7 @@ extended-tests:
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
     - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
     - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
@@ -122,6 +124,7 @@ e2e-tests:
   script:
     - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
     - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
+    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
     - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
     - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
