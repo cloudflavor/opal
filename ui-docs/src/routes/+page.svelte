@@ -96,10 +96,6 @@
   ];
 </script>
 
-<svelte:head>
-  <title>Opal Docs</title>
-</svelte:head>
-
 <section class="hero shell">
   <div class="hero-copy">
     <div class="hero-topbar">
