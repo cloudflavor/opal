@@ -162,3 +162,27 @@ This does not make Apple `container` universally better for every workflow, but 
 opal --version
 opal plan --no-pager
 ```
+
+## Shell completions
+
+Opal can print shell completions directly from the installed binary:
+
+```bash
+opal completions zsh
+```
+
+Common install targets:
+
+```bash
+# zsh
+mkdir -p ~/.zfunc
+opal completions zsh > ~/.zfunc/_opal
+
+# fish
+mkdir -p ~/.config/fish/completions
+opal completions fish > ~/.config/fish/completions/opal.fish
+
+# bash
+mkdir -p ~/.local/share/bash-completion/completions
+opal completions bash > ~/.local/share/bash-completion/completions/opal
+```

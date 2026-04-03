@@ -172,6 +172,26 @@ Opens the history/log browser for previous runs.
 - Context directory
 - Defaults to the current working directory
 
+### `opal completions <shell>`
+
+Prints a shell completion script to stdout.
+
+Supported shells:
+
+- `bash`
+- `elvish`
+- `fish`
+- `powershell`
+- `zsh`
+
+Examples:
+
+```bash
+opal completions zsh > "${fpath[1]}/_opal"
+opal completions fish > ~/.config/fish/completions/opal.fish
+opal completions bash > ~/.local/share/bash-completion/completions/opal
+```
+
 ### `opal mcp`
 
 Starts the MCP server over stdio.
@@ -237,4 +257,10 @@ Inspect a subgraph:
 
 ```bash
 opal plan --job package-linux
+```
+
+Generate a completion script:
+
+```bash
+opal completions zsh
 ```

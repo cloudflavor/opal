@@ -59,6 +59,8 @@ pub enum Commands {
     Plan(PlanArgs),
     /// Open the history and log browser for previous runs.
     View(ViewArgs),
+    /// Print a shell completion script to stdout.
+    Completions(CompletionArgs),
     /// Start the MCP server over stdio.
     Mcp(McpArgs),
 }
@@ -70,7 +72,7 @@ pub struct McpArgs {}
 
 #[cfg(test)]
 mod cli_tests {
-    use super::McpArgs;
+    use super::{Cli, Commands, CompletionShell, McpArgs};
     use structopt::StructOpt;
 
     #[test]
@@ -80,6 +82,23 @@ mod cli_tests {
         app.write_help(&mut help).expect("write help");
         let text = String::from_utf8(help).expect("utf8");
         assert!(text.contains("opal mcp"));
+    }
+
+    #[test]
+    fn completion_shell_parses_case_insensitively() {
+        assert_eq!(
+            "ZSH".parse::<CompletionShell>().expect("shell"),
+            CompletionShell::Zsh
+        );
+    }
+
+    #[test]
+    fn completions_subcommand_parses_shell_argument() {
+        let cli = Cli::from_iter_safe(["opal", "completions", "fish"]).expect("parse cli");
+        match cli.commands {
+            Commands::Completions(args) => assert_eq!(args.shell, CompletionShell::Fish),
+            _ => panic!("expected completions subcommand"),
+        }
     }
 }
 
@@ -188,6 +207,18 @@ pub struct ViewArgs {
     pub workdir: Option<PathBuf>,
 }
 
+/// Print a shell completion script to stdout.
+#[derive(StructOpt)]
+pub struct CompletionArgs {
+    /// Which shell to generate completions for.
+    #[structopt(
+        value_name = "SHELL",
+        possible_values = CompletionShell::VARIANTS,
+        case_insensitive = true
+    )]
+    pub shell: CompletionShell,
+}
+
 /// Render the evaluated execution plan without starting containers.
 #[derive(StructOpt)]
 pub struct PlanArgs {
@@ -224,6 +255,47 @@ pub struct PlanArgs {
     /// Emit the execution plan as JSON.
     #[structopt(long = "json")]
     pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    PowerShell,
+    Zsh,
+}
+
+impl CompletionShell {
+    pub const VARIANTS: &'static [&'static str] = &["bash", "elvish", "fish", "powershell", "zsh"];
+
+    pub fn to_clap_shell(self) -> structopt::clap::Shell {
+        match self {
+            Self::Bash => structopt::clap::Shell::Bash,
+            Self::Elvish => structopt::clap::Shell::Elvish,
+            Self::Fish => structopt::clap::Shell::Fish,
+            Self::PowerShell => structopt::clap::Shell::PowerShell,
+            Self::Zsh => structopt::clap::Shell::Zsh,
+        }
+    }
+}
+
+impl FromStr for CompletionShell {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "bash" => Ok(Self::Bash),
+            "elvish" => Ok(Self::Elvish),
+            "fish" => Ok(Self::Fish),
+            "powershell" => Ok(Self::PowerShell),
+            "zsh" => Ok(Self::Zsh),
+            _ => Err(format!(
+                "unsupported shell '{s}'; expected one of: {}",
+                Self::VARIANTS.join(", ")
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

@@ -64,6 +64,7 @@ opal run
 opal run --no-tui
 opal plan
 opal view
+opal completions zsh
 opal mcp
 ```
 
