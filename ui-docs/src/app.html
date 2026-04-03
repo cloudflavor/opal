@@ -3,6 +3,22 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" type="image/svg+xml" />
+		<meta name="theme-color" content="#1e1e2e" />
+		<script nonce="%sveltekit.nonce%">
+			(() => {
+				try {
+					const saved = localStorage.getItem('opal-docs-theme');
+					const theme =
+						saved === 'dark' || saved === 'light'
+							? saved
+							: window.matchMedia('(prefers-color-scheme: dark)').matches
+								? 'dark'
+								: 'light';
+					document.documentElement.dataset.theme = theme;
+				} catch {}
+			})();
+		</script>
 		<script defer src="https://cloud.umami.is/script.js" data-website-id="75e658e8-6488-4a78-b899-cfdeb64d0156"></script>
 		%sveltekit.head%
 	</head>
