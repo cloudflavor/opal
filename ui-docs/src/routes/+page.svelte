@@ -215,10 +215,14 @@ brew install cloudflavor/tap/opal-cli</pre>
 
 <style>
   .shell {
-    max-width: 1260px;
-    margin: 0 auto;
-    padding-left: 2rem;
-    padding-right: 2rem;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding-left: 0;
+    padding-right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
   }
   .hero {
     display: grid;
@@ -455,10 +459,6 @@ brew install cloudflavor/tap/opal-cli</pre>
     .install-intro {
       display: grid;
       align-items: start;
-    }
-    .shell {
-      padding-left: 1.25rem;
-      padding-right: 1.25rem;
     }
     h1 {
       max-width: 13ch;

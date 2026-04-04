@@ -9,7 +9,7 @@
   let query = $state('');
   let theme = $state<'dark' | 'light'>('light');
   let showMenu = $state(false);
-  let showAnchors = $state(true);
+  let showAnchors = $state(false);
   let showCloudflavorDialog = $state(false);
   let searchInput: HTMLInputElement | null = null;
   let contentPane: HTMLElement | null = null;
@@ -192,6 +192,11 @@
     return slug === 'index' ? '/' : `/docs/${slug}`;
   }
 
+  function displaySlug(slug: string) {
+    if (slug === 'opal-mcp-agent-playbook' || slug === 'opal-mcp-playbook') return 'mcp';
+    return slug;
+  }
+
   function activeIndexIn(list: DocPage[]) {
     const index = list.findIndex((doc) => doc.slug === currentSlug);
     return index >= 0 ? index : 0;
@@ -331,6 +336,13 @@
     }
 
     if (showCloudflavorDialog) return;
+
+    if (event.key === 'Escape' && (showMenu || showAnchors)) {
+      event.preventDefault();
+      showMenu = false;
+      showAnchors = false;
+      return;
+    }
 
     if (event.key === 'H') {
       event.preventDefault();
@@ -479,10 +491,21 @@
   class:anchors-open={showAnchors}
   aria-label="Opal docs interface"
 >
+  <button
+    type="button"
+    class="mobile-overlay"
+    class:visible={showMenu || showAnchors}
+    aria-label="Close side panes"
+    onclick={() => {
+      showMenu = false;
+      showAnchors = false;
+    }}
+  ></button>
+
   {#if showMenu}
-    <aside class="pane menu-pane" aria-label="History sidebar">
+    <aside class="pane menu-pane" aria-label="Menu sidebar">
       <div class="menu-head">
-        <p class="pane-title">history</p>
+        <p class="pane-title">menu</p>
         <p class="pane-title">H to close</p>
       </div>
       <nav class="menu-list" aria-label="Documents">
@@ -564,7 +587,7 @@
             onclick={() => goto(hrefFor(doc.slug))}
           >
             <span class="tab-marker">{doc.slug === currentSlug ? '›' : '·'}</span>
-            <span class="tab-name">{doc.slug}</span>
+            <span class="tab-name">{displaySlug(doc.slug)}</span>
           </button>
         {/each}
         {#if !docs.length}
@@ -574,7 +597,9 @@
     </header>
 
     <main class="pane content-pane" aria-label="Content" bind:this={contentPane}>
-      {@render children()}
+      <div class="content-inner">
+        {@render children()}
+      </div>
     </main>
 
     <footer class="pane shortcuts" aria-label="Keyboard shortcuts">
@@ -602,7 +627,7 @@
         </button>
         <button type="button" class="shortcut" onclick={() => (showCloudflavorDialog = !showCloudflavorDialog)}>
           <span class="key">?</span>
-          <span class="label">cloudflavor</span>
+          <span class="label">about</span>
         </button>
         <button type="button" class="shortcut" onclick={() => scrollContentBy(scrollStep())}>
           <span class="key">j/k</span>
@@ -620,7 +645,7 @@
     <aside class="pane right-pane" aria-label="On this page">
       <div class="right-head">
         <p class="pane-title">anchors</p>
-        <p class="right-context">{currentDoc?.slug ?? 'index'}</p>
+        <p class="right-context">{displaySlug(currentDoc?.slug ?? 'index')}</p>
         <p class="right-hint">Y to close</p>
       </div>
 
@@ -694,6 +719,7 @@ Visit: https://cloudflavor.io</pre>
     --scroll-track: color-mix(in srgb, var(--pane-bg) 70%, transparent);
     --scroll-thumb: color-mix(in srgb, var(--pane-border) 72%, var(--pane-bg));
     --scroll-thumb-hover: color-mix(in srgb, var(--accent) 32%, var(--pane-border));
+    --frame-max-width: 1260px;
   }
 
   :global(html[data-theme='dark']) {
@@ -756,7 +782,9 @@ Visit: https://cloudflavor.io</pre>
   }
 
   .tui-shell {
-    height: 100vh;
+    position: relative;
+    height: 100dvh;
+    min-height: 100dvh;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 1px;
@@ -766,26 +794,33 @@ Visit: https://cloudflavor.io</pre>
     overflow: hidden;
   }
 
-  .tui-shell.menu-open {
-    grid-template-columns: clamp(240px, 22vw, 340px) minmax(0, 1fr);
+  .mobile-overlay {
+    position: fixed;
+    inset: 1px;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: color-mix(in srgb, var(--app-bg) 65%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 18;
   }
 
-  .tui-shell.anchors-open {
-    grid-template-columns: minmax(0, 1fr) clamp(250px, 27vw, 360px);
-  }
-
-  .tui-shell.menu-open.anchors-open {
-    grid-template-columns: clamp(240px, 22vw, 340px) minmax(0, 1fr) clamp(250px, 27vw, 360px);
+  .mobile-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .menu-pane {
-    grid-column: 1;
-    grid-row: 1;
-    height: calc(100vh - 2px);
+    position: fixed;
+    inset: 1px auto 1px 1px;
+    width: min(88vw, 22rem);
+    z-index: 30;
     display: grid;
     grid-template-rows: auto 1fr;
     gap: 0.4rem;
     overflow: hidden;
+    box-shadow: 0 0 0 1px var(--pane-border), 10px 0 28px color-mix(in srgb, var(--app-bg) 72%, transparent);
   }
 
   .menu-head {
@@ -853,7 +888,7 @@ Visit: https://cloudflavor.io</pre>
     grid-column: 1;
     grid-row: 1;
     min-width: 0;
-    height: calc(100vh - 2px);
+    height: calc(100dvh - 2px);
     display: grid;
     grid-template-rows: auto 1fr auto;
     gap: 1px;
@@ -861,35 +896,41 @@ Visit: https://cloudflavor.io</pre>
     overflow: hidden;
   }
 
-  .tui-shell.menu-open .center-stack {
-    grid-column: 2;
-  }
-
   .top-tabs {
-    display: grid;
-    gap: 0.45rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.85rem;
   }
 
   .top-row {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'left right'
+      'search search';
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.45rem;
+    width: min(100%, var(--frame-max-width));
+    margin-bottom: 0.35rem;
   }
 
   .top-left {
+    grid-area: left;
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    justify-self: start;
+    min-width: 0;
   }
 
   .top-right {
+    grid-area: right;
     justify-self: end;
   }
 
   .search {
-    justify-self: center;
+    grid-area: search;
+    min-width: 0;
   }
 
   .search input {
@@ -899,8 +940,7 @@ Visit: https://cloudflavor.io</pre>
     color: var(--text);
     padding: 0.18rem 0.42rem;
     font: inherit;
-    min-width: 13rem;
-    width: min(44vw, 36rem);
+    width: 100%;
   }
 
   .search-results {
@@ -911,6 +951,7 @@ Visit: https://cloudflavor.io</pre>
     overflow: auto;
     display: grid;
     gap: 0.32rem;
+    width: min(100%, var(--frame-max-width));
   }
 
   .search-results ul {
@@ -970,10 +1011,14 @@ Visit: https://cloudflavor.io</pre>
     display: flex;
     flex-wrap: wrap;
     gap: 0;
-    overflow: visible;
+    overflow: auto;
     white-space: normal;
     align-items: center;
-    row-gap: 0.2rem;
+    row-gap: 0.25rem;
+    align-content: flex-start;
+    justify-content: flex-start;
+    width: min(100%, var(--frame-max-width));
+    margin-top: 0.35rem;
   }
 
   .tab {
@@ -1013,17 +1058,32 @@ Visit: https://cloudflavor.io</pre>
   .content-pane {
     overflow: auto;
     min-height: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+  }
+
+  .content-inner {
+    width: min(100%, var(--frame-max-width));
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .shortcuts {
     display: grid;
     gap: 0.35rem;
+    justify-items: center;
   }
 
   .shortcut-row {
     display: flex;
     gap: 0.35rem;
     flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    width: min(100%, var(--frame-max-width));
   }
 
   .shortcut {
@@ -1050,23 +1110,15 @@ Visit: https://cloudflavor.io</pre>
   }
 
   .right-pane {
-    grid-row: 1;
-    position: sticky;
-    top: 1px;
-    height: calc(100vh - 2px);
-    align-self: start;
+    position: fixed;
+    inset: 1px 1px 1px auto;
+    width: min(84vw, 20rem);
+    z-index: 29;
     display: grid;
     grid-template-rows: auto 1fr;
     padding: 0;
     overflow: hidden;
-  }
-
-  .tui-shell.anchors-open:not(.menu-open) .right-pane {
-    grid-column: 2;
-  }
-
-  .tui-shell.menu-open.anchors-open .right-pane {
-    grid-column: 3;
+    box-shadow: 0 0 0 1px var(--pane-border), -10px 0 28px color-mix(in srgb, var(--app-bg) 72%, transparent);
   }
 
   .right-head {
@@ -1232,65 +1284,111 @@ Visit: https://cloudflavor.io</pre>
     font-size: 0.84rem;
   }
 
-  @media (max-width: 1280px) {
-    .search input {
-      min-width: 10rem;
-      width: min(42vw, 28rem);
-    }
-  }
-
-  @media (max-width: 980px) {
-    :global(html, body) {
-      overflow: auto;
+  @media (min-width: 981px) {
+    .mobile-overlay {
+      display: none;
     }
 
-    .tui-shell,
-    .tui-shell.menu-open,
-    .tui-shell.anchors-open,
+    .tui-shell {
+      height: 100vh;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .tui-shell.menu-open {
+      grid-template-columns: clamp(240px, 22vw, 340px) minmax(0, 1fr);
+    }
+
+    .tui-shell.anchors-open {
+      grid-template-columns: minmax(0, 1fr) clamp(250px, 27vw, 360px);
+    }
+
     .tui-shell.menu-open.anchors-open {
-      height: auto;
-      grid-template-columns: 1fr;
-      overflow: visible;
+      grid-template-columns: clamp(240px, 22vw, 340px) minmax(0, 1fr) clamp(250px, 27vw, 360px);
+    }
+
+    .menu-pane {
+      position: static;
+      inset: auto;
+      width: auto;
+      grid-column: 1;
+      grid-row: 1;
+      height: calc(100vh - 2px);
+      box-shadow: none;
     }
 
     .center-stack {
-      grid-column: 1;
-      height: auto;
-      grid-template-rows: auto minmax(380px, 1fr) auto;
-      overflow: visible;
+      height: calc(100vh - 2px);
     }
 
-    .menu-pane,
-    .right-pane {
-      grid-column: 1;
-      grid-row: auto;
-      position: static;
-      height: auto;
-      overflow: visible;
-    }
-
-    .content-pane {
-      min-height: 0;
+    .tui-shell.menu-open .center-stack {
+      grid-column: 2;
     }
 
     .top-row {
-      grid-template-columns: 1fr;
-      justify-items: start;
+      grid-template-columns: 1fr auto 1fr;
+      grid-template-areas: 'left search right';
+      gap: 0.6rem;
+      margin-bottom: 0.2rem;
     }
 
-    .search,
-    .top-right {
-      justify-self: start;
+    .search {
+      justify-self: center;
     }
 
     .search input {
-      width: min(92vw, 26rem);
+      min-width: 13rem;
+      width: min(44vw, 36rem);
+    }
+
+    .tab-strip {
+      overflow: visible;
     }
 
     .right-pane {
-      position: static;
-      height: auto;
-      max-height: 50vh;
+      position: sticky;
+      inset: auto;
+      top: 1px;
+      width: auto;
+      height: calc(100vh - 2px);
+      align-self: start;
+      box-shadow: none;
+    }
+
+    .tui-shell.anchors-open:not(.menu-open) .right-pane {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .tui-shell.menu-open.anchors-open .right-pane {
+      grid-column: 3;
+      grid-row: 1;
+    }
+  }
+
+  @media (min-width: 1281px) {
+    .search input {
+      width: min(42vw, 36rem);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .pane {
+      padding: 5px;
+    }
+
+    .top-left {
+      gap: 0.3rem;
+    }
+
+    .shortcut-row {
+      gap: 0.28rem;
+    }
+
+    .shortcut {
+      padding: 0.12rem 0.32rem;
+      font-size: 0.83rem;
+      gap: 0.18rem;
     }
   }
 </style>
