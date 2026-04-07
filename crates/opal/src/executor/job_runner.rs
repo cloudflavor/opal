@@ -22,6 +22,12 @@ struct JobRunRequest<'a> {
     ui: Option<&'a UiBridge>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RuntimeObjectsData {
+    service_network: Option<String>,
+    service_containers: Vec<String>,
+}
+
 pub(crate) fn run_planned_job(
     exec: &ExecutorCore,
     runtime_handle: &Handle,
@@ -87,12 +93,12 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
     let mut prepared = runtime_handle.block_on(exec.prepare_job_run(plan, job))?;
     let container_name = run_info.container_name.clone();
     let exec_result = exec.execute(execute_context(
-        exec,
         &prepared,
         job,
         &container_name,
         log_path,
         ui,
+        exec.config.settings.preserve_runtime_objects(),
     ));
 
     record_runtime_objects(exec, job, &container_name, &prepared)?;
@@ -109,12 +115,12 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
 }
 
 fn execute_context<'a>(
-    exec: &'a ExecutorCore,
     prepared: &'a crate::executor::core::PreparedJobRun,
     job: &'a crate::model::JobSpec,
     container_name: &'a str,
     log_path: &'a Path,
     ui: Option<&'a UiBridge>,
+    preserve_runtime_objects: bool,
 ) -> ExecuteContext<'a> {
     ExecuteContext {
         host_workdir: &prepared.host_workdir,
@@ -133,7 +139,7 @@ fn execute_context<'a>(
             .service_runtime
             .as_ref()
             .map(|runtime| runtime.network_name()),
-        preserve_runtime_objects: exec.config.settings.preserve_runtime_objects(),
+        preserve_runtime_objects,
         arch: prepared.arch.as_deref(),
         privileged: prepared.privileged,
         cap_add: &prepared.cap_add,
@@ -147,32 +153,40 @@ fn record_runtime_objects(
     container_name: &str,
     prepared: &crate::executor::core::PreparedJobRun,
 ) -> Result<()> {
-    let service_network = prepared
-        .service_runtime
-        .as_ref()
-        .map(|runtime| runtime.network_name().to_string());
-    let service_containers = prepared
-        .service_runtime
-        .as_ref()
-        .map(|runtime| runtime.container_names().to_vec())
-        .unwrap_or_default();
-    let runtime_summary_path = exec.write_runtime_summary(
-        &job.name,
-        container_name,
+    let runtime_data = runtime_objects_data(
         prepared
             .service_runtime
             .as_ref()
             .map(|runtime| runtime.network_name()),
-        &service_containers,
+        prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.container_names()),
+    );
+    let runtime_summary_path = exec.write_runtime_summary(
+        &job.name,
+        container_name,
+        runtime_data.service_network.as_deref(),
+        &runtime_data.service_containers,
     )?;
     exec.record_runtime_objects(
         &job.name,
         container_name.to_string(),
-        service_network,
-        service_containers,
+        runtime_data.service_network,
+        runtime_data.service_containers,
         runtime_summary_path,
     );
     Ok(())
+}
+
+fn runtime_objects_data(
+    service_network: Option<&str>,
+    service_containers: Option<&[String]>,
+) -> RuntimeObjectsData {
+    RuntimeObjectsData {
+        service_network: service_network.map(str::to_string),
+        service_containers: service_containers.map_or_else(Vec::new, |names| names.to_vec()),
+    }
 }
 
 fn cleanup_runtime(
@@ -279,6 +293,10 @@ fn enrich_failure_with_log_hint(result: Result<()>, log_path: &Path) -> Result<(
 
 fn failure_hint_from_log(log_path: &Path) -> Option<&'static str> {
     let tail = read_log_tail(log_path, 32 * 1024)?;
+    failure_hint_from_text(&tail)
+}
+
+fn failure_hint_from_text(tail: &str) -> Option<&'static str> {
     if tail.contains("error: rustup could not choose a version of rustc to run")
         && tail.contains("no default is configured")
     {
@@ -419,12 +437,15 @@ fn is_script_failure(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_job_event, classify_failure, completion_result, extract_exit_code, ui_completion,
+        build_job_event, classify_failure, completion_result, execute_context, extract_exit_code,
+        failure_hint_from_text, runtime_objects_data, ui_completion,
     };
+    use crate::model::{ArtifactSpec, ImageSpec, JobSpec, RetryPolicySpec};
     use crate::pipeline::JobFailureKind;
+    use crate::pipeline::VolumeMount;
     use crate::ui::UiJobStatus;
     use anyhow::anyhow;
-    use std::fs;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -437,28 +458,14 @@ mod tests {
     }
 
     #[test]
-    fn completion_result_adds_rustup_hint_from_log() {
-        let temp_root = temp_path("job-run-rustup-hint");
-        fs::create_dir_all(&temp_root).expect("create temp root");
-        let log_path = temp_root.join("job.log");
-        fs::write(
-            &log_path,
+    fn failure_hint_from_text_detects_rustup_hint() {
+        let hint = failure_hint_from_text(
             "[fetch-sources] error: rustup could not choose a version of rustc to run, because one wasn't specified explicitly, and no default is configured.\nhelp: run 'rustup default stable' to download the latest stable release of Rust and set it as your default toolchain.\n",
-        )
-        .expect("write log");
+        );
 
-        let result = completion_result(
-            Err(anyhow!("container command exited with status Some(1)")),
-            false,
-            &log_path,
-        )
-        .expect_err("rustup failure should remain an error");
-        let message = result.to_string();
-        assert!(message.contains("container command exited with status Some(1)"));
-        assert!(message.contains("RUSTUP_HOME"));
-        assert!(message.contains("cold branch/tag cache key"));
-
-        let _ = fs::remove_dir_all(temp_root);
+        let hint = hint.expect("rustup failure should produce a hint");
+        assert!(hint.contains("RUSTUP_HOME"));
+        assert!(hint.contains("cold branch/tag cache key"));
     }
 
     #[test]
@@ -593,11 +600,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn execute_context_maps_prepared_job_fields() {
+        let job = job("test");
+        let log_path = PathBuf::from("/tmp/test.log");
+        let host_workdir = PathBuf::from("/tmp/workdir");
+        let script_path = PathBuf::from("/tmp/script.sh");
+        let mounts = vec![VolumeMount {
+            host: PathBuf::from("/tmp/host"),
+            container: PathBuf::from("/workspace/host"),
+            read_only: true,
+        }];
+        let env_vars = vec![("KEY".to_string(), "VALUE".to_string())];
+        let job_image = ImageSpec {
+            name: "rust:1.85".to_string(),
+            docker_platform: Some("linux/arm64".to_string()),
+            docker_user: Some("1000:1000".to_string()),
+            entrypoint: vec!["/bin/sh".to_string()],
+        };
+        let prepared = crate::executor::core::PreparedJobRun {
+            host_workdir,
+            env_vars,
+            service_runtime: None,
+            mounts,
+            job_image,
+            arch: Some("aarch64".to_string()),
+            privileged: true,
+            cap_add: vec!["NET_ADMIN".to_string()],
+            cap_drop: vec!["MKNOD".to_string()],
+            script_path,
+        };
+
+        let ctx = execute_context(&prepared, &job, "opal-job-01", &log_path, None, false);
+
+        assert_eq!(ctx.host_workdir, PathBuf::from("/tmp/workdir").as_path());
+        assert_eq!(ctx.script_path, PathBuf::from("/tmp/script.sh").as_path());
+        assert_eq!(ctx.log_path, PathBuf::from("/tmp/test.log").as_path());
+        assert_eq!(ctx.mounts.len(), 1);
+        assert_eq!(ctx.image, "rust:1.85");
+        assert_eq!(ctx.image_platform, Some("linux/arm64"));
+        assert_eq!(ctx.image_user, Some("1000:1000"));
+        assert_eq!(ctx.image_entrypoint, ["/bin/sh".to_string()]);
+        assert_eq!(ctx.container_name, "opal-job-01");
+        assert_eq!(ctx.job.name, "test");
+        assert_eq!(ctx.env_vars, [("KEY".to_string(), "VALUE".to_string())]);
+        assert_eq!(ctx.network, None);
+        assert!(!ctx.preserve_runtime_objects);
+        assert_eq!(ctx.arch, Some("aarch64"));
+        assert!(ctx.privileged);
+        assert_eq!(ctx.cap_add, ["NET_ADMIN".to_string()]);
+        assert_eq!(ctx.cap_drop, ["MKNOD".to_string()]);
+    }
+
+    #[test]
+    fn runtime_objects_data_copies_runtime_metadata() {
+        let containers = vec!["svc-db".to_string(), "svc-cache".to_string()];
+        let data = runtime_objects_data(Some("opal-net"), Some(&containers));
+
+        assert_eq!(data.service_network.as_deref(), Some("opal-net"));
+        assert_eq!(data.service_containers, containers);
+    }
+
+    #[test]
+    fn runtime_objects_data_defaults_when_no_services_exist() {
+        let data = runtime_objects_data(None, None);
+
+        assert_eq!(data.service_network, None);
+        assert!(data.service_containers.is_empty());
+    }
+
     fn temp_path(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("opal-{prefix}-{nanos}"))
+    }
+
+    fn job(name: &str) -> JobSpec {
+        JobSpec {
+            name: name.into(),
+            stage: "test".into(),
+            commands: vec!["true".into()],
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_image: true,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            inherit_default_cache: true,
+            inherit_default_services: true,
+            inherit_default_timeout: true,
+            inherit_default_retry: true,
+            inherit_default_interruptible: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::new(),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        }
     }
 }
