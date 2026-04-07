@@ -43,6 +43,16 @@
 - For Rust-only changes, treat `rust-checks` as the default validation entry point unless the change clearly requires additional jobs such as `unit-tests`, `extended-tests`, `e2e-tests`, or `ui-docs-check`.
 - If direct commands are used for fast local iteration, still confirm the relevant pipeline slice through Opal MCP before considering the task complete.
 
+## GitHub Review Workflow
+
+- When the task is to address GitHub pull request review feedback, use GitHub MCP to pull the requested changes and review comments first.
+- Treat each actionable review thread or change request as a separate concern and address it individually in code or with a direct reply.
+- After each meaningful fix, rerun the relevant Opal MCP validation slice for that change. Use `rust-checks` by default for Rust-only changes unless a narrower or broader slice is clearly required.
+- Do not commit review-driven code changes until the relevant Opal MCP validation is green.
+- Once validation is green, create the necessary commits locally and publish them with `git push`.
+- After the updated commits are published, mark each addressed GitHub review thread as resolved.
+- Do not mark a review thread as resolved if the code or validation result does not clearly satisfy the concern.
+
 ## Decision Standard
 
 - Prefer behavior that reduces surprising local-vs-GitLab differences for common repository pipelines.
