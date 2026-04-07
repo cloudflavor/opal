@@ -13,7 +13,19 @@ impl PipelineSpec {
     }
 
     pub fn from_path_with_gitlab(path: &Path, gitlab: Option<&GitLabRemoteConfig>) -> Result<Self> {
-        let graph = PipelineGraph::from_path_with_gitlab(path, gitlab)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(Self::from_path_with_gitlab_async(path, gitlab))
+    }
+
+    pub async fn from_path_async(path: &Path) -> Result<Self> {
+        Self::from_path_with_gitlab_async(path, None).await
+    }
+
+    pub async fn from_path_with_gitlab_async(
+        path: &Path,
+        gitlab: Option<&GitLabRemoteConfig>,
+    ) -> Result<Self> {
+        let graph = PipelineGraph::from_path_with_gitlab_async(path, gitlab).await?;
         Self::try_from(&graph)
     }
 }

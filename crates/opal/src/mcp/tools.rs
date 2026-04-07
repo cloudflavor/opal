@@ -209,7 +209,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
 
     match name {
         "opal_plan" => {
-            let rendered = render_plan(app, plan_args_from_value(arguments)?)?;
+            let rendered = render_plan(app, plan_args_from_value(arguments)?).await?;
             Ok(tool_result(
                 rendered.content,
                 json!({
@@ -226,7 +226,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
         "opal_run_diff" => Ok(run_diff_tool(app, arguments).await?),
         "opal_logs_search" => Ok(logs_search_tool(app, arguments).await),
         "opal_job_rerun" => Ok(job_rerun_tool(app, arguments).await),
-        "opal_plan_explain" => Ok(plan_explain_tool(app, arguments)?),
+        "opal_plan_explain" => Ok(plan_explain_tool(app, arguments).await?),
         "opal_engine_status" => Ok(engine_status_tool(app, arguments).await?),
         other => Ok(error_tool_result(
             format!("unknown tool: {other}"),
@@ -640,13 +640,13 @@ async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
     )
 }
 
-fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
+async fn plan_explain_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
     let job = arguments
         .get("job")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .context("missing job")?;
-    let explanation = explain_plan(app, plan_args_from_value(arguments)?, &job)?;
+    let explanation = explain_plan(app, plan_args_from_value(arguments)?, &job).await?;
     Ok(tool_result(
         explanation.summary,
         json!(explanation.details),

@@ -28,7 +28,7 @@ impl OpalApp {
     pub async fn run_command(&self, command: Commands) -> Result<()> {
         match command {
             Commands::Run(args) => run::execute(self, args).await,
-            Commands::Plan(args) => plan::execute(self, args),
+            Commands::Plan(args) => plan::execute(self, args).await,
             Commands::View(args) => view::execute(self, args).await,
             Commands::Completions(args) => completions::execute(args),
             Commands::Mcp(_) => crate::mcp::serve_stdio().await,

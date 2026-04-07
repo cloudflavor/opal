@@ -20,6 +20,25 @@ pub fn build_include_lookup(
 }
 
 pub fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
+    collect_env_vars_matching(patterns, env::vars())
+}
+
+pub fn collect_env_vars_from(
+    patterns: &[String],
+    source: &HashMap<String, String>,
+) -> Result<Vec<(String, String)>> {
+    collect_env_vars_matching(patterns, source.iter())
+}
+
+fn collect_env_vars_matching<I, K, V>(
+    patterns: &[String],
+    source: I,
+) -> Result<Vec<(String, String)>>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
     if patterns.is_empty() {
         return Ok(Vec::new());
     }
@@ -32,8 +51,10 @@ pub fn collect_env_vars(patterns: &[String]) -> Result<Vec<(String, String)>> {
     }
     let matcher = builder.build()?;
 
-    let vars = env::vars()
-        .filter(|(key, _)| matcher.is_match(key))
+    let vars = source
+        .into_iter()
+        .filter(|(key, _)| matcher.is_match(key.as_ref()))
+        .map(|(key, value)| (key.as_ref().to_string(), value.as_ref().to_string()))
         .collect();
     Ok(vars)
 }

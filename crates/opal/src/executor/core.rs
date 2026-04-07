@@ -17,7 +17,7 @@ use crate::ai::{
 use crate::app::context::history_scope_root;
 use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
-use crate::env::{build_job_env, collect_env_vars, expand_env_list};
+use crate::env::{build_job_env, expand_env_list};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan, build_execution_plan};
 use crate::executor::container_arch::{container_arch_from_platform, normalize_container_arch};
 use crate::history::{HistoryCache, HistoryEntry};
@@ -84,51 +84,35 @@ struct JobResourceInfo {
     env_vars: Vec<String>,
 }
 
+struct ExecutorDirectories {
+    session_dir: PathBuf,
+    scripts_dir: PathBuf,
+    logs_dir: PathBuf,
+}
+
+struct ExecutorEnvState {
+    use_color: bool,
+    verbose_scripts: bool,
+    env_vars: Vec<(String, String)>,
+    shared_env: HashMap<String, String>,
+}
+
 impl ExecutorCore {
-    // TODO: this shit does way too much, hard to test if you add fs::create inside of it
     pub async fn new(config: ExecutorConfig) -> Result<Self> {
         let pipeline =
-            PipelineSpec::from_path_with_gitlab(&config.pipeline, config.gitlab.as_ref())?;
+            PipelineSpec::from_path_with_gitlab_async(&config.pipeline, config.gitlab.as_ref())
+                .await?;
         let run_id = generate_run_id(&config);
-        let runs_root = runtime::runs_root();
-        tokio_fs::create_dir_all(&runs_root)
-            .await
-            .with_context(|| format!("failed to create {:?}", runs_root))?;
-
-        let session_dir = runtime::session_dir(&run_id);
-        if tokio_fs::try_exists(&session_dir).await.unwrap_or(false) {
-            tokio_fs::remove_dir_all(&session_dir)
-                .await
-                .with_context(|| format!("failed to clean {:?}", session_dir))?;
-        }
-        tokio_fs::create_dir_all(&session_dir)
-            .await
-            .with_context(|| format!("failed to create {:?}", session_dir))?;
-
-        let scripts_dir = session_dir.join("scripts");
-        tokio_fs::create_dir_all(&scripts_dir)
-            .await
-            .with_context(|| format!("failed to create {:?}", scripts_dir))?;
-
-        let logs_dir = runtime::logs_dir(&run_id);
-        tokio_fs::create_dir_all(&logs_dir)
-            .await
-            .with_context(|| format!("failed to create {:?}", logs_dir))?;
+        let directories = prepare_executor_directories(&run_id).await?;
 
         let history_store = history_store::HistoryStore::load(runtime::history_path());
 
-        let use_color = should_use_color();
-        let env_verbose = env::var_os("OPAL_DEBUG")
-            .map(|val| {
-                let s = val.to_string_lossy();
-                s == "1" || s.eq_ignore_ascii_case("true")
-            })
-            .unwrap_or(false);
-        let verbose_scripts = config.trace_scripts || env_verbose;
-        let mut env_vars = collect_env_vars(&config.env_includes)?;
-        let mut shared_env: HashMap<String, String> = env::vars().collect();
-        expand_env_list(&mut env_vars[..], &shared_env);
-        shared_env.extend(env_vars.iter().cloned());
+        let ExecutorEnvState {
+            use_color,
+            verbose_scripts,
+            env_vars,
+            mut shared_env,
+        } = build_executor_env(&config)?;
         let stage_specs: Vec<(String, usize)> = pipeline
             .stages
             .iter()
@@ -138,7 +122,7 @@ impl ExecutorCore {
 
         let secrets = SecretsStore::load_async(&config.workdir).await?;
         shared_env.extend(secrets.env_pairs());
-        let artifacts = ArtifactManager::new(session_dir.clone());
+        let artifacts = ArtifactManager::new(directories.session_dir.clone());
         let cache_root = runtime::cache_root();
         tokio_fs::create_dir_all(&cache_root)
             .await
@@ -146,7 +130,7 @@ impl ExecutorCore {
         let cache = CacheManager::new(cache_root);
         let external_artifacts = config.gitlab.as_ref().map(|cfg| {
             ExternalArtifactsManager::new(
-                session_dir.clone(),
+                directories.session_dir.clone(),
                 cfg.base_url.clone(),
                 cfg.token.clone(),
             )
@@ -163,9 +147,9 @@ impl ExecutorCore {
             config,
             pipeline,
             use_color,
-            scripts_dir,
-            logs_dir,
-            session_dir,
+            scripts_dir: directories.scripts_dir,
+            logs_dir: directories.logs_dir,
+            session_dir: directories.session_dir,
             container_session_dir,
             run_id,
             verbose_scripts,
@@ -1105,6 +1089,84 @@ impl ExecutorCore {
     }
 }
 
+async fn prepare_executor_directories(run_id: &str) -> Result<ExecutorDirectories> {
+    prepare_executor_directories_at(&runtime::runs_root(), run_id).await
+}
+
+async fn prepare_executor_directories_at(
+    runs_root: &Path,
+    run_id: &str,
+) -> Result<ExecutorDirectories> {
+    tokio_fs::create_dir_all(&runs_root)
+        .await
+        .with_context(|| format!("failed to create {:?}", runs_root))?;
+
+    let session_dir = runs_root.join(run_id);
+    if tokio_fs::try_exists(&session_dir).await.unwrap_or(false) {
+        tokio_fs::remove_dir_all(&session_dir)
+            .await
+            .with_context(|| format!("failed to clean {:?}", session_dir))?;
+    }
+    tokio_fs::create_dir_all(&session_dir)
+        .await
+        .with_context(|| format!("failed to create {:?}", session_dir))?;
+
+    let scripts_dir = session_dir.join("scripts");
+    tokio_fs::create_dir_all(&scripts_dir)
+        .await
+        .with_context(|| format!("failed to create {:?}", scripts_dir))?;
+
+    let logs_dir = session_dir.join("logs");
+    tokio_fs::create_dir_all(&logs_dir)
+        .await
+        .with_context(|| format!("failed to create {:?}", logs_dir))?;
+
+    Ok(ExecutorDirectories {
+        session_dir,
+        scripts_dir,
+        logs_dir,
+    })
+}
+
+fn build_executor_env(config: &ExecutorConfig) -> Result<ExecutorEnvState> {
+    let use_color = should_use_color();
+    let env_verbose = env::var_os("OPAL_DEBUG")
+        .map(|val| {
+            let s = val.to_string_lossy();
+            s == "1" || s.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false);
+    let shared_env: HashMap<String, String> = env::vars().collect();
+    build_executor_env_from(config, use_color, env_verbose, shared_env)
+}
+
+fn build_executor_env_from(
+    config: &ExecutorConfig,
+    use_color: bool,
+    env_verbose: bool,
+    mut shared_env: HashMap<String, String>,
+) -> Result<ExecutorEnvState> {
+    let verbose_scripts = config.trace_scripts || env_verbose;
+    let mut env_vars = crate::env::collect_env_vars_from(&config.env_includes, &shared_env)?;
+    expand_env_list(&mut env_vars[..], &shared_env);
+    for (key, value) in &env_vars {
+        if let Some(existing) = shared_env.get_mut(key) {
+            if existing != value {
+                *existing = value.clone();
+            }
+        } else {
+            shared_env.insert(key.clone(), value.clone());
+        }
+    }
+
+    Ok(ExecutorEnvState {
+        use_color,
+        verbose_scripts,
+        env_vars,
+        shared_env,
+    })
+}
+
 fn recorded_pipeline_file(workdir: &Path, pipeline: &Path) -> String {
     pipeline
         .strip_prefix(workdir)
@@ -1146,5 +1208,102 @@ fn cache_policy_label(policy: CachePolicySpec) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    // ExecutorCore-specific unit coverage lives in child modules while phase 3 extraction continues.
+    use super::{ExecutorEnvState, build_executor_env_from, prepare_executor_directories_at};
+    use crate::{EngineKind, ExecutorConfig, config::OpalConfig};
+    use anyhow::Result;
+    use std::fs;
+    use std::{collections::HashMap, path::PathBuf};
+    use tempfile::tempdir;
+
+    fn test_config() -> ExecutorConfig {
+        ExecutorConfig {
+            image: None,
+            workdir: PathBuf::from("/tmp/workdir"),
+            pipeline: PathBuf::from("/tmp/workdir/.gitlab-ci.yml"),
+            env_includes: Vec::new(),
+            selected_jobs: Vec::new(),
+            max_parallel_jobs: 1,
+            enable_tui: false,
+            emit_console_output: false,
+            engine: EngineKind::Docker,
+            gitlab: None,
+            settings: OpalConfig::default(),
+            trace_scripts: false,
+        }
+    }
+
+    #[test]
+    fn build_executor_env_uses_explicit_host_variables() -> Result<()> {
+        let mut config = test_config();
+        config.env_includes = vec!["APP_*".to_string()];
+        config.trace_scripts = true;
+
+        let host_env = HashMap::from([
+            ("APP_TOKEN".to_string(), "secret".to_string()),
+            ("HOME".to_string(), "/tmp/home".to_string()),
+        ]);
+        let ExecutorEnvState {
+            use_color,
+            verbose_scripts,
+            env_vars,
+            shared_env,
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert!(!use_color);
+        assert!(verbose_scripts);
+        assert_eq!(
+            env_vars,
+            vec![("APP_TOKEN".to_string(), "secret".to_string())]
+        );
+        assert_eq!(
+            shared_env.get("APP_TOKEN").map(String::as_str),
+            Some("secret")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_executor_env_expands_selected_values_in_place() -> Result<()> {
+        let mut config = test_config();
+        config.env_includes = vec!["APP_*".to_string()];
+
+        let host_env = HashMap::from([
+            ("APP_CONFIG".to_string(), "$HOME/.config".to_string()),
+            ("HOME".to_string(), "/tmp/home".to_string()),
+        ]);
+        let ExecutorEnvState {
+            env_vars,
+            shared_env,
+            ..
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert_eq!(
+            env_vars,
+            vec![("APP_CONFIG".to_string(), "/tmp/home/.config".to_string())]
+        );
+        assert_eq!(
+            shared_env.get("APP_CONFIG").map(String::as_str),
+            Some("/tmp/home/.config")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepare_executor_directories_recreates_session_tree() -> Result<()> {
+        let temp_home = tempdir()?;
+        let run_id = "executor-core-test-run";
+
+        let session_dir = temp_home.path().join(run_id);
+        fs::create_dir_all(&session_dir)?;
+        fs::write(session_dir.join("stale.txt"), "stale")?;
+
+        let directories = prepare_executor_directories_at(temp_home.path(), run_id).await?;
+
+        assert_eq!(directories.session_dir, session_dir);
+        assert!(directories.session_dir.is_dir());
+        assert!(directories.scripts_dir.is_dir());
+        assert!(directories.logs_dir.is_dir());
+        assert!(!directories.session_dir.join("stale.txt").exists());
+        Ok(())
+    }
 }
