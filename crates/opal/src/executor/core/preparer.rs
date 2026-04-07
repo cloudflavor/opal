@@ -37,6 +37,7 @@ pub(super) fn prepare_job_run(
         &job.name,
         &service_configs,
         &env_vars,
+        exec.config.settings.preserve_runtime_objects(),
         &exec.shared_env,
     )?;
     if let Some(runtime) = service_runtime.as_ref() {

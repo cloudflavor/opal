@@ -16,11 +16,16 @@ const SERVICE_READY_POLL_MS: u64 = 250;
 pub(super) struct ServiceReadinessProbe {
     engine: EngineKind,
     network: String,
+    preserve_runtime_objects: bool,
 }
 
 impl ServiceReadinessProbe {
-    pub(super) fn new(engine: EngineKind, network: String) -> Self {
-        Self { engine, network }
+    pub(super) fn new(engine: EngineKind, network: String, preserve_runtime_objects: bool) -> Self {
+        Self {
+            engine,
+            network,
+            preserve_runtime_objects,
+        }
     }
 
     pub(super) fn wait_for(
@@ -45,57 +50,40 @@ impl ServiceReadinessProbe {
                     return Ok(());
                 }
             };
+            let ready_check = ReadyCheck {
+                inspector,
+                container_name,
+                service,
+                ports,
+                started,
+                timeout,
+            };
 
             match readiness_from_state(&state) {
-                ServiceReadiness::Ready => {
-                    if state.health.is_none() {
-                        if !ports.is_empty() {
-                            let Some(ip) = inspector.ipv4(container_name) else {
-                                if started.elapsed() >= timeout {
-                                    return Err(anyhow!(
-                                        "service '{}' ({}) did not expose a reachable IP within {}s",
-                                        container_name,
-                                        service.image,
-                                        timeout.as_secs()
-                                    ));
-                                }
-                                thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
-                                continue;
-                            };
-                            if probe_service_ports(self.engine, &self.network, &ip, ports)? {
-                                return Ok(());
-                            }
-                            if started.elapsed() >= timeout {
-                                return Err(anyhow!(
-                                    "service '{}' ({}) did not accept connections on exposed ports within {}s",
-                                    container_name,
-                                    service.image,
-                                    timeout.as_secs()
-                                ));
-                            }
-                            thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
-                            continue;
-                        }
-                        if !confirmed_running_without_health {
-                            confirmed_running_without_health = true;
-                            thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
-                            continue;
-                        }
+                ServiceReadiness::Ready => match self
+                    .await_ready_service(&ready_check, confirmed_running_without_health)?
+                {
+                    ReadinessPoll::Ready => return Ok(()),
+                    ReadinessPoll::Retry {
+                        confirmed_running_without_health: confirmed,
+                    } => {
+                        confirmed_running_without_health = confirmed;
+                        continue;
                     }
-                    return Ok(());
-                }
+                },
                 ServiceReadiness::Waiting(detail) => {
                     confirmed_running_without_health = false;
-                    if started.elapsed() >= timeout {
-                        return Err(anyhow!(
+                    wait_for_retry_or_timeout(
+                        started,
+                        timeout,
+                        format!(
                             "service '{}' ({}) did not become ready within {}s: {}",
                             container_name,
                             service.image,
                             timeout.as_secs(),
                             detail
-                        ));
-                    }
-                    thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+                        ),
+                    )?;
                 }
                 ServiceReadiness::Failed(detail) => {
                     return Err(anyhow!(
@@ -107,6 +95,58 @@ impl ServiceReadinessProbe {
                 }
             }
         }
+    }
+
+    fn await_ready_service(
+        &self,
+        ready_check: &ReadyCheck<'_>,
+        confirmed_running_without_health: bool,
+    ) -> Result<ReadinessPoll> {
+        if ready_check.ports.is_empty() {
+            return await_running_confirmation(
+                ready_check.started,
+                ready_check.timeout,
+                ready_check.container_name,
+                &ready_check.service.image,
+                confirmed_running_without_health,
+            );
+        }
+
+        let Some(ip) = ready_check.inspector.ipv4(ready_check.container_name) else {
+            wait_for_retry_or_timeout(
+                ready_check.started,
+                ready_check.timeout,
+                format!(
+                    "service '{}' ({}) did not expose a reachable IP within {}s",
+                    ready_check.container_name,
+                    ready_check.service.image,
+                    ready_check.timeout.as_secs()
+                ),
+            )?;
+            return Ok(ReadinessPoll::retry(false));
+        };
+
+        if probe_service_ports(
+            self.engine,
+            &self.network,
+            &ip,
+            ready_check.ports,
+            self.preserve_runtime_objects,
+        )? {
+            return Ok(ReadinessPoll::Ready);
+        }
+
+        wait_for_retry_or_timeout(
+            ready_check.started,
+            ready_check.timeout,
+            format!(
+                "service '{}' ({}) did not accept connections on exposed ports within {}s",
+                ready_check.container_name,
+                ready_check.service.image,
+                ready_check.timeout.as_secs()
+            ),
+        )?;
+        Ok(ReadinessPoll::retry(false))
     }
 }
 
@@ -150,6 +190,7 @@ fn probe_service_ports(
     network: &str,
     host: &str,
     ports: &[ServicePort],
+    preserve_runtime_objects: bool,
 ) -> Result<bool> {
     if ports.is_empty() {
         return Ok(true);
@@ -164,8 +205,7 @@ fn probe_service_ports(
         return Ok(true);
     }
 
-    let mut command = Command::new(engine_binary(engine));
-    command.arg("run").arg("--rm").arg("--network").arg(network);
+    let mut command = service_probe_command(engine, network, preserve_runtime_objects);
     if matches!(engine, EngineKind::ContainerCli)
         && let Some(arch) = default_container_cli_arch(None)
     {
@@ -180,6 +220,20 @@ fn probe_service_ports(
     Ok(status.success())
 }
 
+pub(super) fn service_probe_command(
+    engine: EngineKind,
+    network: &str,
+    preserve_runtime_objects: bool,
+) -> Command {
+    let mut command = Command::new(engine_binary(engine));
+    command.arg("run");
+    if !preserve_runtime_objects {
+        command.arg("--rm");
+    }
+    command.arg("--network").arg(network);
+    command
+}
+
 fn service_ready_timeout() -> Duration {
     env::var("OPAL_SERVICE_READY_TIMEOUT_SECS")
         .ok()
@@ -191,4 +245,64 @@ fn service_ready_timeout() -> Duration {
 
 fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+enum ReadinessPoll {
+    Ready,
+    Retry {
+        confirmed_running_without_health: bool,
+    },
+}
+
+impl ReadinessPoll {
+    fn retry(confirmed_running_without_health: bool) -> Self {
+        Self::Retry {
+            confirmed_running_without_health,
+        }
+    }
+}
+
+struct ReadyCheck<'a> {
+    inspector: &'a ServiceInspector,
+    container_name: &'a str,
+    service: &'a ServiceSpec,
+    ports: &'a [ServicePort],
+    started: Instant,
+    timeout: Duration,
+}
+
+fn wait_for_retry_or_timeout(
+    started: Instant,
+    timeout: Duration,
+    timeout_message: String,
+) -> Result<()> {
+    if started.elapsed() >= timeout {
+        return Err(anyhow!(timeout_message));
+    }
+    thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+    Ok(())
+}
+
+fn await_running_confirmation(
+    started: Instant,
+    timeout: Duration,
+    container_name: &str,
+    image: &str,
+    confirmed_running_without_health: bool,
+) -> Result<ReadinessPoll> {
+    if confirmed_running_without_health {
+        return Ok(ReadinessPoll::Ready);
+    }
+
+    wait_for_retry_or_timeout(
+        started,
+        timeout,
+        format!(
+            "service '{}' ({}) did not remain running long enough to confirm readiness within {}s",
+            container_name,
+            image,
+            timeout.as_secs()
+        ),
+    )?;
+    Ok(ReadinessPoll::retry(true))
 }

@@ -67,20 +67,13 @@ impl ServiceInspector {
         }
 
         let infos: Vec<ContainerImageInspect> = serde_json::from_slice(&output.stdout)?;
-        let mut ports = Vec::new();
-        let mut seen = HashSet::new();
-        for info in infos {
-            for variant in info.variants {
-                for entry in variant.config.history {
-                    for port in ports_from_history_entry(&entry) {
-                        if seen.insert((port.port, port.proto.clone())) {
-                            ports.push(port);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(ports)
+        Ok(unique_ports(
+            infos
+                .into_iter()
+                .flat_map(|info| info.variants)
+                .flat_map(|variant| variant.config.history)
+                .flat_map(|entry| ports_from_history_entry(&entry)),
+        ))
     }
 }
 
@@ -103,28 +96,12 @@ pub(super) fn parse_service_ipv4(payload: &[u8]) -> Result<Option<String>> {
         .context("failed to parse service inspect output as json")?;
     let service = first_service_object(&value)?;
 
-    if let Some(ip) = service
-        .get("networks")
-        .and_then(|networks| networks.as_array())
-        .and_then(|items| items.first())
-        .and_then(|network| network.get("ipv4Address"))
-        .and_then(|value| value.as_str())
-    {
+    if let Some(ip) = container_cli_ipv4(service) {
         return Ok(ip.split('/').next().map(str::to_string));
     }
 
-    if let Some(networks) = service
-        .get("NetworkSettings")
-        .and_then(|settings| settings.get("Networks"))
-        .and_then(|networks| networks.as_object())
-    {
-        for network in networks.values() {
-            if let Some(ip) = network.get("IPAddress").and_then(|value| value.as_str())
-                && !ip.is_empty()
-            {
-                return Ok(Some(ip.to_string()));
-            }
-        }
+    if let Some(ip) = docker_ipv4(service) {
+        return Ok(Some(ip.to_string()));
     }
 
     Ok(None)
@@ -146,37 +123,11 @@ pub(super) fn parse_service_state(payload: &[u8]) -> Result<ServiceState> {
         return Err(anyhow!("service inspect output missing State field"));
     };
 
-    let running = state
-        .get("Running")
-        .and_then(|value| value.as_bool())
-        .or_else(|| state.get("running").and_then(|value| value.as_bool()))
-        .unwrap_or_else(|| {
-            state
-                .get("Status")
-                .and_then(|value| value.as_str())
-                .or_else(|| state.get("status").and_then(|value| value.as_str()))
-                .is_some_and(|status| status.eq_ignore_ascii_case("running"))
-        });
-    let status = state
-        .get("Status")
-        .and_then(|value| value.as_str())
-        .or_else(|| state.get("status").and_then(|value| value.as_str()))
-        .map(|status| status.to_ascii_lowercase());
-    let health = state
-        .get("Health")
-        .and_then(|health| health.get("Status"))
-        .and_then(|status| status.as_str())
-        .or_else(|| {
-            state
-                .get("health")
-                .and_then(|health| health.get("status"))
-                .and_then(|status| status.as_str())
-        })
-        .map(|status| status.to_ascii_lowercase());
-    let exit_code = state
-        .get("ExitCode")
-        .and_then(|value| value.as_i64())
-        .or_else(|| state.get("exitCode").and_then(|value| value.as_i64()));
+    let status = lowercase_state_field(state, "Status", "status");
+    let health = nested_lowercase_state_field(state, "Health", "Status", "health", "status");
+    let exit_code = i64_state_field(state, "ExitCode", "exitCode");
+    let running = bool_state_field(state, "Running", "running")
+        .unwrap_or_else(|| status.as_deref().is_some_and(|status| status == "running"));
 
     Ok(ServiceState {
         running,
@@ -252,4 +203,77 @@ fn parse_exposed_port(token: &str) -> Option<ServicePort> {
         .unwrap_or("tcp")
         .to_ascii_lowercase();
     Some(ServicePort { port, proto })
+}
+
+fn unique_ports(ports: impl IntoIterator<Item = ServicePort>) -> Vec<ServicePort> {
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for port in ports {
+        if seen.insert((port.port, port.proto.clone())) {
+            unique.push(port);
+        }
+    }
+    unique
+}
+
+fn container_cli_ipv4(service: &Value) -> Option<&str> {
+    service
+        .get("networks")
+        .and_then(|networks| networks.as_array())
+        .and_then(|items| items.first())
+        .and_then(|network| network.get("ipv4Address"))
+        .and_then(|value| value.as_str())
+}
+
+fn docker_ipv4(service: &Value) -> Option<&str> {
+    service
+        .get("NetworkSettings")
+        .and_then(|settings| settings.get("Networks"))
+        .and_then(|networks| networks.as_object())
+        .into_iter()
+        .flat_map(|networks| networks.values())
+        .filter_map(|network| network.get("IPAddress").and_then(|value| value.as_str()))
+        .find(|ip| !ip.is_empty())
+}
+
+fn bool_state_field(state: &Value, primary: &str, fallback: &str) -> Option<bool> {
+    state
+        .get(primary)
+        .and_then(|value| value.as_bool())
+        .or_else(|| state.get(fallback).and_then(|value| value.as_bool()))
+}
+
+fn lowercase_state_field(state: &Value, primary: &str, fallback: &str) -> Option<String> {
+    state
+        .get(primary)
+        .and_then(|value| value.as_str())
+        .or_else(|| state.get(fallback).and_then(|value| value.as_str()))
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn nested_lowercase_state_field(
+    state: &Value,
+    primary_parent: &str,
+    primary_child: &str,
+    fallback_parent: &str,
+    fallback_child: &str,
+) -> Option<String> {
+    state
+        .get(primary_parent)
+        .and_then(|value| value.get(primary_child))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            state
+                .get(fallback_parent)
+                .and_then(|value| value.get(fallback_child))
+                .and_then(|value| value.as_str())
+        })
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn i64_state_field(state: &Value, primary: &str, fallback: &str) -> Option<i64> {
+    state
+        .get(primary)
+        .and_then(|value| value.as_i64())
+        .or_else(|| state.get(fallback).and_then(|value| value.as_i64()))
 }

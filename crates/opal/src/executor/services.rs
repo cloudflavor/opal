@@ -6,7 +6,8 @@ mod readiness;
 
 use self::alias::ServiceAliasRegistry;
 use self::command::{
-    command_timeout, engine_binary, merged_env, run_command_with_timeout, service_command,
+    command_timeout, force_remove_container_command, merged_env, run_command_with_timeout,
+    service_command,
 };
 use self::inspect::{ServiceInspector, ServicePort};
 use self::network::ServiceNetworkManager;
@@ -19,7 +20,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as FmtWrite;
-use std::process::Command;
 use tracing::warn;
 
 const MAX_NAME_LEN: usize = 63;
@@ -38,6 +38,7 @@ impl ServiceRuntime {
         job_name: &str,
         services: &[ServiceSpec],
         base_env: &[(String, String)],
+        preserve_runtime_objects: bool,
         _shared_env: &HashMap<String, String>,
     ) -> Result<Option<Self>> {
         if services.is_empty() {
@@ -52,7 +53,8 @@ impl ServiceRuntime {
             .with_context(|| format!("failed to create network {network}"))?;
 
         let inspector = ServiceInspector::new(engine);
-        let readiness = ServiceReadinessProbe::new(engine, network.clone());
+        let readiness =
+            ServiceReadinessProbe::new(engine, network.clone(), preserve_runtime_objects);
         let mut runtime = ServiceRuntime {
             lifecycle: ServiceLifecycle::new(engine, network),
             link_env: Vec::new(),
@@ -207,11 +209,7 @@ impl ServiceLifecycle {
 
     fn cleanup(&mut self) {
         for name in self.containers.drain(..).rev() {
-            let _ = Command::new(engine_binary(self.engine))
-                .arg("rm")
-                .arg("-f")
-                .arg(&name)
-                .status();
+            let _ = force_remove_container_command(self.engine, &name).status();
         }
         let _ = ServiceNetworkManager::new(self.engine).remove(&self.network);
     }
@@ -342,10 +340,12 @@ fn build_service_env(alias: &str, host: &str, ports: &[ServicePort]) -> Vec<(Str
 #[cfg(test)]
 mod tests {
     use super::alias::ServiceAliasRegistry;
-    use super::command::{run_command_with_timeout, service_command};
+    use super::command::{
+        force_remove_container_command, run_command_with_timeout, service_command,
+    };
     use super::inspect::{ServiceState, parse_service_ipv4, parse_service_state};
     use super::network::should_retry_container_network_error;
-    use super::readiness::{ServiceReadiness, readiness_from_state};
+    use super::readiness::{ServiceReadiness, readiness_from_state, service_probe_command};
     use super::{ServiceLifecycle, ServiceRuntime};
     use crate::EngineKind;
     use crate::model::ServiceSpec;
@@ -631,6 +631,37 @@ mod tests {
 
         assert!(args.windows(2).any(|pair| pair == ["--arch", "x86_64"]));
         assert!(args.windows(2).any(|pair| pair == ["--user", "1000:1000"]));
+    }
+
+    #[test]
+    fn force_remove_container_command_matches_engine_cli() {
+        let docker_args: Vec<String> = force_remove_container_command(EngineKind::Docker, "svc")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let container_args: Vec<String> =
+            force_remove_container_command(EngineKind::ContainerCli, "svc")
+                .get_args()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect();
+
+        assert_eq!(docker_args, vec!["rm", "-f", "svc"]);
+        assert_eq!(container_args, vec!["rm", "--force", "svc"]);
+    }
+
+    #[test]
+    fn service_probe_command_only_uses_rm_when_runtime_objects_are_not_preserved() {
+        let ephemeral_args: Vec<String> = service_probe_command(EngineKind::Docker, "net", false)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let preserved_args: Vec<String> = service_probe_command(EngineKind::Docker, "net", true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(ephemeral_args, vec!["run", "--rm", "--network", "net"]);
+        assert_eq!(preserved_args, vec!["run", "--network", "net"]);
     }
 
     #[test]

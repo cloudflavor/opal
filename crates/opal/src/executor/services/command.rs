@@ -32,6 +32,13 @@ pub(super) fn service_command(engine: EngineKind, service: &ServiceSpec) -> Comm
     command
 }
 
+pub(super) fn force_remove_container_command(engine: EngineKind, container_name: &str) -> Command {
+    let mut command = Command::new(engine_binary(engine));
+    let [subcommand, force_flag] = force_remove_args(engine);
+    command.arg(subcommand).arg(force_flag).arg(container_name);
+    command
+}
+
 pub(super) fn merged_env(
     base: &[(String, String)],
     overrides: &HashMap<String, String>,
@@ -145,5 +152,14 @@ fn command_failed_detail(stdout: &[u8], stderr: &[u8]) -> String {
         (false, true) => format!(": {stdout}"),
         (true, false) => format!(": {stderr}"),
         (false, false) => format!(": stdout={stdout}; stderr={stderr}"),
+    }
+}
+
+fn force_remove_args(engine: EngineKind) -> [&'static str; 2] {
+    match engine {
+        EngineKind::ContainerCli => ["rm", "--force"],
+        EngineKind::Docker | EngineKind::Orbstack | EngineKind::Podman | EngineKind::Nerdctl => {
+            ["rm", "-f"]
+        }
     }
 }
