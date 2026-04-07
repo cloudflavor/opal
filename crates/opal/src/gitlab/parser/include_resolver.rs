@@ -1,17 +1,22 @@
 use crate::{GitLabRemoteConfig, env, runtime};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
+use reqwest::Client;
 use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
-use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
 use super::merge_mappings;
+
+type ResolverFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 pub(super) struct IncludeResolver<'a> {
     include_root: &'a Path,
     include_env: &'a HashMap<String, String>,
     gitlab: Option<&'a GitLabRemoteConfig>,
+    io: IncludeIo,
 }
 
 impl<'a> IncludeResolver<'a> {
@@ -24,115 +29,119 @@ impl<'a> IncludeResolver<'a> {
             include_root,
             include_env,
             gitlab,
+            io: IncludeIo::new(),
         }
     }
 
-    pub(super) fn load(&self, path: &Path) -> Result<Mapping> {
+    pub(super) async fn load(&self, path: &Path) -> Result<Mapping> {
         let mut stack = Vec::new();
         let context = IncludeContext::local(self.include_root.to_path_buf());
-        self.load_pipeline_file(path, &context, &mut stack)
+        self.load_pipeline_file(path, &context, &mut stack).await
     }
 
-    fn load_pipeline_file(
-        &self,
-        path: &Path,
-        context: &IncludeContext,
-        stack: &mut Vec<PathBuf>,
-    ) -> Result<Mapping> {
-        if stack.iter().any(|entry| entry == path) {
-            bail!("include cycle detected involving {:?}", path);
-        }
-        stack.push(path.to_path_buf());
+    fn load_pipeline_file<'b>(
+        &'b self,
+        path: &'b Path,
+        context: &'b IncludeContext,
+        stack: &'b mut Vec<PathBuf>,
+    ) -> ResolverFuture<'b, Mapping> {
+        Box::pin(async move {
+            if stack.iter().any(|entry| entry == path) {
+                bail!("include cycle detected involving {:?}", path);
+            }
+            stack.push(path.to_path_buf());
 
-        let content =
-            fs::read_to_string(path).with_context(|| format!("failed to read {:?}", path))?;
-        let mut root: Mapping = serde_yaml::from_str(&content)?;
-        let include_key = Value::String("include".to_string());
-        let mut combined = Mapping::new();
+            let mut root = self.io.read_mapping(path).await?;
+            let include_key = Value::String("include".to_string());
+            let mut combined = Mapping::new();
 
-        if let Some(include_value) = root.remove(&include_key) {
-            let includes = parse_include_entries(include_value)?;
-            for include in includes {
-                match include {
-                    IncludeEntry::Local(path) => {
-                        let include = expand_include_path(&path, self.include_env);
-                        for resolved in self.resolve_include_paths(context, &include)? {
-                            validate_include_extension(&resolved)?;
-                            let canonical = fs::canonicalize(&resolved).with_context(|| {
-                                format!("failed to resolve include {:?}", resolved)
-                            })?;
-                            let included = self.load_pipeline_file(&canonical, context, stack)?;
-                            combined = merge_mappings(combined, included);
+            if let Some(include_value) = root.remove(&include_key) {
+                let includes = parse_include_entries(include_value)?;
+                for include in includes {
+                    match include {
+                        IncludeEntry::Local(path) => {
+                            let include = expand_include_path(&path, self.include_env);
+                            for resolved in self.resolve_include_paths(context, &include).await? {
+                                validate_include_extension(&resolved)?;
+                                let canonical = self.io.canonicalize(&resolved).await?;
+                                let included =
+                                    self.load_pipeline_file(&canonical, context, stack).await?;
+                                combined = merge_mappings(combined, included);
+                            }
                         }
-                    }
-                    IncludeEntry::Project {
-                        project,
-                        reference,
-                        files,
-                    } => {
-                        let gitlab = self.gitlab.ok_or_else(|| {
-                            anyhow!(
-                                "include:project requires GitLab credentials/configuration (use --gitlab-token and optionally --gitlab-base-url)"
-                            )
-                        })?;
-                        let resolved_ref = reference.unwrap_or_else(|| "HEAD".to_string());
-                        let project_root =
-                            project_include_root(&runtime::cache_root(), &project, &resolved_ref);
-                        let project_context = IncludeContext::for_project(
-                            project_root,
-                            ProjectIncludeContext {
-                                gitlab: gitlab.clone(),
-                                project: project.clone(),
-                                reference: resolved_ref.clone(),
-                            },
-                        );
-                        for file in files {
-                            let fetched = fetch_project_include_file(
-                                gitlab,
-                                project_context.include_root(),
+                        IncludeEntry::Project {
+                            project,
+                            reference,
+                            files,
+                        } => {
+                            let gitlab = self.gitlab.ok_or_else(|| {
+                                anyhow!(
+                                    "include:project requires GitLab credentials/configuration (use --gitlab-token and optionally --gitlab-base-url)"
+                                )
+                            })?;
+                            let resolved_ref = reference.unwrap_or_else(|| "HEAD".to_string());
+                            let project_root = project_include_root(
+                                &runtime::cache_root(),
                                 &project,
                                 &resolved_ref,
-                                &file,
-                                self.include_env,
-                            )?;
-                            let canonical = fs::canonicalize(&fetched).with_context(|| {
-                                format!("failed to resolve include {:?}", fetched)
-                            })?;
-                            let included =
-                                self.load_pipeline_file(&canonical, &project_context, stack)?;
-                            combined = merge_mappings(combined, included);
+                            );
+                            let project_context = IncludeContext::for_project(
+                                project_root,
+                                ProjectIncludeContext {
+                                    gitlab: gitlab.clone(),
+                                    project: project.clone(),
+                                    reference: resolved_ref.clone(),
+                                },
+                            );
+                            for file in files {
+                                let fetched = self
+                                    .materialize_project_include_file(
+                                        gitlab,
+                                        project_context.include_root(),
+                                        &project,
+                                        &resolved_ref,
+                                        &file,
+                                    )
+                                    .await?;
+                                let canonical = self.io.canonicalize(&fetched).await?;
+                                let included = self
+                                    .load_pipeline_file(&canonical, &project_context, stack)
+                                    .await?;
+                                combined = merge_mappings(combined, included);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        combined = merge_mappings(combined, root);
-        stack.pop();
-        Ok(combined)
+            combined = merge_mappings(combined, root);
+            stack.pop();
+            Ok(combined)
+        })
     }
 
-    fn resolve_include_paths(
+    async fn resolve_include_paths(
         &self,
         context: &IncludeContext,
         include: &Path,
     ) -> Result<Vec<PathBuf>> {
         if !include_has_glob(include) {
             let resolved = resolve_include_path(context.include_root(), include);
-            if resolved.exists() || context.project().is_none() {
+            if self.io.try_exists(&resolved).await? || context.project().is_none() {
                 return Ok(vec![resolved]);
             }
             let Some(project_context) = context.project() else {
                 return Ok(vec![resolved]);
             };
-            let fetched = fetch_project_include_file(
-                &project_context.gitlab,
-                context.include_root(),
-                &project_context.project,
-                &project_context.reference,
-                include,
-                self.include_env,
-            )?;
+            let fetched = self
+                .materialize_project_include_file(
+                    &project_context.gitlab,
+                    context.include_root(),
+                    &project_context.project,
+                    &project_context.reference,
+                    include,
+                )
+                .await?;
             return Ok(vec![fetched]);
         }
 
@@ -141,17 +150,10 @@ impl<'a> IncludeResolver<'a> {
             .with_context(|| format!("invalid include glob '{pattern}'"))?
             .compile_matcher();
         let mut matches = Vec::new();
-        for entry in walkdir::WalkDir::new(context.include_root()).follow_links(false) {
-            let entry = entry?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let rel = entry
-                .path()
-                .strip_prefix(context.include_root())
-                .unwrap_or(entry.path());
+        for path in self.io.list_files(context.include_root()).await? {
+            let rel = path.strip_prefix(context.include_root()).unwrap_or(&path);
             if matcher.is_match(rel) {
-                matches.push(entry.path().to_path_buf());
+                matches.push(path);
             }
         }
         matches.sort();
@@ -163,6 +165,30 @@ impl<'a> IncludeResolver<'a> {
             bail!("include glob '{pattern}' matched no files");
         }
         Ok(matches)
+    }
+
+    async fn materialize_project_include_file(
+        &self,
+        gitlab: &GitLabRemoteConfig,
+        project_root: &Path,
+        project: &str,
+        reference: &str,
+        file: &Path,
+    ) -> Result<PathBuf> {
+        let expanded = expand_include_path(file, self.include_env);
+        validate_include_extension(&expanded)?;
+        let relative = expanded.strip_prefix(Path::new("/")).unwrap_or(&expanded);
+        let target = project_root.join(relative);
+        if self.io.try_exists(&target).await? {
+            return Ok(target);
+        }
+        self.io.ensure_parent_dir(&target).await?;
+        let bytes = self
+            .io
+            .fetch_project_file(gitlab, project, reference, relative)
+            .await?;
+        self.io.write(&target, &bytes).await?;
+        Ok(target)
     }
 }
 
@@ -193,6 +219,114 @@ impl IncludeContext {
 
     fn project(&self) -> Option<&ProjectIncludeContext> {
         self.project.as_ref()
+    }
+}
+
+struct IncludeIo {
+    client: Client,
+}
+
+impl IncludeIo {
+    fn new() -> Self {
+        Self {
+            client: Client::new(),
+        }
+    }
+
+    async fn read_mapping(&self, path: &Path) -> Result<Mapping> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("failed to read {:?}", path))?;
+        serde_yaml::from_str(&content).with_context(|| format!("failed to parse {:?}", path))
+    }
+
+    async fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        tokio::fs::canonicalize(path)
+            .await
+            .with_context(|| format!("failed to resolve {:?}", path))
+    }
+
+    async fn try_exists(&self, path: &Path) -> Result<bool> {
+        tokio::fs::try_exists(path)
+            .await
+            .with_context(|| format!("failed to stat {:?}", path))
+    }
+
+    async fn ensure_parent_dir(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        Ok(())
+    }
+
+    async fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        tokio::fs::write(path, bytes)
+            .await
+            .with_context(|| format!("failed to write {}", path.display()))
+    }
+
+    async fn list_files(&self, root: &Path) -> Result<Vec<PathBuf>> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut files = Vec::new();
+        while let Some(dir) = pending.pop() {
+            let mut entries = tokio::fs::read_dir(&dir)
+                .await
+                .with_context(|| format!("failed to read {}", dir.display()))?;
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .with_context(|| format!("failed to iterate {}", dir.display()))?
+            {
+                let path = entry.path();
+                let file_type = entry
+                    .file_type()
+                    .await
+                    .with_context(|| format!("failed to inspect {}", path.display()))?;
+                if file_type.is_dir() {
+                    pending.push(path);
+                } else if file_type.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    async fn fetch_project_file(
+        &self,
+        gitlab: &GitLabRemoteConfig,
+        project: &str,
+        reference: &str,
+        relative: &Path,
+    ) -> Result<Vec<u8>> {
+        let base = gitlab.base_url.trim_end_matches('/');
+        let project_id = percent_encode(project);
+        let file_id = percent_encode(&relative.to_string_lossy());
+        let ref_id = percent_encode(reference);
+        let url = format!(
+            "{base}/api/v4/projects/{project_id}/repository/files/{file_id}/raw?ref={ref_id}"
+        );
+        let response = self
+            .client
+            .get(&url)
+            .header("PRIVATE-TOKEN", gitlab.token.as_str())
+            .send()
+            .await
+            .with_context(|| format!("failed to request include:project from {}", url))?
+            .error_for_status()
+            .map_err(|err| {
+                anyhow!(
+                    "request failed to resolve include:project from {} ({err})",
+                    url
+                )
+            })?;
+        let bytes = response
+            .bytes()
+            .await
+            .with_context(|| format!("failed to read include:project body from {}", url))?;
+        Ok(bytes.to_vec())
     }
 }
 
@@ -351,52 +485,6 @@ fn project_include_root(cache_root: &Path, project: &str, reference: &str) -> Pa
         .join("includes")
         .join(percent_encode(project))
         .join(sanitize_reference(reference))
-}
-
-fn fetch_project_include_file(
-    gitlab: &GitLabRemoteConfig,
-    project_root: &Path,
-    project: &str,
-    reference: &str,
-    file: &Path,
-    include_env: &HashMap<String, String>,
-) -> Result<PathBuf> {
-    let expanded = expand_include_path(file, include_env);
-    validate_include_extension(&expanded)?;
-    let relative = expanded.strip_prefix(Path::new("/")).unwrap_or(&expanded);
-    let target = project_root.join(relative);
-    if target.exists() {
-        return Ok(target);
-    }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let base = gitlab.base_url.trim_end_matches('/');
-    let project_id = percent_encode(project);
-    let file_id = percent_encode(&relative.to_string_lossy());
-    let ref_id = percent_encode(reference);
-    let url =
-        format!("{base}/api/v4/projects/{project_id}/repository/files/{file_id}/raw?ref={ref_id}");
-    let status = std::process::Command::new("curl")
-        .arg("--fail")
-        .arg("-sS")
-        .arg("-L")
-        .arg("-H")
-        .arg(format!("PRIVATE-TOKEN: {}", gitlab.token))
-        .arg("-o")
-        .arg(&target)
-        .arg(&url)
-        .status()
-        .with_context(|| "failed to invoke curl to resolve include:project")?;
-    if !status.success() {
-        return Err(anyhow!(
-            "curl failed to resolve include:project from {} (status {})",
-            url,
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(target)
 }
 
 fn percent_encode(value: &str) -> String {

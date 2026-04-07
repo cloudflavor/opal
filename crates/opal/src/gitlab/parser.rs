@@ -9,8 +9,8 @@ use crate::{GitLabRemoteConfig, env, git};
 use anyhow::{Context, Result};
 use serde_yaml::Mapping;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
+use tokio::runtime::Runtime;
 
 use super::graph::PipelineGraph;
 use include_resolver::IncludeResolver;
@@ -24,21 +24,46 @@ impl PipelineGraph {
         path: impl AsRef<Path>,
         gitlab: Option<&GitLabRemoteConfig>,
     ) -> Result<Self> {
-        Self::from_path_with_env(path, std::env::vars().collect(), gitlab)
+        let path = path.as_ref().to_path_buf();
+        Runtime::new()?.block_on(Self::from_path_with_gitlab_async(path, gitlab))
     }
 
+    pub async fn from_path_async(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_path_with_gitlab_async(path, None).await
+    }
+
+    pub async fn from_path_with_gitlab_async(
+        path: impl AsRef<Path>,
+        gitlab: Option<&GitLabRemoteConfig>,
+    ) -> Result<Self> {
+        Self::from_path_with_env_async(path, std::env::vars().collect(), gitlab).await
+    }
+
+    #[cfg(test)]
     fn from_path_with_env(
         path: impl AsRef<Path>,
         host_env: HashMap<String, String>,
         gitlab: Option<&GitLabRemoteConfig>,
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        Runtime::new()?.block_on(Self::from_path_with_env_async(path, host_env, gitlab))
+    }
+
+    async fn from_path_with_env_async(
+        path: impl AsRef<Path>,
+        host_env: HashMap<String, String>,
+        gitlab: Option<&GitLabRemoteConfig>,
+    ) -> Result<Self> {
         let path = path.as_ref();
-        let canonical =
-            fs::canonicalize(path).with_context(|| format!("failed to resolve {:?}", path))?;
+        let canonical = tokio::fs::canonicalize(path)
+            .await
+            .with_context(|| format!("failed to resolve {:?}", path))?;
         let include_root = git::repository_root(&canonical)
             .unwrap_or_else(|_| canonical.parent().unwrap_or(Path::new(".")).to_path_buf());
         let include_env = env::build_include_lookup(&canonical, &host_env);
-        let root = IncludeResolver::new(&include_root, &include_env, gitlab).load(&canonical)?;
+        let root = IncludeResolver::new(&include_root, &include_env, gitlab)
+            .load(&canonical)
+            .await?;
         let root = normalization::normalize_root(root)?;
         jobs::build_pipeline(root)
     }

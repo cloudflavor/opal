@@ -68,9 +68,9 @@ enum PreparedPlan {
     },
 }
 
-pub(crate) fn execute(app: &OpalApp, args: PlanArgs) -> Result<()> {
+pub(crate) async fn execute(app: &OpalApp, args: PlanArgs) -> Result<()> {
     let use_pager = !args.no_pager;
-    let rendered = render(app, args)?;
+    let rendered = render(app, args).await?;
     if rendered.json {
         println!("{}", rendered.content);
         return Ok(());
@@ -83,8 +83,8 @@ pub(crate) fn execute(app: &OpalApp, args: PlanArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn render(app: &OpalApp, args: PlanArgs) -> Result<RenderedPlan> {
-    let plan = prepare_plan(app, &args)?;
+pub(crate) async fn render(app: &OpalApp, args: PlanArgs) -> Result<RenderedPlan> {
+    let plan = prepare_plan(app, &args).await?;
     let plan = match plan {
         PreparedPlan::Skipped { reason, .. } => {
             return Ok(RenderedPlan {
@@ -109,9 +109,13 @@ pub(crate) fn render(app: &OpalApp, args: PlanArgs) -> Result<RenderedPlan> {
     })
 }
 
-pub(crate) fn explain(app: &OpalApp, args: PlanArgs, job_selector: &str) -> Result<ExplainedPlan> {
+pub(crate) async fn explain(
+    app: &OpalApp,
+    args: PlanArgs,
+    job_selector: &str,
+) -> Result<ExplainedPlan> {
     let selector = job_selector.to_string();
-    let prepared = prepare_plan(app, &args)?;
+    let prepared = prepare_plan(app, &args).await?;
 
     match prepared {
         PreparedPlan::Skipped { pipeline, reason } => Ok(ExplainedPlan {
@@ -249,11 +253,12 @@ fn plan_json(plan: &ExecutionPlan) -> PlanJson {
     PlanJson { jobs }
 }
 
-fn prepare_plan(app: &OpalApp, args: &PlanArgs) -> Result<PreparedPlan> {
+async fn prepare_plan(app: &OpalApp, args: &PlanArgs) -> Result<PreparedPlan> {
     let workdir = app.resolve_workdir(args.workdir.clone());
     let pipeline = resolve_pipeline_path(&workdir, args.pipeline.clone());
     let gitlab = resolve_gitlab_remote(args.gitlab_base_url.clone(), args.gitlab_token.clone());
-    let pipeline_spec = PipelineSpec::from_path_with_gitlab(&pipeline, gitlab.as_ref())
+    let pipeline_spec = PipelineSpec::from_path_with_gitlab_async(&pipeline, gitlab.as_ref())
+        .await
         .with_context(|| format!("failed to load pipeline {}", pipeline.display()))?;
     let ctx = rule_context_for_workdir(&workdir);
     ctx.ensure_valid_tag_context()?;

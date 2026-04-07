@@ -88,7 +88,8 @@ impl ExecutorCore {
     // TODO: this shit does way too much, hard to test if you add fs::create inside of it
     pub async fn new(config: ExecutorConfig) -> Result<Self> {
         let pipeline =
-            PipelineSpec::from_path_with_gitlab(&config.pipeline, config.gitlab.as_ref())?;
+            PipelineSpec::from_path_with_gitlab_async(&config.pipeline, config.gitlab.as_ref())
+                .await?;
         let run_id = generate_run_id(&config);
         let runs_root = runtime::runs_root();
         tokio_fs::create_dir_all(&runs_root)
