@@ -9,15 +9,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::warn;
 
-use super::super::{
-    graph::{
-        ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
-        EnvironmentAction, EnvironmentConfig, ExternalDependency, ImageConfig, Job, JobDependency,
-        ParallelConfig, ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters,
-        PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
-    },
-    rules::JobRule,
+use super::super::graph::{
+    ArtifactConfig, ArtifactWhen, CacheConfig, CacheKey, CachePolicy, DependencySource,
+    EnvironmentAction, EnvironmentConfig, ExternalDependency, ImageConfig, Job, JobDependency,
+    ParallelConfig, ParallelMatrixEntry, ParallelVariable, PipelineDefaults, PipelineFilters,
+    PipelineGraph, RetryPolicy, ServiceConfig, StageGroup, WorkflowConfig,
 };
+use super::super::rules::JobRule;
 use super::merge_mappings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
