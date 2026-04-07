@@ -233,20 +233,40 @@ pub(crate) mod test_support {
     use git2::{RepositoryInitOptions, Signature};
     use tempfile::{TempDir, tempdir};
 
-    pub(crate) fn init_repo_with_commit_and_tag(tag: &str) -> Result<TempDir> {
+    pub(crate) fn init_repo_with_files(files: &[(&str, &str)]) -> Result<TempDir> {
         let dir = tempdir()?;
         let mut init = RepositoryInitOptions::new();
         init.initial_head("main");
         let repo = Repository::init_opts(dir.path(), &init)?;
 
-        std::fs::write(dir.path().join("README.md"), "opal\n")?;
+        for (path, contents) in files {
+            let file_path = dir.path().join(path);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file_path, contents)?;
+        }
 
         let mut index = repo.index()?;
-        index.add_path(Path::new("README.md"))?;
+        for (path, _) in files {
+            index.add_path(Path::new(path))?;
+        }
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
         let sig = Signature::now("Opal Tests", "opal@example.com")?;
-        let oid = repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
+
+        Ok(dir)
+    }
+
+    pub(crate) fn init_repo_with_commit_and_tag(tag: &str) -> Result<TempDir> {
+        let dir = init_repo_with_files(&[("README.md", "opal\n")])?;
+        let repo = Repository::open(dir.path())?;
+        let oid = repo
+            .head()?
+            .peel_to_commit()
+            .context("HEAD does not point to a commit")?
+            .id();
         let object = repo.find_object(oid, None)?;
         repo.tag_lightweight(tag, &object, false)?;
 
@@ -254,19 +274,13 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn init_repo_with_commit_and_tags(tags: &[&str]) -> Result<TempDir> {
-        let dir = tempdir()?;
-        let mut init = RepositoryInitOptions::new();
-        init.initial_head("main");
-        let repo = Repository::init_opts(dir.path(), &init)?;
-
-        std::fs::write(dir.path().join("README.md"), "opal\n")?;
-
-        let mut index = repo.index()?;
-        index.add_path(Path::new("README.md"))?;
-        let tree_id = index.write_tree()?;
-        let tree = repo.find_tree(tree_id)?;
-        let sig = Signature::now("Opal Tests", "opal@example.com")?;
-        let oid = repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
+        let dir = init_repo_with_files(&[("README.md", "opal\n")])?;
+        let repo = Repository::open(dir.path())?;
+        let oid = repo
+            .head()?
+            .peel_to_commit()
+            .context("HEAD does not point to a commit")?
+            .id();
         let object = repo.find_object(oid, None)?;
         for tag in tags {
             repo.tag_lightweight(tag, &object, false)?;

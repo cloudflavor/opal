@@ -45,6 +45,7 @@ where
 mod tests {
     use super::*;
     use crate::compiler::{JobInstance, JobVariantInfo, compile_pipeline};
+    use crate::git::test_support::init_repo_with_files;
     use crate::model::{
         ArtifactSpec, DependencySourceSpec, JobDependencySpec, JobSpec, PipelineSpec,
         RetryPolicySpec,
@@ -53,11 +54,20 @@ mod tests {
     use crate::pipeline::rules::RuleEvaluation;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../pipelines/tests")
             .join(name)
+    }
+
+    fn fixture_rule_context(env: HashMap<String, String>) -> (TempDir, RuleContext) {
+        let workspace =
+            init_repo_with_files(&[("README.md", "opal\n"), ("docs/index.md", "docs\n")])
+                .expect("temp repo");
+        let ctx = RuleContext::from_env(workspace.path(), env, false);
+        (workspace, ctx)
     }
 
     #[test]
@@ -193,16 +203,12 @@ mod tests {
     fn build_execution_plan_resolves_matrix_needs_to_variant_names() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
-        let ctx = RuleContext::from_env(
-            Path::new("."),
-            HashMap::from([
-                ("CI_PIPELINE_SOURCE".into(), "push".into()),
-                ("CI_COMMIT_BRANCH".into(), "main".into()),
-                ("CI_COMMIT_REF_NAME".into(), "main".into()),
-                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
-            ]),
-            false,
-        );
+        let (_workspace, ctx) = fixture_rule_context(HashMap::from([
+            ("CI_PIPELINE_SOURCE".into(), "push".into()),
+            ("CI_COMMIT_BRANCH".into(), "main".into()),
+            ("CI_COMMIT_REF_NAME".into(), "main".into()),
+            ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+        ]));
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds");
@@ -239,16 +245,12 @@ mod tests {
     fn build_execution_plan_preserves_inline_variant_metadata() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
-        let ctx = RuleContext::from_env(
-            Path::new("."),
-            HashMap::from([
-                ("CI_PIPELINE_SOURCE".into(), "push".into()),
-                ("CI_COMMIT_BRANCH".into(), "main".into()),
-                ("CI_COMMIT_REF_NAME".into(), "main".into()),
-                ("CI_COMMIT_REF_SLUG".into(), "main".into()),
-            ]),
-            false,
-        );
+        let (_workspace, ctx) = fixture_rule_context(HashMap::from([
+            ("CI_PIPELINE_SOURCE".into(), "push".into()),
+            ("CI_COMMIT_BRANCH".into(), "main".into()),
+            ("CI_COMMIT_REF_NAME".into(), "main".into()),
+            ("CI_COMMIT_REF_SLUG".into(), "main".into()),
+        ]));
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds");
@@ -271,15 +273,11 @@ mod tests {
     fn selected_jobs_include_upstream_dependencies() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
-        let ctx = RuleContext::from_env(
-            Path::new("."),
-            HashMap::from([
-                ("CI_COMMIT_BRANCH".into(), "main".into()),
-                ("CI_PIPELINE_SOURCE".into(), "push".into()),
-                ("CI_COMMIT_REF_NAME".into(), "main".into()),
-            ]),
-            false,
-        );
+        let (_workspace, ctx) = fixture_rule_context(HashMap::from([
+            ("CI_COMMIT_BRANCH".into(), "main".into()),
+            ("CI_PIPELINE_SOURCE".into(), "push".into()),
+            ("CI_COMMIT_REF_NAME".into(), "main".into()),
+        ]));
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds")
@@ -296,15 +294,11 @@ mod tests {
     fn selecting_base_name_includes_all_variants() {
         let pipeline = PipelineSpec::from_path(&fixture_path("control-flow-parity.gitlab-ci.yml"))
             .expect("pipeline loads");
-        let ctx = RuleContext::from_env(
-            Path::new("."),
-            HashMap::from([
-                ("CI_COMMIT_BRANCH".into(), "main".into()),
-                ("CI_PIPELINE_SOURCE".into(), "push".into()),
-                ("CI_COMMIT_REF_NAME".into(), "main".into()),
-            ]),
-            false,
-        );
+        let (_workspace, ctx) = fixture_rule_context(HashMap::from([
+            ("CI_COMMIT_BRANCH".into(), "main".into()),
+            ("CI_PIPELINE_SOURCE".into(), "push".into()),
+            ("CI_COMMIT_REF_NAME".into(), "main".into()),
+        ]));
         let compiled = compile_pipeline(&pipeline, Some(&ctx)).expect("pipeline compiles");
         let plan = build_execution_plan(compiled, |_job| (PathBuf::new(), String::new()))
             .expect("execution plan builds")
