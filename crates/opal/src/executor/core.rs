@@ -9,6 +9,8 @@ mod runtime_summary;
 mod stage_tracker;
 mod workspace;
 
+pub(crate) use preparer::PreparedJobRun;
+
 use super::{orchestrator, paths};
 use crate::ai::{
     self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt,
@@ -501,12 +503,12 @@ impl ExecutorCore {
         launch::log_job_start(self, planned, ui)
     }
 
-    pub(crate) fn prepare_job_run(
+    pub(crate) async fn prepare_job_run(
         &self,
         plan: &ExecutionPlan,
         job: &JobSpec,
     ) -> Result<preparer::PreparedJobRun> {
-        preparer::prepare_job_run(self, plan, job)
+        preparer::prepare_job_run(self, plan, job).await
     }
 
     pub(crate) fn collect_untracked_artifacts(

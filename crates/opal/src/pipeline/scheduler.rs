@@ -58,9 +58,11 @@ pub fn spawn_job(
         let run_info = run_info;
         let kill_info = run_info.container_name.clone();
         let ui_clone = ui.clone();
+        let runtime_handle = tokio::runtime::Handle::current();
         let blocking = task::spawn_blocking(move || {
             job_runner::run_planned_job(
                 exec_clone.as_ref(),
+                &runtime_handle,
                 plan_clone,
                 planned_job,
                 run_info,

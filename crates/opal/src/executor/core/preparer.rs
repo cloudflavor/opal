@@ -21,7 +21,7 @@ pub(crate) struct PreparedJobRun {
     pub script_path: PathBuf,
 }
 
-pub(super) fn prepare_job_run(
+pub(super) async fn prepare_job_run(
     exec: &ExecutorCore,
     plan: &ExecutionPlan,
     job: &JobSpec,
@@ -37,8 +37,10 @@ pub(super) fn prepare_job_run(
         &job.name,
         &service_configs,
         &env_vars,
+        exec.config.settings.preserve_runtime_objects(),
         &exec.shared_env,
-    )?;
+    )
+    .await?;
     if let Some(runtime) = service_runtime.as_ref() {
         env_vars.extend(runtime.link_env().iter().cloned());
     }
