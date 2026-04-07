@@ -3,7 +3,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::process::Command;
+use tokio::process::Command;
 
 pub(super) struct ServiceInspector {
     engine: crate::EngineKind,
@@ -14,7 +14,7 @@ impl ServiceInspector {
         Self { engine }
     }
 
-    pub(super) fn state(&self, container_name: &str) -> Result<ServiceState> {
+    pub(super) async fn state(&self, container_name: &str) -> Result<ServiceState> {
         let mut command = Command::new(engine_binary(self.engine));
         command
             .arg("inspect")
@@ -23,6 +23,7 @@ impl ServiceInspector {
             .arg(container_name);
         let output = command
             .output()
+            .await
             .with_context(|| format!("failed to inspect service container '{container_name}'"))?;
         if output.status.success() {
             return parse_service_state(&output.stdout);
@@ -32,6 +33,7 @@ impl ServiceInspector {
         fallback.arg("inspect").arg(container_name);
         let output = fallback
             .output()
+            .await
             .with_context(|| format!("failed to inspect service container '{container_name}'"))?;
         if !output.status.success() {
             return Err(command_failed(
@@ -45,22 +47,23 @@ impl ServiceInspector {
         parse_service_state(&output.stdout)
     }
 
-    pub(super) fn ipv4(&self, container_name: &str) -> Option<String> {
+    pub(super) async fn ipv4(&self, container_name: &str) -> Option<String> {
         let mut command = Command::new(engine_binary(self.engine));
         command.arg("inspect").arg(container_name);
-        let output = command.output().ok()?;
+        let output = command.output().await.ok()?;
         if !output.status.success() {
             return None;
         }
         parse_service_ipv4(&output.stdout).ok().flatten()
     }
 
-    pub(super) fn discover_ports(&self, image: &str) -> Result<Vec<ServicePort>> {
+    pub(super) async fn discover_ports(&self, image: &str) -> Result<Vec<ServicePort>> {
         let output = Command::new("container")
             .arg("image")
             .arg("inspect")
             .arg(image)
             .output()
+            .await
             .context("failed to inspect container image")?;
         if !output.status.success() {
             return Ok(Vec::new());

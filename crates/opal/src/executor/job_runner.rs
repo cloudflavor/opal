@@ -8,9 +8,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::runtime::Handle;
 
 pub(crate) fn run_planned_job(
     exec: &ExecutorCore,
+    runtime_handle: &Handle,
     plan: Arc<ExecutionPlan>,
     planned: ExecutableJob,
     run_info: JobRunInfo,
@@ -30,7 +32,7 @@ pub(crate) fn run_planned_job(
     // TODO: what the fuck is this, why is this a function here?
     // the logic needs to be simplified, garbage
     let result = (|| -> Result<()> {
-        let mut prepared = exec.prepare_job_run(plan.as_ref(), &job)?;
+        let mut prepared = runtime_handle.block_on(exec.prepare_job_run(plan.as_ref(), &job))?;
         let container_name = run_info.container_name.clone();
         let exec_result = exec.execute(ExecuteContext {
             host_workdir: &prepared.host_workdir,
@@ -86,7 +88,7 @@ pub(crate) fn run_planned_job(
         if let Some(mut runtime) = prepared.service_runtime.take()
             && !exec.config.settings.preserve_runtime_objects()
         {
-            runtime.cleanup();
+            runtime_handle.block_on(runtime.cleanup());
         }
         exec.collect_declared_artifacts(&job, &prepared.host_workdir, &prepared.mounts)?;
         exec.collect_untracked_artifacts(&job, &prepared.host_workdir)?;

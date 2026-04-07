@@ -4,19 +4,23 @@ use crate::EngineKind;
 use crate::executor::container_arch::default_container_cli_arch;
 use crate::model::ServiceSpec;
 use anyhow::{Result, anyhow};
+use std::borrow::Cow;
 use std::env;
 use std::process::Command;
-use std::thread;
 use std::time::{Duration, Instant};
+use tokio::time::sleep;
 use tracing::warn;
 
 const SERVICE_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
 const SERVICE_READY_POLL_MS: u64 = 250;
+const SERVICE_PROBE_IMAGE_DEFAULT: &str = "docker.io/library/alpine:3.19";
+const SERVICE_PROBE_IMAGE_ENV: &str = "OPAL_SERVICE_PROBE_IMAGE";
 
 pub(super) struct ServiceReadinessProbe {
     engine: EngineKind,
     network: String,
     preserve_runtime_objects: bool,
+    probe_image: String,
 }
 
 impl ServiceReadinessProbe {
@@ -25,10 +29,11 @@ impl ServiceReadinessProbe {
             engine,
             network,
             preserve_runtime_objects,
+            probe_image: service_probe_image(),
         }
     }
 
-    pub(super) fn wait_for(
+    pub(super) async fn wait_for(
         &self,
         inspector: &ServiceInspector,
         container_name: &str,
@@ -40,7 +45,7 @@ impl ServiceReadinessProbe {
         let mut confirmed_running_without_health = false;
 
         loop {
-            let state = match inspector.state(container_name) {
+            let state = match inspector.state(container_name).await {
                 Ok(state) => state,
                 Err(err) => {
                     warn!(
@@ -61,7 +66,8 @@ impl ServiceReadinessProbe {
 
             match readiness_from_state(&state) {
                 ServiceReadiness::Ready => match self
-                    .await_ready_service(&ready_check, confirmed_running_without_health)?
+                    .await_ready_service(&ready_check, confirmed_running_without_health)
+                    .await?
                 {
                     ReadinessPoll::Ready => return Ok(()),
                     ReadinessPoll::Retry {
@@ -83,7 +89,8 @@ impl ServiceReadinessProbe {
                             timeout.as_secs(),
                             detail
                         ),
-                    )?;
+                    )
+                    .await?;
                 }
                 ServiceReadiness::Failed(detail) => {
                     return Err(anyhow!(
@@ -97,7 +104,7 @@ impl ServiceReadinessProbe {
         }
     }
 
-    fn await_ready_service(
+    async fn await_ready_service(
         &self,
         ready_check: &ReadyCheck<'_>,
         confirmed_running_without_health: bool,
@@ -109,10 +116,11 @@ impl ServiceReadinessProbe {
                 ready_check.container_name,
                 &ready_check.service.image,
                 confirmed_running_without_health,
-            );
+            )
+            .await;
         }
 
-        let Some(ip) = ready_check.inspector.ipv4(ready_check.container_name) else {
+        let Some(ip) = ready_check.inspector.ipv4(ready_check.container_name).await else {
             wait_for_retry_or_timeout(
                 ready_check.started,
                 ready_check.timeout,
@@ -122,17 +130,21 @@ impl ServiceReadinessProbe {
                     ready_check.service.image,
                     ready_check.timeout.as_secs()
                 ),
-            )?;
+            )
+            .await?;
             return Ok(ReadinessPoll::retry(false));
         };
 
         if probe_service_ports(
             self.engine,
             &self.network,
+            &self.probe_image,
             &ip,
             ready_check.ports,
             self.preserve_runtime_objects,
-        )? {
+        )
+        .await?
+        {
             return Ok(ReadinessPoll::Ready);
         }
 
@@ -145,7 +157,8 @@ impl ServiceReadinessProbe {
                 ready_check.service.image,
                 ready_check.timeout.as_secs()
             ),
-        )?;
+        )
+        .await?;
         Ok(ReadinessPoll::retry(false))
     }
 }
@@ -185,9 +198,10 @@ pub(super) fn readiness_from_state(state: &ServiceState) -> ServiceReadiness {
     }
 }
 
-fn probe_service_ports(
+async fn probe_service_ports(
     engine: EngineKind,
     network: &str,
+    probe_image: &str,
     host: &str,
     ports: &[ServicePort],
     preserve_runtime_objects: bool,
@@ -211,12 +225,12 @@ fn probe_service_ports(
     {
         command.arg("--arch").arg(arch);
     }
-    let status = command
-        .arg("docker.io/library/alpine:3.19")
+    command
+        .arg(probe_image)
         .arg("sh")
         .arg("-lc")
-        .arg(checks.join(" && "))
-        .status()?;
+        .arg(checks.join(" && "));
+    let status = tokio::process::Command::from(command).status().await?;
     Ok(status.success())
 }
 
@@ -241,6 +255,17 @@ fn service_ready_timeout() -> Duration {
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(SERVICE_READY_TIMEOUT_DEFAULT_SECS))
+}
+
+pub(super) fn configured_service_probe_image(raw: Option<&str>) -> Cow<'_, str> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Borrowed(SERVICE_PROBE_IMAGE_DEFAULT))
+}
+
+fn service_probe_image() -> String {
+    configured_service_probe_image(env::var(SERVICE_PROBE_IMAGE_ENV).ok().as_deref()).into_owned()
 }
 
 fn shell_escape(value: &str) -> String {
@@ -271,7 +296,7 @@ struct ReadyCheck<'a> {
     timeout: Duration,
 }
 
-fn wait_for_retry_or_timeout(
+async fn wait_for_retry_or_timeout(
     started: Instant,
     timeout: Duration,
     timeout_message: String,
@@ -279,11 +304,11 @@ fn wait_for_retry_or_timeout(
     if started.elapsed() >= timeout {
         return Err(anyhow!(timeout_message));
     }
-    thread::sleep(Duration::from_millis(SERVICE_READY_POLL_MS));
+    sleep(Duration::from_millis(SERVICE_READY_POLL_MS)).await;
     Ok(())
 }
 
-fn await_running_confirmation(
+async fn await_running_confirmation(
     started: Instant,
     timeout: Duration,
     container_name: &str,
@@ -303,6 +328,7 @@ fn await_running_confirmation(
             image,
             timeout.as_secs()
         ),
-    )?;
+    )
+    .await?;
     Ok(ReadinessPoll::retry(true))
 }

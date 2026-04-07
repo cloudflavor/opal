@@ -77,9 +77,11 @@ pub(crate) async fn handle_restart_commands(
                 let ui_clone = ui.clone();
                 let run_info_clone = run_info.clone();
                 let job_plan = plan.clone();
+                let runtime_handle = tokio::runtime::Handle::current();
                 let event = task::spawn_blocking(move || {
                     job_runner::run_planned_job(
                         &restart_exec,
+                        &runtime_handle,
                         job_plan,
                         planned,
                         run_info_clone,

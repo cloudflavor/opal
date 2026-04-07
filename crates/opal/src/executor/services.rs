@@ -32,7 +32,7 @@ pub struct ServiceRuntime {
 }
 
 impl ServiceRuntime {
-    pub fn start(
+    pub async fn start(
         engine: EngineKind,
         run_id: &str,
         job_name: &str,
@@ -50,6 +50,7 @@ impl ServiceRuntime {
         let network_manager = ServiceNetworkManager::new(engine);
         network_manager
             .create(&network)
+            .await
             .with_context(|| format!("failed to create network {network}"))?;
 
         let inspector = ServiceInspector::new(engine);
@@ -65,21 +66,28 @@ impl ServiceRuntime {
         for (idx, service) in services.iter().enumerate() {
             let aliases = runtime.aliases_for_service(idx, service)?;
             let container_name = service_container_name(run_id, job_name, idx);
-            let ports = discover_service_ports(engine, &inspector, service);
+            let ports = discover_service_ports(engine, &inspector, service).await;
 
-            if let Err(err) =
-                runtime
-                    .lifecycle
-                    .start_service(&container_name, service, &aliases, base_env)
+            if let Err(err) = runtime
+                .lifecycle
+                .start_service(&container_name, service, &aliases, base_env)
+                .await
             {
-                runtime.cleanup();
+                if !preserve_runtime_objects {
+                    runtime.cleanup().await;
+                }
                 return Err(err);
             }
-            if let Err(err) = readiness.wait_for(&inspector, &container_name, service, &ports) {
-                runtime.cleanup();
+            if let Err(err) = readiness
+                .wait_for(&inspector, &container_name, service, &ports)
+                .await
+            {
+                if !preserve_runtime_objects {
+                    runtime.cleanup().await;
+                }
                 return Err(err);
             }
-            if let Some(ip) = inspector.ipv4(&container_name) {
+            if let Some(ip) = inspector.ipv4(&container_name).await {
                 for alias in &aliases {
                     runtime.host_aliases.push((alias.clone(), ip.clone()));
                 }
@@ -104,8 +112,8 @@ impl ServiceRuntime {
         self.lifecycle.container_names()
     }
 
-    pub fn cleanup(&mut self) {
-        self.lifecycle.cleanup();
+    pub async fn cleanup(&mut self) {
+        self.lifecycle.cleanup().await;
     }
 
     pub fn link_env(&self) -> &[(String, String)] {
@@ -144,7 +152,7 @@ impl ServiceLifecycle {
         &self.containers
     }
 
-    fn start_service(
+    async fn start_service(
         &mut self,
         container_name: &str,
         service: &ServiceSpec,
@@ -197,21 +205,28 @@ impl ServiceLifecycle {
             eprintln!("[opal] service command: {} {}", program, args.join(" "));
         }
 
-        run_command_with_timeout(command, command_timeout(self.engine)).with_context(|| {
-            format!(
-                "failed to start service '{}' ({})",
-                container_name, service.image
-            )
-        })?;
+        run_command_with_timeout(command, command_timeout(self.engine))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to start service '{}' ({})",
+                    container_name, service.image
+                )
+            })?;
         self.containers.push(container_name.to_string());
         Ok(())
     }
 
-    fn cleanup(&mut self) {
+    async fn cleanup(&mut self) {
         for name in self.containers.drain(..).rev() {
-            let _ = force_remove_container_command(self.engine, &name).status();
+            let _ =
+                tokio::process::Command::from(force_remove_container_command(self.engine, &name))
+                    .status()
+                    .await;
         }
-        let _ = ServiceNetworkManager::new(self.engine).remove(&self.network);
+        let _ = ServiceNetworkManager::new(self.engine)
+            .remove(&self.network)
+            .await;
     }
 }
 
@@ -251,7 +266,7 @@ fn service_container_name(run_id: &str, job_name: &str, idx: usize) -> String {
     ))
 }
 
-fn discover_service_ports(
+async fn discover_service_ports(
     engine: EngineKind,
     inspector: &ServiceInspector,
     service: &ServiceSpec,
@@ -260,7 +275,7 @@ fn discover_service_ports(
         return Vec::new();
     }
 
-    match inspector.discover_ports(&service.image) {
+    match inspector.discover_ports(&service.image).await {
         Ok(ports) => ports,
         Err(err) => {
             warn!(
@@ -345,7 +360,10 @@ mod tests {
     };
     use super::inspect::{ServiceState, parse_service_ipv4, parse_service_state};
     use super::network::should_retry_container_network_error;
-    use super::readiness::{ServiceReadiness, readiness_from_state, service_probe_command};
+    use super::readiness::{
+        ServiceReadiness, configured_service_probe_image, readiness_from_state,
+        service_probe_command,
+    };
     use super::{ServiceLifecycle, ServiceRuntime};
     use crate::EngineKind;
     use crate::model::ServiceSpec;
@@ -665,11 +683,32 @@ mod tests {
     }
 
     #[test]
-    fn run_command_with_timeout_fails_fast() {
+    fn configured_service_probe_image_defaults_for_blank_or_missing_values() {
+        assert_eq!(
+            configured_service_probe_image(None),
+            "docker.io/library/alpine:3.19"
+        );
+        assert_eq!(
+            configured_service_probe_image(Some("   ")),
+            "docker.io/library/alpine:3.19"
+        );
+    }
+
+    #[test]
+    fn configured_service_probe_image_uses_explicit_override() {
+        assert_eq!(
+            configured_service_probe_image(Some("ghcr.io/cloudflavor/netshoot:latest")),
+            "ghcr.io/cloudflavor/netshoot:latest"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_with_timeout_fails_fast() {
         let mut command = Command::new("sh");
         command.arg("-lc").arg("sleep 1");
 
         let err = run_command_with_timeout(command, Some(Duration::from_millis(50)))
+            .await
             .expect_err("command should time out");
 
         assert!(err.to_string().contains("timed out"));

@@ -4,9 +4,10 @@ use crate::model::ServiceSpec;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Debug;
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
+use tokio::time::sleep;
 
 const CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 10;
 
@@ -56,23 +57,28 @@ pub(super) fn merged_env(
     merged.into_iter().collect()
 }
 
-pub(super) fn run_command_with_timeout(mut cmd: Command, timeout: Option<Duration>) -> Result<()> {
+pub(super) async fn run_command_with_timeout(
+    cmd: Command,
+    timeout: Option<Duration>,
+) -> Result<()> {
     let Some(timeout) = timeout else {
-        return run_command(cmd);
+        return run_command(cmd).await;
     };
 
+    let mut cmd = tokio::process::Command::from(cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let debug_command = format!("{cmd:?}");
     let mut child = cmd.spawn()?;
     let started = Instant::now();
 
     loop {
         if child.try_wait()?.is_some() {
-            let output = child.wait_with_output()?;
+            let output = child.wait_with_output().await?;
             if output.status.success() {
                 return Ok(());
             }
             return Err(command_failed(
-                &cmd,
+                &debug_command,
                 &output.stdout,
                 &output.stderr,
                 output.status.code(),
@@ -80,22 +86,20 @@ pub(super) fn run_command_with_timeout(mut cmd: Command, timeout: Option<Duratio
         }
 
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let output = child.wait_with_output().ok();
-            let (stdout, stderr, _) = if let Some(output) = output {
-                (output.stdout, output.stderr, output.status.code())
-            } else {
-                (Vec::new(), Vec::new(), None)
-            };
+            let _ = child.start_kill();
+            let output = child.wait_with_output().await.ok();
+            let (stdout, stderr) = output
+                .map(|output| (output.stdout, output.stderr))
+                .unwrap_or_else(|| (Vec::new(), Vec::new()));
             return Err(anyhow!(
-                "command {:?} timed out after {}s{}",
-                &cmd,
+                "command {} timed out after {}s{}",
+                debug_command,
                 timeout.as_secs(),
                 command_failed_detail(&stdout, &stderr)
             ));
         }
 
-        thread::sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -108,7 +112,7 @@ pub(super) fn command_timeout(engine: EngineKind) -> Option<Duration> {
 }
 
 pub(super) fn command_failed(
-    cmd: &Command,
+    cmd: &impl Debug,
     stdout: &[u8],
     stderr: &[u8],
     code: Option<i32>,
@@ -121,13 +125,14 @@ pub(super) fn command_failed(
     )
 }
 
-fn run_command(mut cmd: Command) -> Result<()> {
-    let output = cmd.output()?;
+async fn run_command(cmd: Command) -> Result<()> {
+    let debug_command = format!("{cmd:?}");
+    let output = tokio::process::Command::from(cmd).output().await?;
     if output.status.success() {
         Ok(())
     } else {
         Err(command_failed(
-            &cmd,
+            &debug_command,
             &output.stdout,
             &output.stderr,
             output.status.code(),
