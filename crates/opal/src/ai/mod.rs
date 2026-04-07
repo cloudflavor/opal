@@ -4,6 +4,7 @@ mod context;
 mod ollama;
 mod prompt;
 mod provider;
+mod shared;
 mod types;
 
 pub use context::AiContext;

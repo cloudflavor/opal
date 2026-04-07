@@ -1,3 +1,4 @@
+use super::shared::{ai_error, contextual_error, emit_text_chunk, missing_internal};
 use super::{AiChunk, AiError, AiProviderKind, AiRequest, AiResult};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -5,7 +6,7 @@ use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, ChildStdout, Command};
 
 #[derive(Debug, Deserialize)]
 struct CodexJsonEvent {
@@ -25,89 +26,27 @@ pub async fn analyze<F>(request: &AiRequest, mut on_chunk: F) -> Result<AiResult
 where
     F: FnMut(AiChunk) + Send,
 {
-    let command = request.command.as_deref().ok_or_else(|| AiError {
-        message: "internal error: missing Codex command".to_string(),
-    })?;
+    let command = request
+        .command
+        .as_deref()
+        .ok_or_else(|| missing_internal("Codex command"))?;
     let output_path = temp_output_file();
+    let mut child = spawn_codex(command, build_args(request, &output_path))?;
+    write_prompt(child.stdin.take(), &request.prompt).await?;
 
-    let mut args = if request.args.is_empty() {
-        default_args(
-            request.workdir.as_deref(),
-            &output_path,
-            request.model.as_deref(),
-        )
-    } else {
-        request.args.clone()
-    };
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| missing_internal("Codex stdout stream"))?;
+    let streamed = stream_codex_output(stdout, &mut on_chunk).await?;
 
-    let mut child = Command::new(command)
-        .args(args.drain(..))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| AiError {
-            message: format!("failed to start Codex CLI: {err}"),
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(request.prompt.as_bytes())
-            .await
-            .map_err(|err| AiError {
-                message: format!("failed to write prompt to Codex CLI: {err}"),
-            })?;
-        stdin.flush().await.map_err(|err| AiError {
-            message: format!("failed to write prompt to Codex CLI: {err}"),
-        })?;
-    }
-
-    let stdout = child.stdout.take().ok_or_else(|| AiError {
-        message: "missing Codex stdout stream".to_string(),
-    })?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let mut streamed = String::new();
-
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line).await.map_err(|err| AiError {
-            message: format!("failed to read Codex output: {err}"),
-        })?;
-        if read == 0 {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(event) = serde_json::from_str::<CodexJsonEvent>(trimmed)
-            && event.method.as_deref() == Some("agent/messageDelta")
-            && let Some(delta) = event.params.and_then(|params| params.delta)
-            && !delta.is_empty()
-        {
-            streamed.push_str(&delta);
-            on_chunk(AiChunk::Text(delta));
-        }
-    }
-
-    let output = child.wait_with_output().await.map_err(|err| AiError {
-        message: format!("failed to wait for Codex CLI: {err}"),
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(AiError {
-            message: if stderr.is_empty() {
-                format!("Codex CLI failed with status {:?}", output.status.code())
-            } else {
-                stderr
-            },
-        });
-    }
-
-    let final_text = fs::read_to_string(&output_path)
+    let output = child
+        .wait_with_output()
         .await
-        .unwrap_or_else(|_| streamed.clone());
+        .map_err(|err| contextual_error("failed to wait for Codex CLI", err))?;
+    ensure_success(&output)?;
+
+    let final_text = read_final_text(&output_path, &streamed).await;
     let _ = fs::remove_file(&output_path).await;
 
     Ok(AiResult {
@@ -119,6 +58,18 @@ where
         },
         saved_path: request.save_path.clone(),
     })
+}
+
+fn build_args(request: &AiRequest, output_path: &Path) -> Vec<String> {
+    if request.args.is_empty() {
+        default_args(
+            request.workdir.as_deref(),
+            output_path,
+            request.model.as_deref(),
+        )
+    } else {
+        request.args.clone()
+    }
 }
 
 fn default_args(workdir: Option<&Path>, output_path: &Path, model: Option<&str>) -> Vec<String> {
@@ -144,17 +95,111 @@ fn default_args(workdir: Option<&Path>, output_path: &Path, model: Option<&str>)
     args
 }
 
+fn spawn_codex(command: &str, args: Vec<String>) -> Result<Child, AiError> {
+    Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| contextual_error("failed to start Codex CLI", err))
+}
+
+async fn write_prompt(
+    stdin: Option<tokio::process::ChildStdin>,
+    prompt: &str,
+) -> Result<(), AiError> {
+    let Some(mut stdin) = stdin else {
+        return Ok(());
+    };
+
+    stdin
+        .write_all(prompt.as_bytes())
+        .await
+        .map_err(|err| contextual_error("failed to write prompt to Codex CLI", err))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|err| contextual_error("failed to write prompt to Codex CLI", err))
+}
+
+async fn stream_codex_output<F>(stdout: ChildStdout, on_chunk: &mut F) -> Result<String, AiError>
+where
+    F: FnMut(AiChunk) + Send,
+{
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut streamed = String::new();
+
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|err| contextual_error("failed to read Codex output", err))?;
+        if read == 0 {
+            break;
+        }
+
+        if let Some(delta) = parse_event_delta(line.trim()) {
+            emit_text_chunk(&mut streamed, delta, on_chunk);
+        }
+    }
+
+    Ok(streamed)
+}
+
+fn parse_event_delta(line: &str) -> Option<String> {
+    if line.is_empty() {
+        return None;
+    }
+
+    let event = serde_json::from_str::<CodexJsonEvent>(line).ok()?;
+    if event.method.as_deref() != Some("agent/messageDelta") {
+        return None;
+    }
+
+    event.params.and_then(|params| {
+        let delta = params.delta?;
+        (!delta.is_empty()).then_some(delta)
+    })
+}
+
+fn ensure_success(output: &std::process::Output) -> Result<(), AiError> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        ai_error(format!(
+            "Codex CLI failed with status {:?}",
+            output.status.code()
+        ))
+    } else {
+        ai_error(stderr)
+    })
+}
+
+async fn read_final_text(output_path: &Path, streamed: &str) -> String {
+    match fs::read_to_string(output_path).await {
+        Ok(text) => text,
+        Err(_) => streamed.to_string(),
+    }
+}
+
 fn temp_output_file() -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!("opal-codex-last-message-{nanos}.txt"))
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("opal-codex-last-message-{pid}-{nanos}.txt"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::CodexJsonEvent;
+    use super::{CodexJsonEvent, parse_event_delta};
 
     #[test]
     fn parses_agent_message_delta_event() {
@@ -166,5 +211,14 @@ mod tests {
             event.params.and_then(|params| params.delta).as_deref(),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn parse_event_delta_ignores_non_delta_events() {
+        assert_eq!(
+            parse_event_delta(r#"{"method":"other","params":{"delta":"hello"}}"#),
+            None
+        );
+        assert_eq!(parse_event_delta(""), None);
     }
 }

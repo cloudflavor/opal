@@ -13,30 +13,18 @@ pub struct RenderedPrompt {
     pub prompt: String,
 }
 
+struct JobAnalysisTemplates {
+    system: String,
+    prompt: String,
+}
+
 pub fn render_job_analysis_prompt(
     workdir: &Path,
     settings: &AiSettingsConfig,
     context: &AiContext,
 ) -> Result<RenderedPrompt> {
-    let vars = template_vars(context);
-    let system_template = load_template(
-        workdir,
-        settings.prompts.system_file.as_deref(),
-        "system.md",
-    )?;
-    let prompt_template = load_template(
-        workdir,
-        settings.prompts.job_analysis_file.as_deref(),
-        "job-analysis.md",
-    )?;
-
-    let system = render_template(&system_template, &vars).trim().to_string();
-    let prompt = render_template(&prompt_template, &vars);
-
-    Ok(RenderedPrompt {
-        system: (!system.is_empty()).then_some(system),
-        prompt,
-    })
+    let templates = load_job_analysis_templates(workdir, settings)?;
+    Ok(render_job_analysis_templates(context, templates))
 }
 
 pub async fn render_job_analysis_prompt_async(
@@ -44,26 +32,59 @@ pub async fn render_job_analysis_prompt_async(
     settings: &AiSettingsConfig,
     context: &AiContext,
 ) -> Result<RenderedPrompt> {
+    let templates = load_job_analysis_templates_async(workdir, settings).await?;
+    Ok(render_job_analysis_templates(context, templates))
+}
+
+fn render_job_analysis_templates(
+    context: &AiContext,
+    templates: JobAnalysisTemplates,
+) -> RenderedPrompt {
     let vars = template_vars(context);
-    let system_template = load_template_async(
-        workdir,
-        settings.prompts.system_file.as_deref(),
-        "system.md",
-    )
-    .await?;
-    let prompt_template = load_template_async(
-        workdir,
-        settings.prompts.job_analysis_file.as_deref(),
-        "job-analysis.md",
-    )
-    .await?;
+    let system = render_template(&templates.system, &vars).trim().to_string();
+    let prompt = render_template(&templates.prompt, &vars);
 
-    let system = render_template(&system_template, &vars).trim().to_string();
-    let prompt = render_template(&prompt_template, &vars);
-
-    Ok(RenderedPrompt {
+    RenderedPrompt {
         system: (!system.is_empty()).then_some(system),
         prompt,
+    }
+}
+
+fn load_job_analysis_templates(
+    workdir: &Path,
+    settings: &AiSettingsConfig,
+) -> Result<JobAnalysisTemplates> {
+    Ok(JobAnalysisTemplates {
+        system: load_template(
+            workdir,
+            settings.prompts.system_file.as_deref(),
+            "system.md",
+        )?,
+        prompt: load_template(
+            workdir,
+            settings.prompts.job_analysis_file.as_deref(),
+            "job-analysis.md",
+        )?,
+    })
+}
+
+async fn load_job_analysis_templates_async(
+    workdir: &Path,
+    settings: &AiSettingsConfig,
+) -> Result<JobAnalysisTemplates> {
+    Ok(JobAnalysisTemplates {
+        system: load_template_async(
+            workdir,
+            settings.prompts.system_file.as_deref(),
+            "system.md",
+        )
+        .await?,
+        prompt: load_template_async(
+            workdir,
+            settings.prompts.job_analysis_file.as_deref(),
+            "job-analysis.md",
+        )
+        .await?,
     })
 }
 
@@ -72,18 +93,12 @@ fn load_template(
     override_path: Option<&str>,
     embedded_name: &str,
 ) -> Result<String> {
-    if let Some(path) = override_path.filter(|value| !value.trim().is_empty()) {
-        let path = resolve_prompt_path(workdir, path);
+    if let Some(path) = resolve_prompt_path(workdir, override_path) {
         return fs::read_to_string(&path)
             .with_context(|| format!("failed to read AI prompt template {}", path.display()));
     }
 
-    let file = EMBEDDED_PROMPTS
-        .get_file(embedded_name)
-        .with_context(|| format!("embedded AI prompt {embedded_name} not found"))?;
-    file.contents_utf8()
-        .map(|text| text.to_string())
-        .with_context(|| format!("embedded AI prompt {embedded_name} is not valid utf-8"))
+    load_embedded_template(embedded_name)
 }
 
 async fn load_template_async(
@@ -91,13 +106,16 @@ async fn load_template_async(
     override_path: Option<&str>,
     embedded_name: &str,
 ) -> Result<String> {
-    if let Some(path) = override_path.filter(|value| !value.trim().is_empty()) {
-        let path = resolve_prompt_path(workdir, path);
+    if let Some(path) = resolve_prompt_path(workdir, override_path) {
         return tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("failed to read AI prompt template {}", path.display()));
     }
 
+    load_embedded_template(embedded_name)
+}
+
+fn load_embedded_template(embedded_name: &str) -> Result<String> {
     let file = EMBEDDED_PROMPTS
         .get_file(embedded_name)
         .with_context(|| format!("embedded AI prompt {embedded_name} not found"))?;
@@ -106,13 +124,14 @@ async fn load_template_async(
         .with_context(|| format!("embedded AI prompt {embedded_name} is not valid utf-8"))
 }
 
-fn resolve_prompt_path(workdir: &Path, value: &str) -> PathBuf {
+fn resolve_prompt_path(workdir: &Path, value: Option<&str>) -> Option<PathBuf> {
+    let value = value.filter(|value| !value.trim().is_empty())?;
     let path = PathBuf::from(value);
-    if path.is_absolute() {
+    Some(if path.is_absolute() {
         path
     } else {
         workdir.join(path)
-    }
+    })
 }
 
 fn template_vars(context: &AiContext) -> HashMap<&'static str, String> {

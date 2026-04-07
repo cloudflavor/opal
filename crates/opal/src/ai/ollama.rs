@@ -1,3 +1,4 @@
+use super::shared::{ai_error, contextual_error, emit_text_chunk, missing_internal};
 use super::{AiChunk, AiError, AiProviderKind, AiRequest, AiResult};
 use reqwest::header::ACCEPT;
 use reqwest::{Client, Response};
@@ -26,12 +27,14 @@ pub async fn analyze<F>(request: &AiRequest, on_chunk: F) -> Result<AiResult, Ai
 where
     F: FnMut(AiChunk) + Send,
 {
-    let host = request.host.as_deref().ok_or_else(|| AiError {
-        message: "internal error: missing Ollama host".to_string(),
-    })?;
-    let model = request.model.as_deref().ok_or_else(|| AiError {
-        message: "internal error: missing Ollama model".to_string(),
-    })?;
+    let host = request
+        .host
+        .as_deref()
+        .ok_or_else(|| missing_internal("Ollama host"))?;
+    let model = request
+        .model
+        .as_deref()
+        .ok_or_else(|| missing_internal("Ollama model"))?;
     let system = request.system.as_deref();
 
     let url = generate_url(host);
@@ -46,9 +49,7 @@ where
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(300))
         .build()
-        .map_err(|err| AiError {
-            message: format!("failed to build Ollama HTTP client: {err}"),
-        })?;
+        .map_err(|err| contextual_error("failed to build Ollama HTTP client", err))?;
 
     let response = client
         .post(&url)
@@ -56,9 +57,7 @@ where
         .json(&payload)
         .send()
         .await
-        .map_err(|err| AiError {
-            message: format!("failed to call Ollama at {url}: {err}"),
-        })?;
+        .map_err(|err| contextual_error(&format!("failed to call Ollama at {url}"), err))?;
 
     let text = parse_generate_response(response, on_chunk).await?;
 
@@ -82,24 +81,16 @@ where
 {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(AiError {
-            message: if body.trim().is_empty() {
-                format!("Ollama request failed with status {status}")
-            } else {
-                format!(
-                    "Ollama request failed with status {status}: {}",
-                    body.trim()
-                )
-            },
-        });
+        let body: String = response.text().await.unwrap_or_default();
+        return Err(ollama_status_error(status, &body));
     }
     let mut text = String::new();
     let mut buffer = Vec::new();
     loop {
-        let Some(chunk) = response.chunk().await.map_err(|err| AiError {
-            message: format!("failed to read Ollama stream: {err}"),
-        })?
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|err| contextual_error("failed to read Ollama stream", err))?
         else {
             break;
         };
@@ -148,24 +139,30 @@ where
     F: FnMut(AiChunk),
 {
     let trimmed = std::str::from_utf8(line)
-        .map_err(|err| AiError {
-            message: format!("failed to decode Ollama stream chunk: {err}"),
-        })?
+        .map_err(|err| contextual_error("failed to decode Ollama stream chunk", err))?
         .trim();
     if trimmed.is_empty() {
         return Ok(());
     }
-    let chunk: OllamaGenerateChunk = serde_json::from_str(trimmed).map_err(|err| AiError {
-        message: format!("failed to parse Ollama stream chunk: {err}"),
-    })?;
+    let chunk: OllamaGenerateChunk = serde_json::from_str(trimmed)
+        .map_err(|err| contextual_error("failed to parse Ollama stream chunk", err))?;
     if let Some(error) = chunk.error {
-        return Err(AiError { message: error });
+        return Err(ai_error(error));
     }
-    if !chunk.response.is_empty() {
-        text.push_str(&chunk.response);
-        on_chunk(AiChunk::Text(chunk.response));
-    }
+    emit_text_chunk(text, chunk.response, on_chunk);
     Ok(())
+}
+
+fn ollama_status_error(status: reqwest::StatusCode, body: &str) -> AiError {
+    let message = if body.trim().is_empty() {
+        format!("Ollama request failed with status {status}")
+    } else {
+        format!(
+            "Ollama request failed with status {status}: {}",
+            body.trim()
+        )
+    };
+    ai_error(message)
 }
 
 #[cfg(test)]
