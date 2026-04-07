@@ -5,10 +5,22 @@ use crate::runner::ExecuteContext;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::{Result, anyhow};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Handle;
+
+struct JobRunRequest<'a> {
+    exec: &'a ExecutorCore,
+    runtime_handle: &'a Handle,
+    plan: &'a ExecutionPlan,
+    job: &'a crate::model::JobSpec,
+    stage_name: &'a str,
+    log_path: &'a Path,
+    run_info: &'a JobRunInfo,
+    job_start: Instant,
+    ui: Option<&'a UiBridge>,
+}
 
 pub(crate) fn run_planned_job(
     exec: &ExecutorCore,
@@ -29,118 +41,213 @@ pub(crate) fn run_planned_job(
     let job_start = Instant::now();
     let ui_ref = ui.as_deref();
 
-    // TODO: what the fuck is this, why is this a function here?
-    // the logic needs to be simplified, garbage
-    let result = (|| -> Result<()> {
-        let mut prepared = runtime_handle.block_on(exec.prepare_job_run(plan.as_ref(), &job))?;
-        let container_name = run_info.container_name.clone();
-        let exec_result = exec.execute(ExecuteContext {
-            host_workdir: &prepared.host_workdir,
-            script_path: &prepared.script_path,
-            log_path: &log_path,
-            mounts: &prepared.mounts,
-            image: &prepared.job_image.name,
-            image_platform: prepared.job_image.docker_platform.as_deref(),
-            image_user: prepared.job_image.docker_user.as_deref(),
-            image_entrypoint: &prepared.job_image.entrypoint,
-            container_name: &container_name,
-            job: &job,
-            ui: ui_ref,
-            env_vars: &prepared.env_vars,
-            network: prepared
-                .service_runtime
-                .as_ref()
-                .map(|runtime| runtime.network_name()),
-            preserve_runtime_objects: exec.config.settings.preserve_runtime_objects(),
-            arch: prepared.arch.as_deref(),
-            privileged: prepared.privileged,
-            cap_add: &prepared.cap_add,
-            cap_drop: &prepared.cap_drop,
-        });
-        let service_network = prepared
-            .service_runtime
-            .as_ref()
-            .map(|runtime| runtime.network_name().to_string());
-        let service_containers = prepared
-            .service_runtime
-            .as_ref()
-            .map(|runtime| runtime.container_names().to_vec())
-            .unwrap_or_default();
-        let runtime_summary_path = exec.write_runtime_summary(
-            &job.name,
-            &container_name,
-            prepared
-                .service_runtime
-                .as_ref()
-                .map(|runtime| runtime.network_name()),
-            &service_containers,
-        )?;
-        exec.record_runtime_objects(
-            &job.name,
-            container_name.clone(),
-            service_network,
-            service_containers,
-            runtime_summary_path,
-        );
-        if !exec.config.settings.preserve_runtime_objects() {
-            exec.cleanup_finished_container(&container_name);
-        }
-        if let Some(mut runtime) = prepared.service_runtime.take()
-            && !exec.config.settings.preserve_runtime_objects()
-        {
-            runtime_handle.block_on(runtime.cleanup());
-        }
-        exec.collect_declared_artifacts(&job, &prepared.host_workdir, &prepared.mounts)?;
-        exec.collect_untracked_artifacts(&job, &prepared.host_workdir)?;
-        exec.collect_dotenv_artifacts(&job, &prepared.host_workdir, &prepared.mounts)?;
-        exec_result?;
-        exec.print_job_completion(
-            &stage_name,
-            &prepared.script_path,
-            &log_path,
-            job_start.elapsed().as_secs_f32(),
-        );
-        Ok(())
-    })();
+    let result = execute_job_run(JobRunRequest {
+        exec,
+        runtime_handle,
+        plan: plan.as_ref(),
+        job: &job,
+        stage_name: &stage_name,
+        log_path: &log_path,
+        run_info: &run_info,
+        job_start,
+        ui: ui_ref,
+    });
 
     let duration = job_start.elapsed().as_secs_f32();
     let cancelled = exec.take_cancelled_job(&job_name);
     let final_result = completion_result(result, cancelled, &log_path);
-    if let Some(ui) = ui_ref {
-        match &final_result {
-            Ok(_) => ui.job_finished(&job_name, UiJobStatus::Success, duration, None),
-            Err(err) => {
-                if cancelled {
-                    ui.job_finished(
-                        &job_name,
-                        UiJobStatus::Skipped,
-                        duration,
-                        Some("aborted by user".to_string()),
-                    );
-                } else {
-                    ui.job_finished(
-                        &job_name,
-                        UiJobStatus::Failed,
-                        duration,
-                        Some(err.to_string()),
-                    );
-                }
-            }
-        }
-    }
+    report_ui_completion(ui_ref, &job_name, &final_result, cancelled, duration);
 
     exec.clear_running_container(&job_name);
 
-    let exit_code = extract_exit_code(&final_result, cancelled);
-    let failure_kind = classify_failure(&job_name, &final_result, cancelled);
+    build_job_event(
+        job_name,
+        stage_name,
+        duration,
+        log_path,
+        log_hash,
+        final_result,
+        cancelled,
+    )
+}
+
+fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
+    let JobRunRequest {
+        exec,
+        runtime_handle,
+        plan,
+        job,
+        stage_name,
+        log_path,
+        run_info,
+        job_start,
+        ui,
+    } = request;
+
+    let mut prepared = runtime_handle.block_on(exec.prepare_job_run(plan, job))?;
+    let container_name = run_info.container_name.clone();
+    let exec_result = exec.execute(execute_context(
+        exec,
+        &prepared,
+        job,
+        &container_name,
+        log_path,
+        ui,
+    ));
+
+    record_runtime_objects(exec, job, &container_name, &prepared)?;
+    cleanup_runtime(exec, runtime_handle, &container_name, &mut prepared);
+    collect_job_artifacts(exec, job, &prepared)?;
+    exec_result?;
+    exec.print_job_completion(
+        stage_name,
+        &prepared.script_path,
+        log_path,
+        job_start.elapsed().as_secs_f32(),
+    );
+    Ok(())
+}
+
+fn execute_context<'a>(
+    exec: &'a ExecutorCore,
+    prepared: &'a crate::executor::core::PreparedJobRun,
+    job: &'a crate::model::JobSpec,
+    container_name: &'a str,
+    log_path: &'a Path,
+    ui: Option<&'a UiBridge>,
+) -> ExecuteContext<'a> {
+    ExecuteContext {
+        host_workdir: &prepared.host_workdir,
+        script_path: &prepared.script_path,
+        log_path,
+        mounts: &prepared.mounts,
+        image: &prepared.job_image.name,
+        image_platform: prepared.job_image.docker_platform.as_deref(),
+        image_user: prepared.job_image.docker_user.as_deref(),
+        image_entrypoint: &prepared.job_image.entrypoint,
+        container_name,
+        job,
+        ui,
+        env_vars: &prepared.env_vars,
+        network: prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.network_name()),
+        preserve_runtime_objects: exec.config.settings.preserve_runtime_objects(),
+        arch: prepared.arch.as_deref(),
+        privileged: prepared.privileged,
+        cap_add: &prepared.cap_add,
+        cap_drop: &prepared.cap_drop,
+    }
+}
+
+fn record_runtime_objects(
+    exec: &ExecutorCore,
+    job: &crate::model::JobSpec,
+    container_name: &str,
+    prepared: &crate::executor::core::PreparedJobRun,
+) -> Result<()> {
+    let service_network = prepared
+        .service_runtime
+        .as_ref()
+        .map(|runtime| runtime.network_name().to_string());
+    let service_containers = prepared
+        .service_runtime
+        .as_ref()
+        .map(|runtime| runtime.container_names().to_vec())
+        .unwrap_or_default();
+    let runtime_summary_path = exec.write_runtime_summary(
+        &job.name,
+        container_name,
+        prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.network_name()),
+        &service_containers,
+    )?;
+    exec.record_runtime_objects(
+        &job.name,
+        container_name.to_string(),
+        service_network,
+        service_containers,
+        runtime_summary_path,
+    );
+    Ok(())
+}
+
+fn cleanup_runtime(
+    exec: &ExecutorCore,
+    runtime_handle: &Handle,
+    container_name: &str,
+    prepared: &mut crate::executor::core::PreparedJobRun,
+) {
+    if !exec.config.settings.preserve_runtime_objects() {
+        exec.cleanup_finished_container(container_name);
+    }
+    if let Some(mut runtime) = prepared.service_runtime.take()
+        && !exec.config.settings.preserve_runtime_objects()
+    {
+        runtime_handle.block_on(runtime.cleanup());
+    }
+}
+
+fn collect_job_artifacts(
+    exec: &ExecutorCore,
+    job: &crate::model::JobSpec,
+    prepared: &crate::executor::core::PreparedJobRun,
+) -> Result<()> {
+    exec.collect_declared_artifacts(job, &prepared.host_workdir, &prepared.mounts)?;
+    exec.collect_untracked_artifacts(job, &prepared.host_workdir)?;
+    exec.collect_dotenv_artifacts(job, &prepared.host_workdir, &prepared.mounts)?;
+    Ok(())
+}
+
+fn report_ui_completion(
+    ui: Option<&UiBridge>,
+    job_name: &str,
+    result: &Result<()>,
+    cancelled: bool,
+    duration: f32,
+) {
+    let Some(ui) = ui else {
+        return;
+    };
+    let (status, detail) = ui_completion(result, cancelled);
+    ui.job_finished(job_name, status, duration, detail);
+}
+
+fn ui_completion(result: &Result<()>, cancelled: bool) -> (UiJobStatus, Option<String>) {
+    if result.is_ok() {
+        return (UiJobStatus::Success, None);
+    }
+    if cancelled {
+        return (UiJobStatus::Skipped, Some("aborted by user".to_string()));
+    }
+    (
+        UiJobStatus::Failed,
+        result.as_ref().err().map(|err| err.to_string()),
+    )
+}
+
+fn build_job_event(
+    job_name: String,
+    stage_name: String,
+    duration: f32,
+    log_path: PathBuf,
+    log_hash: String,
+    result: Result<()>,
+    cancelled: bool,
+) -> JobEvent {
+    let exit_code = extract_exit_code(&result, cancelled);
+    let failure_kind = classify_failure(&job_name, &result, cancelled);
 
     JobEvent {
         name: job_name,
         stage_name,
         duration,
-        log_path: Some(log_path.clone()),
+        log_path: Some(log_path),
         log_hash,
-        result: final_result,
+        result,
         failure_kind,
         exit_code,
         cancelled,
@@ -311,8 +418,11 @@ fn is_script_failure(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_failure, completion_result, extract_exit_code};
+    use super::{
+        build_job_event, classify_failure, completion_result, extract_exit_code, ui_completion,
+    };
     use crate::pipeline::JobFailureKind;
+    use crate::ui::UiJobStatus;
     use anyhow::anyhow;
     use std::fs;
     use std::path::PathBuf;
@@ -433,6 +543,54 @@ mod tests {
     fn extract_exit_code_reads_container_exit_status() {
         let result = Err(anyhow!("container command exited with status Some(137)"));
         assert_eq!(extract_exit_code(&result, false), Some(137));
+    }
+
+    #[test]
+    fn ui_completion_marks_cancelled_jobs_as_skipped() {
+        let result = Err(anyhow!("job cancelled by user"));
+        let (status, detail) = ui_completion(&result, true);
+        assert!(matches!(status, UiJobStatus::Skipped));
+        assert_eq!(detail.as_deref(), Some("aborted by user"));
+    }
+
+    #[test]
+    fn ui_completion_surfaces_failures_for_non_cancelled_jobs() {
+        let result = Err(anyhow!("container command exited with status Some(1)"));
+        let (status, detail) = ui_completion(&result, false);
+        assert!(matches!(status, UiJobStatus::Failed));
+        assert_eq!(
+            detail.as_deref(),
+            Some("container command exited with status Some(1)")
+        );
+    }
+
+    #[test]
+    fn build_job_event_captures_failure_metadata() {
+        let event = build_job_event(
+            "test".to_string(),
+            "stage".to_string(),
+            1.5,
+            PathBuf::from("/tmp/test.log"),
+            "hash".to_string(),
+            Err(anyhow!("container command exited with status Some(137)")),
+            false,
+        );
+
+        assert_eq!(event.name, "test");
+        assert_eq!(event.stage_name, "stage");
+        assert_eq!(event.duration, 1.5);
+        assert_eq!(event.log_path, Some(PathBuf::from("/tmp/test.log")));
+        assert_eq!(event.log_hash, "hash");
+        assert_eq!(event.exit_code, Some(137));
+        assert_eq!(event.failure_kind, Some(JobFailureKind::ScriptFailure));
+        assert!(!event.cancelled);
+        assert_eq!(
+            event
+                .result
+                .expect_err("event should preserve failure")
+                .to_string(),
+            "container command exited with status Some(137)"
+        );
     }
 
     fn temp_path(prefix: &str) -> PathBuf {

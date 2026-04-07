@@ -9,6 +9,8 @@ mod runtime_summary;
 mod stage_tracker;
 mod workspace;
 
+pub(crate) use preparer::PreparedJobRun;
+
 use super::{orchestrator, paths};
 use crate::ai::{
     self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt,
