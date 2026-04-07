@@ -1,5 +1,5 @@
 use super::{AiChunk, AiError};
-use std::fmt::Display;
+use std::error::Error;
 
 pub(crate) fn ai_error(message: impl Into<String>) -> AiError {
     AiError {
@@ -11,8 +11,12 @@ pub(crate) fn missing_internal(field: &str) -> AiError {
     ai_error(format!("internal error: missing {field}"))
 }
 
-pub(crate) fn contextual_error(context: &str, err: impl Display) -> AiError {
-    ai_error(format!("{context}: {err}"))
+pub(crate) fn contextual_error(context: &str, err: impl Error + Send + Sync + 'static) -> AiError {
+    ai_error(
+        anyhow::Error::new(err)
+            .context(context.to_string())
+            .to_string(),
+    )
 }
 
 pub(crate) fn emit_text_chunk<F>(buffer: &mut String, chunk: impl Into<String>, on_chunk: &mut F)
@@ -29,8 +33,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::emit_text_chunk;
+    use super::{contextual_error, emit_text_chunk};
     use crate::ai::AiChunk;
+    use std::io;
 
     #[test]
     fn emit_text_chunk_appends_and_streams_non_empty_text() {
@@ -44,5 +49,11 @@ mod tests {
 
         assert_eq!(buffer, "hello");
         assert_eq!(chunks, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn contextual_error_uses_anyhow_context() {
+        let err = contextual_error("failed to read stream", io::Error::other("boom"));
+        assert_eq!(err.message, "failed to read stream");
     }
 }
