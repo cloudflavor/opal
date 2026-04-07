@@ -2,15 +2,16 @@ use crate::{GitLabRemoteConfig, env, runtime};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
 use reqwest::Client;
-use serde_yaml::{Mapping, Value};
+use serde_yaml::{Mapping, Value, from_str as yaml_from_str};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use tokio::fs;
 
 use super::merge_mappings;
 
-type ResolverFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+const GITLAB_PRIVATE_TOKEN_HEADER: &str = "PRIVATE-TOKEN";
 
 pub(super) struct IncludeResolver<'a> {
     include_root: &'a Path,
@@ -44,7 +45,7 @@ impl<'a> IncludeResolver<'a> {
         path: &'b Path,
         context: &'b IncludeContext,
         stack: &'b mut Vec<PathBuf>,
-    ) -> ResolverFuture<'b, Mapping> {
+    ) -> Pin<Box<dyn Future<Output = Result<Mapping>> + Send + 'b>> {
         Box::pin(async move {
             if stack.iter().any(|entry| entry == path) {
                 bail!("include cycle detected involving {:?}", path);
@@ -234,27 +235,27 @@ impl IncludeIo {
     }
 
     async fn read_mapping(&self, path: &Path) -> Result<Mapping> {
-        let content = tokio::fs::read_to_string(path)
+        let content = fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to read {:?}", path))?;
-        serde_yaml::from_str(&content).with_context(|| format!("failed to parse {:?}", path))
+        yaml_from_str(&content).with_context(|| format!("failed to parse {:?}", path))
     }
 
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
-        tokio::fs::canonicalize(path)
+        fs::canonicalize(path)
             .await
             .with_context(|| format!("failed to resolve {:?}", path))
     }
 
     async fn try_exists(&self, path: &Path) -> Result<bool> {
-        tokio::fs::try_exists(path)
+        fs::try_exists(path)
             .await
             .with_context(|| format!("failed to stat {:?}", path))
     }
 
     async fn ensure_parent_dir(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
+            fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
@@ -262,7 +263,7 @@ impl IncludeIo {
     }
 
     async fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        tokio::fs::write(path, bytes)
+        fs::write(path, bytes)
             .await
             .with_context(|| format!("failed to write {}", path.display()))
     }
@@ -271,7 +272,7 @@ impl IncludeIo {
         let mut pending = vec![root.to_path_buf()];
         let mut files = Vec::new();
         while let Some(dir) = pending.pop() {
-            let mut entries = tokio::fs::read_dir(&dir)
+            let mut entries = fs::read_dir(&dir)
                 .await
                 .with_context(|| format!("failed to read {}", dir.display()))?;
             while let Some(entry) = entries
@@ -301,17 +302,11 @@ impl IncludeIo {
         reference: &str,
         relative: &Path,
     ) -> Result<Vec<u8>> {
-        let base = gitlab.base_url.trim_end_matches('/');
-        let project_id = percent_encode(project);
-        let file_id = percent_encode(&relative.to_string_lossy());
-        let ref_id = percent_encode(reference);
-        let url = format!(
-            "{base}/api/v4/projects/{project_id}/repository/files/{file_id}/raw?ref={ref_id}"
-        );
+        let url = gitlab_repository_file_raw_url(&gitlab.base_url, project, reference, relative);
         let response = self
             .client
             .get(&url)
-            .header("PRIVATE-TOKEN", gitlab.token.as_str())
+            .header(GITLAB_PRIVATE_TOKEN_HEADER, gitlab.token.as_str())
             .send()
             .await
             .with_context(|| format!("failed to request include:project from {}", url))?
@@ -405,56 +400,68 @@ enum IncludeEntry {
 fn parse_include_entry(value: Value) -> Result<Vec<IncludeEntry>> {
     match value {
         Value::String(path) => Ok(vec![IncludeEntry::Local(PathBuf::from(path))]),
-        Value::Mapping(map) => {
-            let local_key = Value::String("local".to_string());
-            let file_key = Value::String("file".to_string());
-            let files_key = Value::String("files".to_string());
-            let project_key = Value::String("project".to_string());
-            let remote_key = Value::String("remote".to_string());
-            let template_key = Value::String("template".to_string());
-            let component_key = Value::String("component".to_string());
-            if map.contains_key(&remote_key) {
-                bail!("include:remote is not supported yet");
-            }
-            if map.contains_key(&template_key) {
-                bail!("include:template is not supported yet");
-            }
-            if map.contains_key(&component_key) {
-                bail!("include:component is not supported yet");
-            }
-            if let Some(Value::String(local)) = map.get(&local_key) {
-                Ok(vec![IncludeEntry::Local(PathBuf::from(local))])
-            } else if let Some(Value::String(project)) = map.get(&project_key) {
-                let reference = map
-                    .get(Value::String("ref".to_string()))
-                    .map(|value| match value {
-                        Value::String(text) => Ok(text.clone()),
-                        other => bail!("include:project ref must be a string, got {other:?}"),
-                    })
-                    .transpose()?;
-                let files = parse_project_include_files(map.get(&file_key), map.get(&files_key))?;
-                Ok(vec![IncludeEntry::Project {
-                    project: project.clone(),
-                    reference,
-                    files,
-                }])
-            } else if let Some(Value::String(file)) = map.get(&file_key) {
-                Ok(vec![IncludeEntry::Local(PathBuf::from(file))])
-            } else if let Some(Value::Sequence(files)) = map.get(&files_key) {
-                let mut paths = Vec::new();
-                for entry in files {
-                    match entry {
-                        Value::String(path) => paths.push(IncludeEntry::Local(PathBuf::from(path))),
-                        other => bail!("include 'files' entries must be strings, got {other:?}"),
-                    }
-                }
-                Ok(paths)
-            } else {
-                bail!("only 'local' or 'file(s)' includes are supported");
-            }
-        }
+        Value::Mapping(map) => parse_include_mapping(map),
         other => bail!("unsupported include entry {other:?}"),
     }
+}
+
+fn parse_include_mapping(map: Mapping) -> Result<Vec<IncludeEntry>> {
+    reject_unsupported_include_sources(&map)?;
+
+    let local_key = include_mapping_key("local");
+    let file_key = include_mapping_key("file");
+    let files_key = include_mapping_key("files");
+    let project_key = include_mapping_key("project");
+
+    if let Some(Value::String(local)) = map.get(&local_key) {
+        return Ok(vec![IncludeEntry::Local(PathBuf::from(local))]);
+    }
+
+    if let Some(Value::String(project)) = map.get(&project_key) {
+        return Ok(vec![IncludeEntry::Project {
+            project: project.clone(),
+            reference: parse_project_include_reference(&map)?,
+            files: parse_project_include_files(map.get(&file_key), map.get(&files_key))?,
+        }]);
+    }
+
+    if let Some(Value::String(file)) = map.get(&file_key) {
+        return Ok(vec![IncludeEntry::Local(PathBuf::from(file))]);
+    }
+
+    if let Some(Value::Sequence(files)) = map.get(&files_key) {
+        return parse_local_include_files(files);
+    }
+
+    bail!("only 'local' or 'file(s)' includes are supported");
+}
+
+fn reject_unsupported_include_sources(map: &Mapping) -> Result<()> {
+    for key in map.keys().filter_map(Value::as_str) {
+        if matches!(key, "remote" | "template" | "component") {
+            bail!("include:{key} is not supported yet");
+        }
+    }
+    Ok(())
+}
+
+fn parse_project_include_reference(map: &Mapping) -> Result<Option<String>> {
+    map.get(include_mapping_key("ref"))
+        .map(|value| match value {
+            Value::String(text) => Ok(text.clone()),
+            other => bail!("include:project ref must be a string, got {other:?}"),
+        })
+        .transpose()
+}
+
+fn parse_local_include_files(files: &[Value]) -> Result<Vec<IncludeEntry>> {
+    files
+        .iter()
+        .map(|entry| match entry {
+            Value::String(path) => Ok(IncludeEntry::Local(PathBuf::from(path))),
+            other => bail!("include 'files' entries must be strings, got {other:?}"),
+        })
+        .collect()
 }
 
 fn parse_project_include_files(
@@ -487,6 +494,23 @@ fn project_include_root(cache_root: &Path, project: &str, reference: &str) -> Pa
         .join(sanitize_reference(reference))
 }
 
+fn include_mapping_key(key: &str) -> Value {
+    Value::String(key.to_string())
+}
+
+fn gitlab_repository_file_raw_url(
+    base_url: &str,
+    project: &str,
+    reference: &str,
+    relative: &Path,
+) -> String {
+    let base = base_url.trim_end_matches('/');
+    let project_id = percent_encode(project);
+    let file_id = percent_encode(&relative.to_string_lossy());
+    let ref_id = percent_encode(reference);
+    format!("{base}/api/v4/projects/{project_id}/repository/files/{file_id}/raw?ref={ref_id}")
+}
+
 fn percent_encode(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -515,4 +539,43 @@ fn sanitize_reference(reference: &str) -> String {
         slug.push_str("ref");
     }
     slug
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gitlab_repository_file_raw_url, parse_include_entry};
+    use serde_yaml::Value;
+
+    #[test]
+    fn gitlab_repository_file_raw_url_matches_repository_files_api_shape() {
+        let url = gitlab_repository_file_raw_url(
+            "https://gitlab.example.com/",
+            "group/project",
+            "main",
+            std::path::Path::new("ci/includes/build.yml"),
+        );
+
+        assert_eq!(
+            url,
+            "https://gitlab.example.com/api/v4/projects/group%2Fproject/repository/files/ci%2Fincludes%2Fbuild.yml/raw?ref=main"
+        );
+    }
+
+    #[test]
+    fn include_project_requires_file_not_files() {
+        let value: Value = serde_yaml::from_str(
+            r#"
+project: group/project
+files:
+  - ci/includes/build.yml
+"#,
+        )
+        .expect("valid include mapping");
+
+        let err = parse_include_entry(value).expect_err("include:project must reject files");
+        assert!(
+            err.to_string()
+                .contains("include:project must use 'file', not 'files'")
+        );
+    }
 }

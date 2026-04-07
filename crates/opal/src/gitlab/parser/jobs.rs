@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::Deserialize;
-use serde_yaml::{Mapping, Value};
+use serde_yaml::{Mapping, Value, from_str as yaml_from_str, from_value as yaml_from_value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
@@ -20,6 +20,106 @@ use super::super::{
 };
 use super::merge_mappings;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineKeyword {
+    Stages,
+    Default,
+    Include,
+    Cache,
+    Variables,
+    Workflow,
+    Spec,
+    Image,
+    Services,
+    BeforeScript,
+    AfterScript,
+    Only,
+    Except,
+}
+
+impl PipelineKeyword {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "stages" => Some(Self::Stages),
+            "default" => Some(Self::Default),
+            "include" => Some(Self::Include),
+            "cache" => Some(Self::Cache),
+            "variables" => Some(Self::Variables),
+            "workflow" => Some(Self::Workflow),
+            "spec" => Some(Self::Spec),
+            "image" => Some(Self::Image),
+            "services" => Some(Self::Services),
+            "before_script" => Some(Self::BeforeScript),
+            "after_script" => Some(Self::AfterScript),
+            "only" => Some(Self::Only),
+            "except" => Some(Self::Except),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultKeyword {
+    BeforeScript,
+    AfterScript,
+    Image,
+    Variables,
+    Cache,
+    Services,
+    Timeout,
+    Retry,
+    Interruptible,
+}
+
+impl DefaultKeyword {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "before_script" => Some(Self::BeforeScript),
+            "after_script" => Some(Self::AfterScript),
+            "image" => Some(Self::Image),
+            "variables" => Some(Self::Variables),
+            "cache" => Some(Self::Cache),
+            "services" => Some(Self::Services),
+            "timeout" => Some(Self::Timeout),
+            "retry" => Some(Self::Retry),
+            "interruptible" => Some(Self::Interruptible),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobSectionKey {
+    Image,
+    Variables,
+    Cache,
+    Services,
+    Parallel,
+    Only,
+    Except,
+}
+
+impl JobSectionKey {
+    fn key(self) -> Value {
+        Value::String(
+            match self {
+                Self::Image => "image",
+                Self::Variables => "variables",
+                Self::Cache => "cache",
+                Self::Services => "services",
+                Self::Parallel => "parallel",
+                Self::Only => "only",
+                Self::Except => "except",
+            }
+            .to_string(),
+        )
+    }
+
+    fn remove_from(self, map: &mut Mapping) -> Option<Value> {
+        map.remove(self.key())
+    }
+}
+
 pub(super) fn build_pipeline(root: Mapping) -> Result<PipelineGraph> {
     let mut stage_names: Vec<String> = Vec::new();
     let mut defaults = PipelineDefaults::default();
@@ -31,37 +131,24 @@ pub(super) fn build_pipeline(root: Mapping) -> Result<PipelineGraph> {
 
     for (key, value) in root {
         match key {
-            Value::String(name) if name == "stages" => {
-                stage_names = parse_stages(value)?;
-            }
-            Value::String(name) if name == "cache" => {
-                defaults.cache = parse_cache_value(value)?;
-            }
-            Value::String(name) if name == "image" => {
-                defaults.image = Some(parse_image(value)?);
-            }
-            Value::String(name) if name == "variables" => {
-                let vars = parse_variables_map(value)?;
-                defaults.variables.extend(vars);
-            }
-            Value::String(name) if name == "default" => {
-                parse_default_block(&mut defaults, value)?;
-            }
-            Value::String(name) if name == "workflow" => {
-                workflow = parse_workflow(value)?;
-            }
-            Value::String(name) if name == "only" => {
-                filters.only = parse_filter_list(value, "only")?;
-            }
-            Value::String(name) if name == "except" => {
-                filters.except = parse_filter_list(value, "except")?;
-            }
-            Value::String(name) => {
-                if is_reserved_keyword(&name) {
-                    continue;
+            Value::String(name) => match PipelineKeyword::parse(&name) {
+                Some(PipelineKeyword::Stages) => stage_names = parse_stages(value)?,
+                Some(PipelineKeyword::Cache) => defaults.cache = parse_cache_value(value)?,
+                Some(PipelineKeyword::Image) => defaults.image = Some(parse_image(value)?),
+                Some(PipelineKeyword::Variables) => {
+                    let vars = parse_variables_map(value)?;
+                    defaults.variables.extend(vars);
                 }
-
-                match value {
+                Some(PipelineKeyword::Default) => parse_default_block(&mut defaults, value)?,
+                Some(PipelineKeyword::Workflow) => workflow = parse_workflow(value)?,
+                Some(PipelineKeyword::Only) => {
+                    filters.only = parse_filter_list(value, "only")?;
+                }
+                Some(PipelineKeyword::Except) => {
+                    filters.except = parse_filter_list(value, "except")?;
+                }
+                Some(_) => continue,
+                None => match value {
                     Value::Mapping(map) => {
                         job_defs.insert(name.clone(), Value::Mapping(map.clone()));
                         if !name.starts_with('.') {
@@ -69,8 +156,8 @@ pub(super) fn build_pipeline(root: Mapping) -> Result<PipelineGraph> {
                         }
                     }
                     other => bail!("job '{name}' must be defined as a mapping, got {other:?}"),
-                }
-            }
+                },
+            },
             other => bail!("expected string keys in pipeline, got {other:?}"),
         }
     }
@@ -106,37 +193,39 @@ fn parse_default_block(defaults: &mut PipelineDefaults, value: Value) -> Result<
 
     for (key, value) in mapping {
         match key {
-            Value::String(name) if name == "before_script" => {
-                defaults.before_script = parse_string_list(value, "before_script")?;
-            }
-            Value::String(name) if name == "after_script" => {
-                defaults.after_script = parse_string_list(value, "after_script")?;
-            }
-            Value::String(name) if name == "image" => {
-                defaults.image = Some(parse_image(value)?);
-            }
-            Value::String(name) if name == "variables" => {
-                let vars = parse_variables_map(value)?;
-                defaults.variables.extend(vars);
-            }
-            Value::String(name) if name == "cache" => {
-                defaults.cache = parse_cache_value(value)?;
-            }
-            Value::String(name) if name == "services" => {
-                defaults.services = parse_services_value(value, "services")?;
-            }
-            Value::String(name) if name == "timeout" => {
-                defaults.timeout = parse_timeout_value(value, "default.timeout")?;
-            }
-            Value::String(name) if name == "retry" => {
-                let raw: RawRetry =
-                    serde_yaml::from_value(value).context("failed to parse default.retry")?;
-                defaults.retry = raw.into_policy(&RetryPolicy::default(), "default.retry")?;
-            }
-            Value::String(name) if name == "interruptible" => {
-                defaults.interruptible = extract_bool(value, "default.interruptible")?;
-            }
-            Value::String(_) => {}
+            Value::String(name) => match DefaultKeyword::parse(&name) {
+                Some(DefaultKeyword::BeforeScript) => {
+                    defaults.before_script = parse_string_list(value, "before_script")?;
+                }
+                Some(DefaultKeyword::AfterScript) => {
+                    defaults.after_script = parse_string_list(value, "after_script")?;
+                }
+                Some(DefaultKeyword::Image) => {
+                    defaults.image = Some(parse_image(value)?);
+                }
+                Some(DefaultKeyword::Variables) => {
+                    let vars = parse_variables_map(value)?;
+                    defaults.variables.extend(vars);
+                }
+                Some(DefaultKeyword::Cache) => {
+                    defaults.cache = parse_cache_value(value)?;
+                }
+                Some(DefaultKeyword::Services) => {
+                    defaults.services = parse_services_value(value, "services")?;
+                }
+                Some(DefaultKeyword::Timeout) => {
+                    defaults.timeout = parse_timeout_value(value, "default.timeout")?;
+                }
+                Some(DefaultKeyword::Retry) => {
+                    let raw: RawRetry =
+                        yaml_from_value(value).context("failed to parse default.retry")?;
+                    defaults.retry = raw.into_policy(&RetryPolicy::default(), "default.retry")?;
+                }
+                Some(DefaultKeyword::Interruptible) => {
+                    defaults.interruptible = extract_bool(value, "default.interruptible")?;
+                }
+                None => {}
+            },
             other => bail!("default keys must be strings, got {other:?}"),
         }
     }
@@ -154,27 +243,8 @@ fn parse_workflow(value: Value) -> Result<Option<WorkflowConfig>> {
         return Ok(None);
     };
     let rules: Vec<JobRule> =
-        serde_yaml::from_value(rules_value.clone()).context("failed to parse workflow.rules")?;
+        yaml_from_value(rules_value.clone()).context("failed to parse workflow.rules")?;
     Ok(Some(WorkflowConfig { rules }))
-}
-
-fn is_reserved_keyword(name: &str) -> bool {
-    matches!(
-        name,
-        "stages"
-            | "default"
-            | "include"
-            | "cache"
-            | "variables"
-            | "workflow"
-            | "spec"
-            | "image"
-            | "services"
-            | "before_script"
-            | "after_script"
-            | "only"
-            | "except"
-    )
 }
 
 fn parse_image(value: Value) -> Result<ImageConfig> {
@@ -191,8 +261,7 @@ fn parse_image(value: Value) -> Result<ImageConfig> {
                 let entrypoint = map
                     .remove(Value::String("entrypoint".to_string()))
                     .map(|value| {
-                        serde_yaml::from_value::<ServiceCommand>(value)
-                            .map(ServiceCommand::into_vec)
+                        yaml_from_value::<ServiceCommand>(value).map(ServiceCommand::into_vec)
                     })
                     .transpose()
                     .context("failed to parse image.entrypoint")?
@@ -264,14 +333,14 @@ type ParsedJobSpec = (
 fn parse_job(value: Value) -> Result<ParsedJobSpec> {
     match value {
         Value::Mapping(mut map) => {
-            let image_value = map.remove(Value::String("image".to_string()));
-            let variables_value = map.remove(Value::String("variables".to_string()));
-            let cache_value = map.remove(Value::String("cache".to_string()));
-            let services_value = map.remove(Value::String("services".to_string()));
-            let parallel_value = map.remove(Value::String("parallel".to_string()));
-            let only_value = map.remove(Value::String("only".to_string()));
-            let except_value = map.remove(Value::String("except".to_string()));
-            let job_spec: RawJob = serde_yaml::from_value(Value::Mapping(map))?;
+            let image_value = JobSectionKey::Image.remove_from(&mut map);
+            let variables_value = JobSectionKey::Variables.remove_from(&mut map);
+            let cache_value = JobSectionKey::Cache.remove_from(&mut map);
+            let services_value = JobSectionKey::Services.remove_from(&mut map);
+            let parallel_value = JobSectionKey::Parallel.remove_from(&mut map);
+            let only_value = JobSectionKey::Only.remove_from(&mut map);
+            let except_value = JobSectionKey::Except.remove_from(&mut map);
+            let job_spec: RawJob = yaml_from_value(Value::Mapping(map))?;
             let image = image_value.map(parse_image).transpose()?;
             let variables = variables_value
                 .map(parse_variables_map)
@@ -368,7 +437,7 @@ fn mapping_command_string(map: Mapping) -> Result<String, String> {
 
 fn parse_cache_entry(value: Value) -> Result<CacheConfig> {
     let raw: CacheEntryRaw = match value {
-        Value::Mapping(_) => serde_yaml::from_value(value)?,
+        Value::Mapping(_) => yaml_from_value(value)?,
         other => bail!("cache entry must be a mapping, got {other:?}"),
     };
     let key = parse_cache_key(raw.key)?;
@@ -458,8 +527,8 @@ fn parse_services_value(value: Value, field: &str) -> Result<Vec<ServiceConfig>>
     };
     let mut services = Vec::new();
     for entry in entries {
-        let raw: RawService = serde_yaml::from_value(entry)
-            .with_context(|| format!("failed to parse {field} entry"))?;
+        let raw: RawService =
+            yaml_from_value(entry).with_context(|| format!("failed to parse {field} entry"))?;
         let config = match raw {
             RawService::Simple(image) => ServiceConfig {
                 image,
@@ -601,11 +670,11 @@ fn parse_timeout_value(value: Value, field: &str) -> Result<Option<Duration>> {
 }
 
 fn parse_optional_timeout(raw: &Option<String>, field: &str) -> Result<Option<Duration>> {
-    if let Some(text) = raw {
-        Ok(Some(parse_timeout_str(text, field)?))
-    } else {
-        Ok(None)
-    }
+    parse_optional_timeout_opt(raw.as_deref(), field)
+}
+
+fn parse_optional_timeout_opt(raw: Option<&str>, field: &str) -> Result<Option<Duration>> {
+    raw.map(|text| parse_timeout_str(text, field)).transpose()
 }
 
 fn parse_timeout_str(text: &str, field: &str) -> Result<Duration> {
@@ -627,147 +696,190 @@ fn build_graph(
     job_names: Vec<String>,
     job_defs: HashMap<String, Value>,
 ) -> Result<PipelineGraph> {
-    let mut graph = DiGraph::<Job, ()>::new();
-    let mut stages: Vec<StageGroup> = stage_names
-        .into_iter()
-        .map(|name| StageGroup {
-            name,
-            jobs: Vec::new(),
-        })
-        .collect();
-    let mut name_to_index: HashMap<String, NodeIndex> = HashMap::new();
-    let mut pending_needs: Vec<(String, NodeIndex, Vec<JobDependency>)> = Vec::new();
-
-    if stages.is_empty() {
-        stages.push(StageGroup {
-            name: "default".to_string(),
-            jobs: Vec::new(),
-        });
+    let mut builder = GraphBuilder::new(stage_names);
+    for job_name in job_names {
+        builder.add_job(job_name, &job_defs, &defaults)?;
     }
 
-    let mut resolved_defs: HashMap<String, Mapping> = HashMap::new();
+    builder.finish(defaults, workflow, filters)
+}
 
-    for job_name in job_names {
-        let merged_map =
-            resolve_job_definition(&job_name, &job_defs, &mut resolved_defs, &mut Vec::new())?;
-        let (
-            job_spec,
-            job_image,
-            job_variables,
-            job_cache,
-            job_services,
-            job_parallel,
-            only,
-            except,
-        ) = parse_job(Value::Mapping(merged_map))?;
-        let inherit_defaults = job_inherit_defaults(&job_spec);
-        let stage_name = job_spec.stage.unwrap_or_else(|| {
-            stages
-                .first()
-                .map(|stage| stage.name.as_str())
-                .unwrap_or("default")
-                .to_string()
-        });
-        let stage_index = ensure_stage(&mut stages, &stage_name);
-        let commands = job_spec.script.into_commands();
-        if commands.is_empty() {
-            bail!(
-                "job '{}' must define a script (directly or via extends)",
-                job_name
-            );
-        }
-        let (raw_needs, explicit_needs) = match job_spec.needs {
-            Some(entries) => (entries, true),
-            None => (Vec::new(), false),
-        };
-        let needs: Vec<JobDependency> = raw_needs
+struct PendingNeeds {
+    job_name: String,
+    job_idx: NodeIndex,
+    needs: Vec<JobDependency>,
+}
+
+struct GraphBuilder {
+    graph: DiGraph<Job, ()>,
+    stages: Vec<StageGroup>,
+    name_to_index: HashMap<String, NodeIndex>,
+    pending_needs: Vec<PendingNeeds>,
+    resolved_defs: HashMap<String, Mapping>,
+}
+
+impl GraphBuilder {
+    fn new(stage_names: Vec<String>) -> Self {
+        let mut stages: Vec<StageGroup> = stage_names
             .into_iter()
-            .filter_map(|need| need.into_dependency(&job_name))
-            .collect();
-        let dependencies = job_spec.dependencies;
-        let before_script = job_spec.before_script.map(Script::into_commands);
-        let after_script = job_spec.after_script.map(Script::into_commands);
-        let artifacts = job_spec.artifacts.into_config(&job_name)?;
-        let cache_entries = if job_cache.is_empty() && inherit_defaults.cache {
-            defaults.cache.clone()
-        } else {
-            job_cache
-        };
-        let services = if job_services.is_empty() && inherit_defaults.services {
-            defaults.services.clone()
-        } else {
-            job_services
-        };
-        let timeout =
-            parse_optional_timeout(&job_spec.timeout, &format!("job '{}'.timeout", job_name))?.or(
-                if inherit_defaults.timeout {
-                    defaults.timeout
-                } else {
-                    None
-                },
-            );
-        let retry_base = if inherit_defaults.retry {
-            defaults.retry.clone()
-        } else {
-            RetryPolicy::default()
-        };
-        let retry = job_spec
-            .retry
-            .map(|raw| raw.into_policy(&retry_base, &format!("job '{}'.retry", job_name)))
-            .transpose()?
-            .unwrap_or(retry_base);
-        let interruptible = job_spec
-            .interruptible
-            .unwrap_or(if inherit_defaults.interruptible {
-                defaults.interruptible
-            } else {
-                false
-            });
-        let resource_group = job_spec.resource_group.clone();
-        let parallel = job_parallel;
-
-        let environment = job_spec.environment.as_ref().map(|env| {
-            let action = match env.action.as_deref() {
-                Some("prepare") => EnvironmentAction::Prepare,
-                Some("stop") => EnvironmentAction::Stop,
-                Some("verify") => EnvironmentAction::Verify,
-                Some("access") => EnvironmentAction::Access,
-                _ => EnvironmentAction::Start,
-            };
-            let name = if env.name.is_empty() {
-                job_name.clone()
-            } else {
-                env.name.clone()
-            };
-            EnvironmentConfig {
+            .map(|name| StageGroup {
                 name,
-                url: env.url.clone(),
-                on_stop: env.on_stop.clone(),
-                auto_stop_in: parse_optional_timeout(
-                    &env.auto_stop_in,
-                    &format!("job '{}'.environment.auto_stop_in", job_name),
-                )
-                .ok()
-                .flatten(),
-                action,
-            }
+                jobs: Vec::new(),
+            })
+            .collect();
+        if stages.is_empty() {
+            stages.push(StageGroup {
+                name: "default".to_string(),
+                jobs: Vec::new(),
+            });
+        }
+
+        Self {
+            graph: DiGraph::new(),
+            stages,
+            name_to_index: HashMap::new(),
+            pending_needs: Vec::new(),
+            resolved_defs: HashMap::new(),
+        }
+    }
+
+    fn add_job(
+        &mut self,
+        job_name: String,
+        job_defs: &HashMap<String, Value>,
+        defaults: &PipelineDefaults,
+    ) -> Result<()> {
+        let merged_map = resolve_job_definition(
+            &job_name,
+            job_defs,
+            &mut self.resolved_defs,
+            &mut Vec::new(),
+        )?;
+        let (job, stage_name, needs) = build_job(
+            &job_name,
+            Value::Mapping(merged_map),
+            defaults,
+            &self.stages,
+        )?;
+        let stage_index = ensure_stage(&mut self.stages, &stage_name);
+        let node = self.graph.add_node(job);
+
+        self.name_to_index.insert(job_name.clone(), node);
+        self.pending_needs.push(PendingNeeds {
+            job_name,
+            job_idx: node,
+            needs,
         });
 
-        let inherited_image = if job_image.is_none() && inherit_defaults.image {
-            defaults.image.clone()
-        } else {
-            job_image
-        };
+        let stage = self
+            .stages
+            .get_mut(stage_index)
+            .ok_or_else(|| anyhow!("internal error: stage index {} missing", stage_index))?;
+        stage.jobs.push(node);
+        Ok(())
+    }
 
-        let node = graph.add_node(Job {
-            name: job_name.clone(),
-            stage: stage_name,
+    fn finish(
+        mut self,
+        defaults: PipelineDefaults,
+        workflow: Option<WorkflowConfig>,
+        filters: PipelineFilters,
+    ) -> Result<PipelineGraph> {
+        self.resolve_local_needs()?;
+        Ok(PipelineGraph {
+            graph: self.graph,
+            stages: self.stages,
+            defaults,
+            workflow,
+            filters,
+        })
+    }
+
+    fn resolve_local_needs(&mut self) -> Result<()> {
+        for pending in self.pending_needs.drain(..) {
+            for dependency in pending.needs {
+                if !matches!(dependency.source, DependencySource::Local) {
+                    continue;
+                }
+                let Some(dependency_idx) = self.name_to_index.get(&dependency.job).copied() else {
+                    if dependency.optional {
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "job '{}' declared unknown dependency '{}'",
+                        pending.job_name,
+                        dependency.job
+                    ));
+                };
+
+                self.graph.add_edge(dependency_idx, pending.job_idx, ());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn build_job(
+    job_name: &str,
+    value: Value,
+    defaults: &PipelineDefaults,
+    stages: &[StageGroup],
+) -> Result<(Job, String, Vec<JobDependency>)> {
+    let (job_spec, job_image, job_variables, job_cache, job_services, job_parallel, only, except) =
+        parse_job(value)?;
+    let inherit_defaults = job_inherit_defaults(&job_spec);
+    let RawJob {
+        before_script,
+        after_script,
+        stage,
+        script,
+        when,
+        needs: raw_needs,
+        dependencies,
+        rules,
+        artifacts,
+        timeout: raw_timeout,
+        retry: raw_retry,
+        interruptible,
+        resource_group,
+        inherit: _inherit,
+        tags,
+        environment: raw_environment,
+    } = job_spec;
+    let stage_name = stage.unwrap_or_else(|| {
+        stages
+            .first()
+            .map(|existing_stage| existing_stage.name.as_str())
+            .unwrap_or("default")
+            .to_string()
+    });
+    let timeout = resolve_job_timeout(
+        job_name,
+        raw_timeout.as_deref(),
+        defaults,
+        &inherit_defaults,
+    )?;
+    let retry = resolve_job_retry(job_name, raw_retry, defaults, &inherit_defaults)?;
+    let environment = build_environment_config(job_name, raw_environment);
+    let commands = script.into_commands();
+    if commands.is_empty() {
+        bail!(
+            "job '{}' must define a script (directly or via extends)",
+            job_name
+        );
+    }
+    let (needs, explicit_needs) = resolve_job_needs(job_name, raw_needs);
+
+    Ok((
+        Job {
+            name: job_name.to_string(),
+            stage: stage_name.clone(),
             commands,
             needs: needs.clone(),
             explicit_needs,
-            dependencies: dependencies.clone(),
-            before_script,
-            after_script,
+            dependencies,
+            before_script: before_script.map(Script::into_commands),
+            after_script: after_script.map(Script::into_commands),
             inherit_default_image: inherit_defaults.image,
             inherit_default_before_script: inherit_defaults.before_script,
             inherit_default_after_script: inherit_defaults.after_script,
@@ -776,60 +888,142 @@ fn build_graph(
             inherit_default_timeout: inherit_defaults.timeout,
             inherit_default_retry: inherit_defaults.retry,
             inherit_default_interruptible: inherit_defaults.interruptible,
-            when: job_spec.when.clone(),
-            rules: job_spec.rules.clone(),
-            artifacts,
-            cache: cache_entries,
-            image: inherited_image,
+            when,
+            rules,
+            artifacts: artifacts.into_config(job_name)?,
+            cache: resolve_job_cache(job_cache, defaults, &inherit_defaults),
+            image: resolve_job_image(job_image, defaults, &inherit_defaults),
             variables: job_variables,
-            services,
+            services: resolve_job_services(job_services, defaults, &inherit_defaults),
             timeout,
             retry,
-            interruptible,
+            interruptible: interruptible.unwrap_or(if inherit_defaults.interruptible {
+                defaults.interruptible
+            } else {
+                false
+            }),
             resource_group,
-            parallel,
+            parallel: job_parallel,
             only,
             except,
-            tags: job_spec.tags.clone(),
+            tags,
             environment,
-        });
+        },
+        stage_name,
+        needs,
+    ))
+}
 
-        name_to_index.insert(job_name.clone(), node);
-        pending_needs.push((job_name, node, needs));
+fn resolve_job_needs(job_name: &str, raw_needs: Option<Vec<Need>>) -> (Vec<JobDependency>, bool) {
+    let (raw_needs, explicit_needs) = match raw_needs {
+        Some(entries) => (entries, true),
+        None => (Vec::new(), false),
+    };
+    let needs = raw_needs
+        .into_iter()
+        .filter_map(|need| need.into_dependency(job_name))
+        .collect();
+    (needs, explicit_needs)
+}
 
-        let stage = stages
-            .get_mut(stage_index)
-            .ok_or_else(|| anyhow!("internal error: stage index {} missing", stage_index))?;
-        stage.jobs.push(node);
+fn resolve_job_cache(
+    job_cache: Vec<CacheConfig>,
+    defaults: &PipelineDefaults,
+    inherit_defaults: &JobInheritDefaults,
+) -> Vec<CacheConfig> {
+    if job_cache.is_empty() && inherit_defaults.cache {
+        defaults.cache.clone()
+    } else {
+        job_cache
     }
+}
 
-    for (job_name, job_idx, needs) in pending_needs {
-        for dependency in needs {
-            if !matches!(dependency.source, DependencySource::Local) {
-                continue;
-            }
-            let Some(dependency_idx) = name_to_index.get(&dependency.job).copied() else {
-                if dependency.optional {
-                    continue;
-                }
-                return Err(anyhow!(
-                    "job '{}' declared unknown dependency '{}'",
-                    job_name,
-                    dependency.job
-                ));
-            };
-
-            graph.add_edge(dependency_idx, job_idx, ());
-        }
+fn resolve_job_services(
+    job_services: Vec<ServiceConfig>,
+    defaults: &PipelineDefaults,
+    inherit_defaults: &JobInheritDefaults,
+) -> Vec<ServiceConfig> {
+    if job_services.is_empty() && inherit_defaults.services {
+        defaults.services.clone()
+    } else {
+        job_services
     }
+}
 
-    Ok(PipelineGraph {
-        graph,
-        stages,
-        defaults,
-        workflow,
-        filters,
+fn resolve_job_image(
+    job_image: Option<ImageConfig>,
+    defaults: &PipelineDefaults,
+    inherit_defaults: &JobInheritDefaults,
+) -> Option<ImageConfig> {
+    if job_image.is_none() && inherit_defaults.image {
+        defaults.image.clone()
+    } else {
+        job_image
+    }
+}
+
+fn resolve_job_timeout(
+    job_name: &str,
+    raw_timeout: Option<&str>,
+    defaults: &PipelineDefaults,
+    inherit_defaults: &JobInheritDefaults,
+) -> Result<Option<Duration>> {
+    parse_optional_timeout_opt(raw_timeout, &format!("job '{}'.timeout", job_name)).map(|timeout| {
+        timeout.or(if inherit_defaults.timeout {
+            defaults.timeout
+        } else {
+            None
+        })
     })
+}
+
+fn resolve_job_retry(
+    job_name: &str,
+    raw_retry: Option<RawRetry>,
+    defaults: &PipelineDefaults,
+    inherit_defaults: &JobInheritDefaults,
+) -> Result<RetryPolicy> {
+    let retry_base = if inherit_defaults.retry {
+        defaults.retry.clone()
+    } else {
+        RetryPolicy::default()
+    };
+    raw_retry
+        .map(|raw| raw.into_policy(&retry_base, &format!("job '{}'.retry", job_name)))
+        .transpose()?
+        .map_or(Ok(retry_base), Ok)
+}
+
+fn build_environment_config(
+    job_name: &str,
+    environment: Option<RawEnvironment>,
+) -> Option<EnvironmentConfig> {
+    environment.map(|env| EnvironmentConfig {
+        name: if env.name.is_empty() {
+            job_name.to_string()
+        } else {
+            env.name
+        },
+        url: env.url,
+        on_stop: env.on_stop,
+        auto_stop_in: parse_optional_timeout(
+            &env.auto_stop_in,
+            &format!("job '{}'.environment.auto_stop_in", job_name),
+        )
+        .ok()
+        .flatten(),
+        action: parse_environment_action(env.action.as_deref()),
+    })
+}
+
+fn parse_environment_action(value: Option<&str>) -> EnvironmentAction {
+    match value {
+        Some("prepare") => EnvironmentAction::Prepare,
+        Some("stop") => EnvironmentAction::Stop,
+        Some("verify") => EnvironmentAction::Verify,
+        Some("access") => EnvironmentAction::Access,
+        _ => EnvironmentAction::Start,
+    }
 }
 
 struct JobInheritDefaults {
@@ -875,14 +1069,14 @@ fn job_inherit_defaults(job: &RawJob) -> JobInheritDefaults {
                 inherit.interruptible = *value;
             }
             RawInheritDefault::List(entries) => {
-                inherit.image = entries.iter().any(|entry| entry == "image");
-                inherit.before_script = entries.iter().any(|entry| entry == "before_script");
-                inherit.after_script = entries.iter().any(|entry| entry == "after_script");
-                inherit.cache = entries.iter().any(|entry| entry == "cache");
-                inherit.services = entries.iter().any(|entry| entry == "services");
-                inherit.timeout = entries.iter().any(|entry| entry == "timeout");
-                inherit.retry = entries.iter().any(|entry| entry == "retry");
-                inherit.interruptible = entries.iter().any(|entry| entry == "interruptible");
+                inherit.image = entries.contains(&DefaultInheritKeyword::Image);
+                inherit.before_script = entries.contains(&DefaultInheritKeyword::BeforeScript);
+                inherit.after_script = entries.contains(&DefaultInheritKeyword::AfterScript);
+                inherit.cache = entries.contains(&DefaultInheritKeyword::Cache);
+                inherit.services = entries.contains(&DefaultInheritKeyword::Services);
+                inherit.timeout = entries.contains(&DefaultInheritKeyword::Timeout);
+                inherit.retry = entries.contains(&DefaultInheritKeyword::Retry);
+                inherit.interruptible = entries.contains(&DefaultInheritKeyword::Interruptible);
             }
         }
     }
@@ -1079,16 +1273,15 @@ fn validate_artifact_excludes(patterns: &[String], job_name: &str) -> Result<()>
 }
 
 fn parse_artifact_when(value: Option<&str>, job_name: &str) -> Result<ArtifactWhen> {
-    match value.unwrap_or("on_success") {
-        "on_success" => Ok(ArtifactWhen::OnSuccess),
-        "on_failure" => Ok(ArtifactWhen::OnFailure),
-        "always" => Ok(ArtifactWhen::Always),
-        other => bail!(
-            "job '{}' has unsupported artifacts.when value '{}'",
-            job_name,
-            other
-        ),
-    }
+    ArtifactWhenKeyword::try_from(value.unwrap_or("on_success"))
+        .map(ArtifactWhen::from)
+        .map_err(|other| {
+            anyhow!(
+                "job '{}' has unsupported artifacts.when value '{}'",
+                job_name,
+                other
+            )
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1164,7 +1357,7 @@ mod service_alias_tests {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum RawRetry {
     Simple(u32),
@@ -1187,7 +1380,7 @@ impl RawRetry {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawRetryConfig {
     #[serde(default)]
     max: Option<u32>,
@@ -1257,7 +1450,7 @@ const SUPPORTED_RETRY_WHEN_VALUES: &[&str] = &[
     "data_integrity_failure",
 ];
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct StringList(Vec<String>);
 
 impl StringList {
@@ -1266,7 +1459,7 @@ impl StringList {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct IntList(Vec<i32>);
 
 impl IntList {
@@ -1507,7 +1700,7 @@ fn parse_inline_variant_reference(value: &str) -> Option<(String, Vec<String>)> 
     if !payload.starts_with('[') {
         return None;
     }
-    let values: Vec<String> = serde_yaml::from_str(payload).ok()?;
+    let values: Vec<String> = yaml_from_str(payload).ok()?;
     Some((base.trim().to_string(), values))
 }
 
@@ -1567,5 +1760,48 @@ struct RawInherit {
 #[serde(untagged)]
 enum RawInheritDefault {
     Bool(bool),
-    List(Vec<String>),
+    List(Vec<DefaultInheritKeyword>),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DefaultInheritKeyword {
+    Image,
+    BeforeScript,
+    AfterScript,
+    Cache,
+    Services,
+    Timeout,
+    Retry,
+    Interruptible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactWhenKeyword {
+    OnSuccess,
+    OnFailure,
+    Always,
+}
+
+impl TryFrom<&str> for ArtifactWhenKeyword {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "on_success" => Ok(Self::OnSuccess),
+            "on_failure" => Ok(Self::OnFailure),
+            "always" => Ok(Self::Always),
+            other => Err(other.to_string()),
+        }
+    }
+}
+
+impl From<ArtifactWhenKeyword> for ArtifactWhen {
+    fn from(value: ArtifactWhenKeyword) -> Self {
+        match value {
+            ArtifactWhenKeyword::OnSuccess => ArtifactWhen::OnSuccess,
+            ArtifactWhenKeyword::OnFailure => ArtifactWhen::OnFailure,
+            ArtifactWhenKeyword::Always => ArtifactWhen::Always,
+        }
+    }
 }
