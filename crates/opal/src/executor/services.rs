@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as FmtWrite;
+use tokio::process::Command as TokioCommand;
 use tracing::warn;
 
 const MAX_NAME_LEN: usize = 63;
@@ -219,10 +220,9 @@ impl ServiceLifecycle {
 
     async fn cleanup(&mut self) {
         for name in self.containers.drain(..).rev() {
-            let _ =
-                tokio::process::Command::from(force_remove_container_command(self.engine, &name))
-                    .status()
-                    .await;
+            let _ = TokioCommand::from(force_remove_container_command(self.engine, &name))
+                .status()
+                .await;
         }
         let _ = ServiceNetworkManager::new(self.engine)
             .remove(&self.network)
@@ -358,10 +358,13 @@ mod tests {
     use super::command::{
         force_remove_container_command, run_command_with_timeout, service_command,
     };
-    use super::inspect::{ServiceState, parse_service_ipv4, parse_service_state};
+    use super::inspect::{
+        ServiceContainerStatus, ServiceHealthStatus, ServiceState, parse_service_ipv4,
+        parse_service_state,
+    };
     use super::network::should_retry_container_network_error;
     use super::readiness::{
-        ServiceReadiness, configured_service_probe_image, readiness_from_state,
+        ServiceReadiness, configured_service_probe_image, probe_script, readiness_from_state,
         service_probe_command,
     };
     use super::{ServiceLifecycle, ServiceRuntime};
@@ -390,8 +393,11 @@ mod tests {
         let state = parse_service_state(payload).expect("parse service state");
 
         assert!(state.running);
-        assert_eq!(state.status.as_deref(), Some("running"));
-        assert_eq!(state.health.as_deref(), Some("starting"));
+        assert_eq!(state.status, Some(ServiceContainerStatus::Running));
+        assert_eq!(
+            state.health,
+            Some(ServiceHealthStatus::Other("starting".to_string()))
+        );
         assert_eq!(state.exit_code, Some(0));
     }
 
@@ -401,7 +407,7 @@ mod tests {
         let state = parse_service_state(payload).expect("parse service state");
 
         assert!(!state.running);
-        assert_eq!(state.status.as_deref(), Some("exited"));
+        assert_eq!(state.status, Some(ServiceContainerStatus::Exited));
         assert_eq!(state.exit_code, Some(1));
     }
 
@@ -411,7 +417,7 @@ mod tests {
         let state = parse_service_state(payload).expect("parse service state");
 
         assert!(!state.running);
-        assert_eq!(state.status.as_deref(), Some("exited"));
+        assert_eq!(state.status, Some(ServiceContainerStatus::Exited));
         assert_eq!(state.exit_code, Some(1));
     }
 
@@ -419,7 +425,7 @@ mod tests {
     fn readiness_from_state_is_ready_without_healthcheck() {
         let state = ServiceState {
             running: true,
-            status: Some("running".to_string()),
+            status: Some(ServiceContainerStatus::Running),
             health: None,
             exit_code: Some(0),
         };
@@ -434,8 +440,8 @@ mod tests {
     fn readiness_from_state_waits_while_healthcheck_is_starting() {
         let state = ServiceState {
             running: true,
-            status: Some("running".to_string()),
-            health: Some("starting".to_string()),
+            status: Some(ServiceContainerStatus::Running),
+            health: Some(ServiceHealthStatus::Other("starting".to_string())),
             exit_code: Some(0),
         };
 
@@ -449,7 +455,7 @@ mod tests {
     fn readiness_from_state_fails_when_service_exits() {
         let state = ServiceState {
             running: false,
-            status: Some("exited".to_string()),
+            status: Some(ServiceContainerStatus::Exited),
             health: None,
             exit_code: Some(1),
         };
@@ -464,8 +470,8 @@ mod tests {
     fn readiness_from_state_fails_when_healthcheck_unhealthy() {
         let state = ServiceState {
             running: true,
-            status: Some("running".to_string()),
-            health: Some("unhealthy".to_string()),
+            status: Some(ServiceContainerStatus::Running),
+            health: Some(ServiceHealthStatus::Unhealthy),
             exit_code: Some(0),
         };
 
@@ -700,6 +706,16 @@ mod tests {
             configured_service_probe_image(Some("ghcr.io/cloudflavor/netshoot:latest")),
             "ghcr.io/cloudflavor/netshoot:latest"
         );
+    }
+
+    #[test]
+    fn probe_script_makes_tool_requirement_explicit() {
+        let script = probe_script(&["nc -z '127.0.0.1' 80".to_string()]);
+
+        assert!(script.contains("command -v nc"));
+        assert!(script.contains("busybox nc"));
+        assert!(script.contains("command -v bash"));
+        assert!(script.contains("service probe image must provide"));
     }
 
     #[tokio::test]

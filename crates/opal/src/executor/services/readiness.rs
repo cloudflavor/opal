@@ -1,5 +1,7 @@
 use super::command::engine_binary;
-use super::inspect::{ServiceInspector, ServicePort, ServiceState};
+use super::inspect::{
+    ServiceContainerStatus, ServiceHealthStatus, ServiceInspector, ServicePort, ServiceState,
+};
 use crate::EngineKind;
 use crate::executor::container_arch::default_container_cli_arch;
 use crate::model::ServiceSpec;
@@ -8,6 +10,7 @@ use std::borrow::Cow;
 use std::env;
 use std::process::Command;
 use std::time::{Duration, Instant};
+use tokio::process::Command as TokioCommand;
 use tokio::time::sleep;
 use tracing::warn;
 
@@ -15,6 +18,8 @@ const SERVICE_READY_TIMEOUT_DEFAULT_SECS: u64 = 30;
 const SERVICE_READY_POLL_MS: u64 = 250;
 const SERVICE_PROBE_IMAGE_DEFAULT: &str = "docker.io/library/alpine:3.19";
 const SERVICE_PROBE_IMAGE_ENV: &str = "OPAL_SERVICE_PROBE_IMAGE";
+const SERVICE_PROBE_TOOL_ERROR: &str =
+    "service probe image must provide `nc`, `busybox nc`, or `bash` for TCP port checks";
 
 pub(super) struct ServiceReadinessProbe {
     engine: EngineKind,
@@ -172,12 +177,21 @@ pub(super) enum ServiceReadiness {
 
 pub(super) fn readiness_from_state(state: &ServiceState) -> ServiceReadiness {
     if !state.running {
-        if matches!(state.status.as_deref(), Some("exited" | "dead" | "stopped"))
-            || state.exit_code.is_some_and(|code| code != 0)
+        if matches!(
+            state.status,
+            Some(
+                ServiceContainerStatus::Exited
+                    | ServiceContainerStatus::Dead
+                    | ServiceContainerStatus::Stopped
+            )
+        ) || state.exit_code.is_some_and(|code| code != 0)
         {
             return ServiceReadiness::Failed(format!(
                 "status={}, running=false, exit_code={}",
-                state.status.as_deref().unwrap_or("unknown"),
+                state
+                    .status
+                    .as_ref()
+                    .map_or("unknown", ServiceContainerStatus::as_str),
                 state
                     .exit_code
                     .map(|code| code.to_string())
@@ -186,14 +200,19 @@ pub(super) fn readiness_from_state(state: &ServiceState) -> ServiceReadiness {
         }
         return ServiceReadiness::Waiting(format!(
             "status={}, running=false",
-            state.status.as_deref().unwrap_or("unknown")
+            state
+                .status
+                .as_ref()
+                .map_or("unknown", ServiceContainerStatus::as_str)
         ));
     }
 
-    match state.health.as_deref() {
-        Some("healthy") => ServiceReadiness::Ready,
-        Some("unhealthy") => ServiceReadiness::Failed("health=unhealthy".to_string()),
-        Some(status) => ServiceReadiness::Waiting(format!("health={status}")),
+    match state.health.as_ref() {
+        Some(ServiceHealthStatus::Healthy) => ServiceReadiness::Ready,
+        Some(ServiceHealthStatus::Unhealthy) => {
+            ServiceReadiness::Failed("health=unhealthy".to_string())
+        }
+        Some(status) => ServiceReadiness::Waiting(format!("health={}", status.as_str())),
         None => ServiceReadiness::Ready,
     }
 }
@@ -213,7 +232,7 @@ async fn probe_service_ports(
     let checks = ports
         .iter()
         .filter(|port| port.proto == "tcp")
-        .map(|port| format!("nc -z {} {}", shell_escape(host), port.port))
+        .map(|port| tcp_probe_expression(host, port.port))
         .collect::<Vec<_>>();
     if checks.is_empty() {
         return Ok(true);
@@ -229,8 +248,8 @@ async fn probe_service_ports(
         .arg(probe_image)
         .arg("sh")
         .arg("-lc")
-        .arg(checks.join(" && "));
-    let status = tokio::process::Command::from(command).status().await?;
+        .arg(probe_script(&checks));
+    let status = TokioCommand::from(command).status().await?;
     Ok(status.success())
 }
 
@@ -270,6 +289,28 @@ fn service_probe_image() -> String {
 
 fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn tcp_probe_expression(host: &str, port: u16) -> String {
+    format!(
+        "(command -v nc >/dev/null 2>&1 && nc -z {host} {port}) \
+|| (command -v busybox >/dev/null 2>&1 && busybox nc -z {host} {port}) \
+|| (command -v bash >/dev/null 2>&1 && bash -lc 'exec 3<>/dev/tcp/{bash_host}/{port}')",
+        host = shell_escape(host),
+        bash_host = host.replace('\'', ""),
+    )
+}
+
+pub(super) fn probe_script(checks: &[String]) -> String {
+    let tool_check = "if ! command -v nc >/dev/null 2>&1 \
+&& ! (command -v busybox >/dev/null 2>&1 && busybox nc -h >/dev/null 2>&1) \
+&& ! command -v bash >/dev/null 2>&1; then \
+echo \"$OPAL_SERVICE_PROBE_TOOL_ERROR\" >&2; exit 127; fi";
+    format!(
+        "OPAL_SERVICE_PROBE_TOOL_ERROR={error}; {tool_check}; {checks}",
+        error = shell_escape(SERVICE_PROBE_TOOL_ERROR),
+        checks = checks.join(" && "),
+    )
 }
 
 enum ReadinessPoll {

@@ -7,6 +7,7 @@ use std::env;
 use std::fmt::Debug;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tokio::process::Command as TokioCommand;
 use tokio::time::sleep;
 
 const CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 10;
@@ -65,7 +66,7 @@ pub(super) async fn run_command_with_timeout(
         return run_command(cmd).await;
     };
 
-    let mut cmd = tokio::process::Command::from(cmd);
+    let mut cmd = TokioCommand::from(cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let debug_command = format!("{cmd:?}");
     let mut child = cmd.spawn()?;
@@ -127,7 +128,7 @@ pub(super) fn command_failed(
 
 async fn run_command(cmd: Command) -> Result<()> {
     let debug_command = format!("{cmd:?}");
-    let output = tokio::process::Command::from(cmd).output().await?;
+    let output = TokioCommand::from(cmd).output().await?;
     if output.status.success() {
         Ok(())
     } else {
