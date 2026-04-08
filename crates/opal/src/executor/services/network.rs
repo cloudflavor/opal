@@ -30,10 +30,12 @@ impl ServiceNetworkManager {
         for attempt in 0..retry_policy.attempts() {
             let mut command = Command::new(engine_binary(self.engine));
             command.arg("network").arg(action).arg(network);
+            let command_line = describe_command(&command);
 
             match run_command_with_timeout(command, command_timeout(self.engine)).await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
+                    let err = anyhow!("container network command failed: {command_line}: {err}");
                     if retry_policy.should_retry(&err, attempt) {
                         warn!(
                             network,
@@ -52,6 +54,19 @@ impl ServiceNetworkManager {
 
         Err(last_error.unwrap_or_else(|| anyhow!("network command failed without an error")))
     }
+}
+
+fn describe_command(command: &Command) -> String {
+    let mut args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let program = command.get_program().to_string_lossy();
+    if args.is_empty() {
+        return program.into_owned();
+    }
+    args.insert(0, program.into_owned());
+    args.join(" ")
 }
 
 #[cfg(test)]

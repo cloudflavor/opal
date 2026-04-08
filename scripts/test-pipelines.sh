@@ -18,7 +18,7 @@ fi
 
 SCENARIOS_JSON='[
   {"name":"needs-branch","pipeline":"pipelines/tests/needs-and-artifacts.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
-  {"name":"tag-ambiguity","pipeline":"pipelines/tests/tag-ambiguity.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push","workdir":"tests-temp/tag-ambiguity-workdir","init_git":"1","git_tags":"v0.1.2 v0.1.3","expect_failure":"multiple tags point at HEAD"},
+  {"name":"tag-ambiguity","pipeline":"pipelines/tests/tag-ambiguity.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push CI_COMMIT_TAG=","workdir":"tests-temp/tag-ambiguity-workdir","init_git":"1","git_tags":"v0.1.2 v0.1.3","expect_failure":"multiple tags point at HEAD"},
   {"name":"rules-schedule","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=schedule RUN_DELAYED=1","command":"plan","opal_args":""},
   {"name":"rules-force-docs","pipeline":"pipelines/tests/rules-playground.gitlab-ci.yml","env":"CI_PIPELINE_SOURCE=push FORCE_DOCS=1","command":"plan","opal_args":""},
   {"name":"rules-compare-to","pipeline":"pipelines/tests/rules-compare-to.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/compare-to CI_PIPELINE_SOURCE=push","workdir":"tests-temp/compare-to-workdir","repo_setup":"compare_to_docs_change","command":"plan","opal_args":""},

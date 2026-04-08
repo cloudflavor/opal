@@ -1,4 +1,4 @@
-use dirs::{config_dir, data_dir, home_dir};
+use dirs::home_dir;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -7,18 +7,12 @@ const DEFAULT_CONFIG_DIR: &str = ".config/opal";
 const REPO_CONFIG_DIR: &str = ".opal";
 
 fn default_state_root() -> PathBuf {
-    if let Some(dir) = data_dir() {
-        return dir.join("opal");
-    }
     home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(DEFAULT_STATE_DIR)
 }
 
 fn default_config_root() -> PathBuf {
-    if let Some(dir) = config_dir() {
-        return dir.join("opal");
-    }
     home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(DEFAULT_CONFIG_DIR)

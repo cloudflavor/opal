@@ -194,24 +194,21 @@ impl ServiceLifecycle {
             command.arg(arg);
         }
 
+        let command_line = command_line(&command);
         if env::var("OPAL_DEBUG_CONTAINER")
             .map(|value| value == "1")
             .unwrap_or(false)
         {
-            let program = command.get_program().to_string_lossy();
-            let args: Vec<String> = command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().to_string())
-                .collect();
-            eprintln!("[opal] service command: {} {}", program, args.join(" "));
+            eprintln!("[opal] service command: {command_line}");
         }
 
         run_command_with_timeout(command, command_timeout(self.engine))
             .await
-            .with_context(|| {
-                format!(
-                    "failed to start service '{}' ({})",
-                    container_name, service.image
+            .map_err(|err| {
+                anyhow!(
+                    "failed to start service '{}' ({}) with command {command_line}: {err}",
+                    container_name,
+                    service.image
                 )
             })?;
         self.containers.push(container_name.to_string());
@@ -245,6 +242,19 @@ fn service_supported(engine: EngineKind) -> Result<()> {
             "services are only supported when using docker, podman, nerdctl, orbstack, or container"
         ))
     }
+}
+
+fn command_line(command: &std::process::Command) -> String {
+    let mut args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let program = command.get_program().to_string_lossy();
+    if args.is_empty() {
+        return program.into_owned();
+    }
+    args.insert(0, program.into_owned());
+    args.join(" ")
 }
 
 fn service_network_name(run_id: &str, job_name: &str) -> String {

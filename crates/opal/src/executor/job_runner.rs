@@ -94,9 +94,10 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         Ok(prepared) => prepared,
         Err(err) => {
             let mut diagnostics = vec![format!("job setup failed before container start: {err}")];
-            let chain = format!("{err:#}");
-            for line in chain.lines().skip(1) {
-                diagnostics.push(format!("    {line}"));
+            let mut chain = err.chain().peekable();
+            let _ = chain.next();
+            for cause in chain {
+                diagnostics.push(format!("    caused by: {cause}"));
             }
             let _ = exec.append_job_diagnostics(log_path, diagnostics);
             return Err(err);

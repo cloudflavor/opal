@@ -1762,8 +1762,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_status_tool_reports_background_failure() {
-        run_operations().clear();
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-run-status");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
+        run_operations().clear();
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
             "stages:\n  - test\nhello:\n  stage: test\n  script:\n    - echo hello\n",
@@ -1811,6 +1817,10 @@ mod tests {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        unsafe {
+            env::remove_var("OPAL_HOME");
         }
 
         let terminal = terminal.expect("terminal status");
@@ -3278,6 +3288,11 @@ mod tests {
     fn plan_explain_tool_reports_selected_dependency_closure() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-plan-explain-selected-closure");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
             concat!(
@@ -3316,12 +3331,20 @@ mod tests {
             result["structuredContent"]["job"]["selected_directly"],
             false
         );
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
     }
 
     #[test]
     fn plan_explain_tool_reports_blocked_jobs_outside_selected_slice() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-plan-explain-blocked");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
             concat!(
@@ -3355,12 +3378,20 @@ mod tests {
         assert_eq!(result["isError"], false);
         assert_eq!(result["structuredContent"]["job"]["status"], "blocked");
         assert_eq!(result["structuredContent"]["job"]["selected"], false);
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
     }
 
     #[test]
     fn plan_explain_tool_reports_skipped_jobs() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
         let dir = tempdir().expect("tempdir");
+        let opal_home = dir.path().join("opal-home-plan-explain-skipped");
+        fs::create_dir_all(&opal_home).expect("opal home");
+        unsafe {
+            env::set_var("OPAL_HOME", &opal_home);
+        }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
             concat!(
@@ -3394,6 +3425,9 @@ mod tests {
             result["structuredContent"]["job"]["resolved_name"],
             "never-job"
         );
+        unsafe {
+            env::remove_var("OPAL_HOME");
+        }
     }
 
     #[test]
