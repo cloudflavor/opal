@@ -1,0 +1,19 @@
+port: 3001
+defaults:
+  runtime: tmux
+  agent: codex
+  workspace: worktree
+  notifiers:
+    - desktop
+projects:
+  opal:
+    name: opal
+    sessionPrefix: opal
+    repo: cloudflavor/opal
+    path: /Users/vicp/projects/rust/opal
+    defaultBranch: main
+    agentRules: |-
+      Always run tests before pushing.
+      Use conventional commits (feat:, fix:, chore:, docs:, refactor:, test:).
+      Link issue numbers in commit messages.
+      Write clear commit messages that explain WHY, not just WHAT.
