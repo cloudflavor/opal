@@ -1309,7 +1309,10 @@ struct RawServiceConfig {
 
 impl RawServiceConfig {
     fn into_config(self) -> Result<ServiceConfig> {
-        if self.image.is_some() && self.name.is_none() {
+        if let Some(_) = self.image {
+            if self.name.is_some() {
+                bail!("service entry mapping must not use 'image'; use 'name' for the image");
+            }
             bail!("service entry mapping must use 'name' for the image");
         }
         let image = self
