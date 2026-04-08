@@ -31,7 +31,7 @@ SCENARIOS_JSON='[
   {"name":"yaml-merge-parity","pipeline":"pipelines/tests/yaml-merge-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"inherit-default-parity","pipeline":"pipelines/tests/inherit-default-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"image-platform-parity","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
-  {"name":"image-platform-runtime","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
+  {"name":"image-platform-runtime","pipeline":"pipelines/tests/image-platform-parity.gitlab-ci.yml","env":"","command":"run","opal_args":"--engine docker"},
   {"name":"services-docker-parity","pipeline":"pipelines/tests/services-docker-parity.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-surface","pipeline":"pipelines/tests/include-surface.gitlab-ci.yml","env":"","command":"plan","opal_args":""},
   {"name":"include-remote-unsupported","pipeline":"pipelines/tests/include-remote-unsupported.gitlab-ci.yml","env":"","expect_failure":"include:remote is not supported yet","command":"plan","opal_args":""},
@@ -54,10 +54,10 @@ SCENARIOS_JSON='[
   {"name":"services-multi-alias-reachability","pipeline":"pipelines/tests/services-multi-alias-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-network-isolation","pipeline":"pipelines/tests/services-network-isolation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-slow-start","pipeline":"pipelines/tests/services-slow-start.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
-  {"name":"services-docker-runtime","pipeline":"pipelines/tests/services-docker-runtime.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
+  {"name":"services-docker-runtime","pipeline":"pipelines/tests/services-docker-runtime.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"run","opal_args":"--engine docker"},
   {"name":"services-variables","pipeline":"pipelines/tests/services-variables.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-invalid-alias","pipeline":"pipelines/tests/services-invalid-alias.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"unsupported characters"},
-  {"name":"runtime-preservation","pipeline":"pipelines/tests/runtime-preservation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/runtime-preservation-workdir","repo_setup":"preserve_runtime","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
+  {"name":"runtime-preservation","pipeline":"pipelines/tests/runtime-preservation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/runtime-preservation-workdir","repo_setup":"preserve_runtime","command":"run","opal_args":"--engine docker"},
   {"name":"control-flow-plan","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"control-flow-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","expect_failure":"intentional-failure"},
   {"name":"job-select-runtime","pipeline":"pipelines/tests/control-flow-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","opal_args":"--no-tui --max-parallel-jobs 1 --job rule-variables"},
@@ -67,8 +67,8 @@ SCENARIOS_JSON='[
   {"name":"cache-fallback","pipeline":"pipelines/tests/cache-fallback.gitlab-ci.yml","env":""},
   {"name":"artifact-metadata-plan","pipeline":"pipelines/tests/artifact-metadata.gitlab-ci.yml","env":"CI_COMMIT_REF_NAME=feature/meta CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"artifact-metadata","pipeline":"pipelines/tests/artifact-metadata.gitlab-ci.yml","env":"CI_COMMIT_REF_NAME=feature/meta CI_PIPELINE_SOURCE=push"},
-  {"name":"job-overrides-arch","pipeline":"pipelines/tests/job-overrides-arch.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-arch-workdir","repo_setup":"job_override_arch","command":"run","opal_args":"--no-tui --max-parallel-jobs 1 --engine container"},
-  {"name":"job-overrides-capabilities","pipeline":"pipelines/tests/job-overrides-capabilities.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-cap-workdir","repo_setup":"job_override_caps","command":"run","opal_args":"--no-tui --max-parallel-jobs 1 --engine docker"},
+  {"name":"job-overrides-arch","pipeline":"pipelines/tests/job-overrides-arch.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-arch-workdir","repo_setup":"job_override_arch","command":"run","opal_args":"--engine container"},
+  {"name":"job-overrides-capabilities","pipeline":"pipelines/tests/job-overrides-capabilities.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-cap-workdir","repo_setup":"job_override_caps","command":"run","opal_args":"--engine docker"},
   {"name":"dotenv-reports","pipeline":"pipelines/tests/dotenv-reports.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
   {"name":"interruptible-abort","pipeline":"pipelines/tests/interruptible-abort.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_ABORT_AFTER_SECS=1"},
@@ -578,11 +578,22 @@ run_scenario() {
   fi
 
   local cmd=("${OPAL_BIN}" "${effective_command}")
-  if [[ "${scenario_opal_args}" == "__DEFAULT__" ]]; then
+  if [[ "${effective_command}" == "plan" ]]; then
+    if [[ "${scenario_opal_args}" != "__DEFAULT__" ]]; then
+      local scenario_args=()
+      read -r -a scenario_args <<<"${scenario_opal_args}"
+      if [[ ${#scenario_args[@]} -gt 0 ]]; then
+        cmd+=("${scenario_args[@]}")
+      fi
+    fi
+  elif [[ "${scenario_opal_args}" == "__DEFAULT__" ]]; then
     if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
       cmd+=("${OPAL_ARGS[@]}")
     fi
   elif [[ -n "${scenario_opal_args}" ]]; then
+    if [[ ${#OPAL_ARGS[@]} -gt 0 && -n "${OPAL_ARGS[0]}" ]]; then
+      cmd+=("${OPAL_ARGS[@]}")
+    fi
     local scenario_args=()
     read -r -a scenario_args <<<"${scenario_opal_args}"
     if [[ ${#scenario_args[@]} -gt 0 ]]; then
