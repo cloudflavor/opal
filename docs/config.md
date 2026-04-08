@@ -133,4 +133,12 @@ Each `[[registry]]` entry describes how to log into a container registry **befor
 
 Opal pipes the resolved credentials into the correct CLI (`container registry login`, `docker login`, etc.), so you no longer have to run those manually on the host.
 
+Use this for private images in:
+
+- `image` (job and default image)
+- `services` image references
+- `include:project` fetches and `needs:project` artifact retrieval (when credentials are available via other config)
+
+Because this runs from `.opal/config.toml` before execution planning, you do not need to alter `.gitlab-ci.yml` to inject login steps for private registries.
+
 > Store secrets outside of version control. When committing a project-level `config.toml`, prefer `password_env` so tokens come from CI variables or local shell env vars.

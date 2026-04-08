@@ -8,8 +8,10 @@ This document describes how Opal interprets `.gitlab-ci.yml` and schedules jobs 
   Local include paths are resolved from the repository root, local include wildcards such as `configs/*.yml` are supported, include paths can use parse-time environment expansion, and included files must be `.yml` or `.yaml`. Plain `file:` / `files:` entries are still local-only conveniences rather than full GitLab `include:project` semantics. `include:project` is available as a partial local approximation when `--gitlab-token` is configured, including nested direct local includes inside the fetched project; `remote:`, `template:`, and `component:` still fail explicitly.
 - `default.*` values merge into jobs for the subset Opal models today: `image`, `before_script`, `after_script`, `variables`, `cache`, `services`, `timeout`, `retry`, and `interruptible`. For `retry`, Opal models `max`, `when`, and `exit_codes` for local rerun decisions.
 - `inherit:default` can now disable or selectively retain the modeled default-key subset: `image`, `before_script`, `after_script`, `cache`, `services`, `timeout`, `retry`, and `interruptible`.
-- `image` supports string form, `image.name`, `image.entrypoint`, and `image:docker:platform` / `image:docker:user` for local engines that can express those options.
+- `image` supports string form, `image.name`, `image:entrypoint`, and `image:docker:platform` / `image:docker:user` for local engines that can express those options.
+  `image` strings support shell-style variable expansion from configured variables.
 - `services` supports string form plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, and `services:docker:platform` / `services:docker:user`. Mapping-form services must use `name` for the image; `image` is rejected.
+  Service image names also support shell-style variable expansion (for example `${MY_ENV_DOCKER_REGISTRY}`).
 - Job environments include GitLab-style predefined metadata such as `CI_JOB_NAME`, `CI_JOB_NAME_SLUG`, `CI_JOB_STAGE`, `CI_PROJECT_DIR`, and `CI_PIPELINE_ID`.
 - When you override language-specific home directories through variables, Opal passes them through exactly as configured. That includes paths like `CARGO_HOME` and `RUSTUP_HOME`, so a workspace-local override can intentionally or accidentally replace what the base image already provides.
 - `[[jobs]]` runtime overrides from `.opal/config.toml` can target exact job names to adjust local engine behavior like architecture selection or Linux capability flags without editing the pipeline itself.
@@ -97,6 +99,7 @@ This is intentionally a local-runner approximation, not a full reproduction of G
   ```
 
   The example above forwards everything starting with `CI_`, both AWS credentials, and any `APP_` var with exactly two characters after the underscore. Patterns are evaluated against the host’s environment, and the matches are injected before job-level variables, so jobs can override them if needed.
+  These forwarded variables are also available for shell-style expansion in image references, including service images.
 
   Repeat `--env` for each glob you need. Use quotes when your pattern includes characters your shell might expand (e.g., `?`).
 

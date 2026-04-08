@@ -454,7 +454,9 @@ fn engine_name(engine: EngineKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig};
+    use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig, RegistryAuth};
+    use crate::EngineKind;
+    use std::env;
     use std::path::Path;
 
     #[test]
@@ -597,6 +599,61 @@ job_analysis_file = "prompts/ai/job-analysis.md"
         assert_eq!(
             parsed.ai.prompts.job_analysis_file.as_deref(),
             Some("/tmp/project/.opal/prompts/ai/job-analysis.md")
+        );
+    }
+
+    #[test]
+    fn registry_entry_with_password_env_is_resolved() {
+        let mut base = OpalConfig::default();
+        base.registries.push(RegistryAuth {
+            server: "registry.example.com".into(),
+            username: "ci-token".into(),
+            password: None,
+            password_env: Some("OPAL_TEST_REGISTRY_PASSWORD".into()),
+            engines: Vec::new(),
+            scheme: None,
+        });
+
+        unsafe {
+            env::set_var("OPAL_TEST_REGISTRY_PASSWORD", "sekret");
+        }
+
+        let resolved = base
+            .registry_auth_for(EngineKind::Docker)
+            .expect("password_env should be resolved");
+
+        unsafe {
+            env::remove_var("OPAL_TEST_REGISTRY_PASSWORD");
+        }
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].server, "registry.example.com");
+        assert_eq!(resolved[0].username, "ci-token");
+        assert_eq!(resolved[0].password, "sekret");
+    }
+
+    #[test]
+    fn registry_entry_missing_password_env_returns_error() {
+        let mut base = OpalConfig::default();
+        base.registries.push(RegistryAuth {
+            server: "registry.example.com".into(),
+            username: "ci-token".into(),
+            password: None,
+            password_env: Some("OPAL_TEST_REGISTRY_PASSWORD_MISSING".into()),
+            engines: Vec::new(),
+            scheme: None,
+        });
+
+        unsafe {
+            env::remove_var("OPAL_TEST_REGISTRY_PASSWORD_MISSING");
+        }
+        let err = base
+            .registry_auth_for(EngineKind::Docker)
+            .expect_err("missing env var should fail");
+
+        assert!(
+            err.to_string()
+                .contains("missing env var OPAL_TEST_REGISTRY_PASSWORD_MISSING")
         );
     }
 }

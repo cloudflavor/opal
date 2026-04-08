@@ -30,7 +30,7 @@ pub(super) async fn prepare_job_run(
     let workspace = super::workspace::prepare_job_workspace(exec, job)?;
     let mut env_vars = exec.job_env(job);
     let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
-    let service_configs = selected_services(&exec.pipeline.defaults, job);
+    let service_configs = selected_services(&exec.pipeline.defaults, job, &cache_env);
     let service_runtime = crate::executor::services::ServiceRuntime::start(
         exec.config.engine,
         &exec.run_id,
@@ -221,16 +221,31 @@ fn expanded_commands(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<Stri
     cmds
 }
 
-fn selected_services(defaults: &PipelineDefaultsSpec, job: &JobSpec) -> Vec<ServiceSpec> {
+fn selected_services(
+    defaults: &PipelineDefaultsSpec,
+    job: &JobSpec,
+    env_lookup: &HashMap<String, String>,
+) -> Vec<ServiceSpec> {
     if job.services.is_empty() {
-        if job.inherit_default_services {
-            defaults.services.clone()
-        } else {
-            Vec::new()
+        if !job.inherit_default_services {
+            return Vec::new();
         }
+        expand_service_images(defaults.services.clone(), env_lookup)
     } else {
-        job.services.clone()
+        expand_service_images(job.services.clone(), env_lookup)
     }
+}
+
+fn expand_service_images(
+    mut services: Vec<ServiceSpec>,
+    env_lookup: &HashMap<String, String>,
+) -> Vec<ServiceSpec> {
+    for service in &mut services {
+        if service.image.contains('$') {
+            service.image = crate::env::expand_value(&service.image, env_lookup);
+        }
+    }
+    services
 }
 
 fn append_runtime_mounts(
@@ -337,11 +352,28 @@ mod tests {
             ..job("test")
         };
 
-        let inherited = selected_services(&defaults, &no_job_services);
-        let overridden = selected_services(&defaults, &with_job_services);
+        let inherited = selected_services(&defaults, &no_job_services, &HashMap::new());
+        let overridden = selected_services(&defaults, &with_job_services, &HashMap::new());
 
         assert_eq!(inherited[0].image, "redis:7");
         assert_eq!(overridden[0].image, "postgres:16");
+    }
+
+    #[test]
+    fn selected_services_expands_image_variables() {
+        let defaults = PipelineDefaultsSpec {
+            services: vec![service("${REGISTRY_HOST}/redis:7", Some("redis"))],
+            ..pipeline_defaults()
+        };
+        let job = job("build");
+
+        let services = selected_services(
+            &defaults,
+            &job,
+            &HashMap::from([("REGISTRY_HOST".into(), "docker.io/library".into())]),
+        );
+
+        assert_eq!(services[0].image, "docker.io/library/redis:7");
     }
 
     #[test]
