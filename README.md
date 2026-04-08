@@ -138,6 +138,7 @@ This also works when you load a past job in `opal view`.
 Current backends:
 
 - `ollama`
+- `claude`
 - `codex`
 
 See:

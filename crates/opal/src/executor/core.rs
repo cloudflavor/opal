@@ -723,13 +723,22 @@ impl ExecutorCore {
                     AiProviderKind::Ollama => {
                         Some(self.config.settings.ai_settings().ollama.model.clone())
                     }
+                    AiProviderKind::Claude => {
+                        self.config.settings.ai_settings().claude.model.clone()
+                    }
                     AiProviderKind::Codex => self.config.settings.ai_settings().codex.model.clone(),
-                    AiProviderKind::Claude => None,
                 },
-                command: (provider_kind == AiProviderKind::Codex)
-                    .then(|| self.config.settings.ai_settings().codex.command.clone()),
+                command: match provider_kind {
+                    AiProviderKind::Claude => {
+                        Some(self.config.settings.ai_settings().claude.command.clone())
+                    }
+                    AiProviderKind::Codex => {
+                        Some(self.config.settings.ai_settings().codex.command.clone())
+                    }
+                    AiProviderKind::Ollama => None,
+                },
                 args: Vec::new(),
-                workdir: (provider_kind == AiProviderKind::Codex)
+                workdir: matches!(provider_kind, AiProviderKind::Claude | AiProviderKind::Codex)
                     .then(|| self.config.workdir.clone()),
                 save_path: save_path.clone(),
             };

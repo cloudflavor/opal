@@ -46,6 +46,19 @@ host = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
 ```
 
+For Claude Code:
+
+```toml
+[ai]
+default_provider = "claude"
+tail_lines = 200
+save_analysis = true
+
+[ai.claude]
+command = "claude"
+model = "sonnet"
+```
+
 Then in the TUI:
 
 - select a job
@@ -73,6 +86,7 @@ Implemented now:
 - shared `crates/opal/src/ai/` module layout
 - provider selection/config scaffolding
 - `ollama` provider implementation
+- `claude` provider implementation
 - `codex` provider implementation
 - embedded prompt templates under `prompts/ai/`
 - config-based prompt file overrides
@@ -82,7 +96,6 @@ Implemented now:
 
 Planned next:
 
-- `claude` provider via Claude Code CLI
 - provider picker / rerun with a different provider
 - richer prompt/context extraction and saved analysis browsing in history mode
 
@@ -121,9 +134,35 @@ See `docs/ai-config.md` for:
 
 ### Claude Code
 
-Planned.
+Claude Code is implemented through the Claude Code CLI.
 
-The intended path is the Claude Code CLI in headless mode using structured output.
+Opal launches `claude -p` in headless mode with `--output-format stream-json`, enables partial-message streaming, and appends the rendered system prompt with `--append-system-prompt` when one is configured.
+
+The current backend is analysis-focused and starts Claude Code in `--permission-mode plan` so troubleshooting stays non-interactive and non-editing by default.
+
+Configuration lives under:
+
+```toml
+[ai]
+default_provider = "claude"
+
+[ai.claude]
+command = "claude"
+model = "sonnet"
+```
+
+Current defaults:
+
+- `command` defaults to `claude`
+- `model` is optional; when unset, Claude Code uses its own configured default model
+
+Operational notes:
+
+- Claude Code must already be installed and authenticated on the host
+- Opal launches Claude Code from the repository workdir so it can inspect the current project context
+- Opal sends the rendered troubleshooting context on stdin
+- Opal streams text deltas from Claude Code `stream-json` output when available
+- if Claude Code emits no partial deltas, Opal still captures the final assistant/result text from the structured stream before showing or saving the analysis
 
 ### Codex
 

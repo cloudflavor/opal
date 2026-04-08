@@ -734,14 +734,24 @@ impl UiRunner {
                         ai::AiProviderKind::Ollama => {
                             Some(settings.ai_settings().ollama.model.clone())
                         }
+                        ai::AiProviderKind::Claude => settings.ai_settings().claude.model.clone(),
                         ai::AiProviderKind::Codex => settings.ai_settings().codex.model.clone(),
-                        ai::AiProviderKind::Claude => None,
                     },
-                    command: (provider_kind == ai::AiProviderKind::Codex)
-                        .then(|| settings.ai_settings().codex.command.clone()),
+                    command: match provider_kind {
+                        ai::AiProviderKind::Claude => {
+                            Some(settings.ai_settings().claude.command.clone())
+                        }
+                        ai::AiProviderKind::Codex => {
+                            Some(settings.ai_settings().codex.command.clone())
+                        }
+                        ai::AiProviderKind::Ollama => None,
+                    },
                     args: Vec::new(),
-                    workdir: (provider_kind == ai::AiProviderKind::Codex)
-                        .then_some(workdir.clone()),
+                    workdir: matches!(
+                        provider_kind,
+                        ai::AiProviderKind::Claude | ai::AiProviderKind::Codex
+                    )
+                    .then_some(workdir.clone()),
                     save_path: save_path.clone(),
                 };
                 let result = ai::analyze_with_default_provider(&request, |chunk| {

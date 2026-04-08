@@ -38,12 +38,28 @@ host = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
 ```
 
+### Claude Code
+
+```toml
+[ai]
+default_provider = "claude"
+tail_lines = 200
+save_analysis = true
+
+[ai.prompts]
+system_file = "prompts/ai/system.md"
+job_analysis_file = "prompts/ai/job-analysis.md"
+
+[ai.claude]
+command = "claude"
+model = "sonnet"
+```
+
 ## Core settings
 
 - `[ai].default_provider`
   - accepted values: `ollama`, `claude`, `codex`
-  - implemented backends today: `ollama`, `codex`
-  - `claude` is planned
+  - implemented backends today: `ollama`, `claude`, `codex`
   - when unset, Opal currently falls back to `ollama`
 - `[ai].tail_lines`
   - number of trailing log lines to include in the troubleshooting context
@@ -122,6 +138,28 @@ default_provider = "ollama"
 [ai.ollama]
 host = "http://127.0.0.1:11434"
 model = "qwen3-coder:30b"
+```
+
+## Claude Code
+
+Configuration keys:
+
+- `[ai.claude].command`
+  - default: `claude`
+  - command used to launch the Claude Code CLI backend
+- `[ai.claude].model`
+  - optional Claude model override
+  - when unset, Claude Code uses its own configured default model
+
+Example:
+
+```toml
+[ai]
+default_provider = "claude"
+
+[ai.claude]
+command = "claude"
+model = "sonnet"
 ```
 
 ## Codex

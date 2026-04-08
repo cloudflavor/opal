@@ -33,6 +33,7 @@ pub struct AiSettingsConfig {
     pub tail_lines: usize,
     pub save_analysis: bool,
     pub prompts: AiPromptConfig,
+    pub claude: ClaudeAiConfig,
     pub codex: CodexAiConfig,
     pub ollama: OllamaAiConfig,
     save_analysis_override: Option<bool>,
@@ -45,6 +46,7 @@ impl Default for AiSettingsConfig {
             tail_lines: 200,
             save_analysis: true,
             prompts: AiPromptConfig::default(),
+            claude: ClaudeAiConfig::default(),
             codex: CodexAiConfig::default(),
             ollama: OllamaAiConfig::default(),
             save_analysis_override: None,
@@ -64,6 +66,7 @@ impl<'de> Deserialize<'de> for AiSettingsConfig {
             tail_lines: usize,
             save_analysis: Option<bool>,
             prompts: AiPromptConfig,
+            claude: ClaudeAiConfig,
             codex: CodexAiConfig,
             ollama: OllamaAiConfig,
         }
@@ -72,6 +75,7 @@ impl<'de> Deserialize<'de> for AiSettingsConfig {
         let mut settings = AiSettingsConfig {
             default_provider: raw.default_provider,
             prompts: raw.prompts,
+            claude: raw.claude,
             codex: raw.codex,
             ollama: raw.ollama,
             ..AiSettingsConfig::default()
@@ -112,9 +116,25 @@ pub struct OllamaAiConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct ClaudeAiConfig {
+    pub command: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct CodexAiConfig {
     pub command: String,
     pub model: Option<String>,
+}
+
+impl Default for ClaudeAiConfig {
+    fn default() -> Self {
+        Self {
+            command: "claude".to_string(),
+            model: None,
+        }
+    }
 }
 
 impl Default for CodexAiConfig {
@@ -305,8 +325,20 @@ impl AiSettingsConfig {
             self.save_analysis_override = Some(value);
         }
         self.prompts.merge(other.prompts);
+        self.claude.merge(other.claude);
         self.codex.merge(other.codex);
         self.ollama.merge(other.ollama);
+    }
+}
+
+impl ClaudeAiConfig {
+    fn merge(&mut self, other: ClaudeAiConfig) {
+        if !other.command.is_empty() {
+            self.command = other.command;
+        }
+        if other.model.is_some() {
+            self.model = other.model;
+        }
     }
 }
 
@@ -573,6 +605,8 @@ preserve_runtime_objects = true
         let settings = OpalConfig::default();
         assert_eq!(settings.ai.tail_lines, 200);
         assert!(settings.ai.save_analysis);
+        assert_eq!(settings.ai.claude.command, "claude");
+        assert!(settings.ai.claude.model.is_none());
         assert_eq!(settings.ai.codex.command, "codex");
         assert!(settings.ai.codex.model.is_none());
         assert_eq!(settings.ai.ollama.host, "http://127.0.0.1:11434");

@@ -93,10 +93,12 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
     let mut prepared = match runtime_handle.block_on(exec.prepare_job_run(plan, job)) {
         Ok(prepared) => prepared,
         Err(err) => {
-            let _ = exec.append_job_diagnostics(
-                log_path,
-                [format!("job setup failed before container start: {err}")],
-            );
+            let mut diagnostics = vec![format!("job setup failed before container start: {err}")];
+            let chain = format!("{err:#}");
+            for line in chain.lines().skip(1) {
+                diagnostics.push(format!("    {line}"));
+            }
+            let _ = exec.append_job_diagnostics(log_path, diagnostics);
             return Err(err);
         }
     };

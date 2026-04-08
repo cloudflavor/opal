@@ -215,6 +215,7 @@ $OPAL_HOME/<run-id>/<job-slug>/analysis/
 Current backend-specific filenames include:
 
 - `ollama.md`
+- `claude.md`
 - `codex.md`
 
 This is where the final saved analysis text is written after a successful provider run.
