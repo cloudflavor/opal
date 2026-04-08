@@ -50,6 +50,7 @@ SCENARIOS_JSON='[
   {"name":"services-and-tags","pipeline":"pipelines/tests/services-and-tags.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
   {"name":"services-default-aliases","pipeline":"pipelines/tests/services-default-aliases.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-network-reachability","pipeline":"pipelines/tests/services-network-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"services-application-connectivity","pipeline":"pipelines/tests/services-application-connectivity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-multi-alias-reachability","pipeline":"pipelines/tests/services-multi-alias-reachability.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-network-isolation","pipeline":"pipelines/tests/services-network-isolation.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
   {"name":"services-slow-start","pipeline":"pipelines/tests/services-slow-start.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
@@ -397,6 +398,9 @@ verify_scenario_log() {
       ;;
     services-network-reachability)
       assert_log_contains "${log_file}" "service alias reachability ok"
+      ;;
+    services-application-connectivity)
+      assert_log_contains "${log_file}" "service application connectivity ok"
       ;;
     services-multi-alias-reachability)
       assert_log_contains "${log_file}" "service multi alias reachability ok"

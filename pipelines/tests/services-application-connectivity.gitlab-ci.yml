@@ -1,0 +1,23 @@
+stages:
+  - test
+
+service-application-connectivity:
+  stage: test
+  image: docker.io/library/postgres:16
+  services:
+    - name: docker.io/library/postgres:16
+      alias: db
+  variables:
+    POSTGRES_DB: ci_demo
+    POSTGRES_USER: ci_user
+    POSTGRES_PASSWORD: ci_pass
+    PGHOST: db
+    PGDATABASE: ci_demo
+    PGUSER: ci_user
+    PGPASSWORD: ci_pass
+  script:
+    - until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE"; do sleep 1; done
+    - psql -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS demo_items (id SERIAL PRIMARY KEY, name TEXT NOT NULL);"
+    - psql -v ON_ERROR_STOP=1 -c "INSERT INTO demo_items (name) VALUES ('hello-from-ci');"
+    - psql -At -c "SELECT name FROM demo_items ORDER BY id DESC LIMIT 1;" | grep -Fx "hello-from-ci"
+    - echo "service application connectivity ok"
