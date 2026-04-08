@@ -65,6 +65,7 @@ pub(super) async fn prepare_job_run(
         exec.container_session_dir.clone(),
         &exec.secrets,
     );
+    mounts.extend(exec.bootstrap_mounts.clone());
     mounts.extend(workspace.mounts.clone());
     merge_dotenv_env(
         &mut env_vars,

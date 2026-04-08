@@ -134,6 +134,7 @@ e2e-tests:
       cache-policies
       cache-fallback
       dotenv-reports
+      bootstrap-runner
       secret-masking
   artifacts:
     when: always

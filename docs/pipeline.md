@@ -90,6 +90,43 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 
 ## Customization
 
+### Config-level env defaults (`.opal/config.toml`)
+
+- Use a root-level `[env]` table in `.opal/config.toml` to inject Opal-only runner defaults into all jobs without modifying `.gitlab-ci.yml`:
+
+  ```toml
+  [env]
+  RUNNER_BOOTSTRAP = "enabled"
+  RUNNER_INIT_SCRIPT = "/opal/bootstrap/init.sh"
+  ```
+
+- Values support shell-style expansion against available runtime environment values (for example `$HOME`).
+- These keys are local Opal runtime augmentation, not GitLab YAML syntax.
+
+### Runner bootstrap pre-step (`.opal/config.toml`)
+
+- Use `[bootstrap]` when you need Opal to prepare runner-like state before any jobs execute (for example generating helper scripts or runtime env files):
+
+  ```toml
+  [bootstrap]
+  command = "bash .opal/bootstrap/prepare-runner.sh"
+  env_file = "bootstrap/generated.env"
+
+  [bootstrap.env]
+  RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
+
+  [[bootstrap.mounts]]
+  host = "bootstrap/scripts"
+  container = "/opal/bootstrap/scripts"
+  read_only = true
+  ```
+
+- The bootstrap `command` runs once per Opal run before job execution.
+- `env_file` (dotenv) and `bootstrap.env` entries are injected into every job environment.
+- `bootstrap.mounts` are mounted into every job container, which is useful to mimic GitLab runner-provided scripts/tools.
+- `env_file` and `bootstrap.mounts.host` resolve relative to `.opal/config.toml`.
+- This is Opal-only runtime augmentation; no new `.gitlab-ci.yml` syntax is introduced.
+
 ### Forwarding host env vars
 
 - Use `--env GLOB` (repeat) to forward selected host environment variables into every job. The glob uses [`globset`](https://docs.rs/globset/latest/globset/) syntax, so `*` and `?` work the way they do in shells:
@@ -100,6 +137,7 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 
   The example above forwards everything starting with `CI_`, both AWS credentials, and any `APP_` var with exactly two characters after the underscore. Patterns are evaluated against the host’s environment, and the matches are injected before job-level variables, so jobs can override them if needed.
   These forwarded variables are also available for shell-style expansion in image references, including service images.
+  When the same key exists in both `--env` and `.opal/config.toml` `[env]`, the `--env` value wins.
 
   Repeat `--env` for each glob you need. Use quotes when your pattern includes characters your shell might expand (e.g., `?`).
 

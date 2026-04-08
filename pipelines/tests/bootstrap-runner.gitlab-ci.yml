@@ -1,0 +1,21 @@
+stages:
+  - verify
+
+default:
+  image: docker.io/library/alpine:3.19
+  before_script:
+    - set -eu
+
+bootstrap-runner:
+  stage: verify
+  variables:
+    BOOTSTRAP_BASE: from-job
+  script:
+    - test "${BOOTSTRAP_FROM_FILE}" = "from-dotenv"
+    - echo "bootstrap env file ok ${BOOTSTRAP_FROM_FILE}"
+    - test "${BOOTSTRAP_EXPANDED}" = "from-dotenv-expanded"
+    - echo "bootstrap env expansion ok ${BOOTSTRAP_EXPANDED}"
+    - test "${BOOTSTRAP_BASE}" = "from-job"
+    - echo "bootstrap job override ok ${BOOTSTRAP_BASE}"
+    - test -x "${RUNNER_HELPER}"
+    - "${RUNNER_HELPER}"

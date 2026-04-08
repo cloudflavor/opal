@@ -409,6 +409,61 @@ mod tests {
     }
 
     #[test]
+    fn build_job_env_prefers_pipeline_variables_over_base_env_defaults() {
+        let job = JobSpec {
+            name: "lint".into(),
+            stage: "test".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            inherit_default_image: true,
+            inherit_default_cache: true,
+            inherit_default_services: true,
+            inherit_default_timeout: true,
+            inherit_default_retry: true,
+            inherit_default_interruptible: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::from([("RUNNER_BOOTSTRAP".into(), "from-job".into())]),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+
+        let env = build_job_env(
+            &[("RUNNER_BOOTSTRAP".into(), "from-config".into())],
+            &HashMap::from([("RUNNER_BOOTSTRAP".into(), "from-default".into())]),
+            &job,
+            &SecretsStore::default(),
+            Path::new("/workspace"),
+            Path::new("/workspace"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::new(),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("RUNNER_BOOTSTRAP").map(String::as_str),
+            Some("from-job")
+        );
+    }
+
+    #[test]
     fn expands_shell_style_default_fallbacks() {
         let lookup = HashMap::from([
             ("CI_COMMIT_REF_SLUG".into(), "main".into()),

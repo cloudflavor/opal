@@ -4,7 +4,7 @@ This page tracks which `.gitlab-ci.yml` features Opal currently recognizes and h
 
 Short answer: Opal is not on par with official GitLab today. It supports a useful local-runner subset, but GitLab's full YAML language and pipeline model are broader.
 
-Last updated: 2026-04-02
+Last updated: 2026-04-08
 
 ## Recognized By Opal
 
@@ -198,6 +198,13 @@ These features exist in Opal, but they do not match GitLab completely.
   Opal currently copies `.git` into that local snapshot so Git-aware local behavior still works inside jobs and during local ref/tag evaluation.
   Opal still applies Git-aware filtering to avoid copying obvious local junk into the job workspace, including ignored/generated directories such as `target/`, `tests-temp/`, `.opal/`, `node_modules/`, and `.svelte-kit/`.
   This is a deliberate local-development divergence rather than a claim of exact GitLab Runner parity.
+- Opal root config env injection is runner-augmentation-only.
+  Opal supports a root-level `.opal/config.toml` `[env]` table to inject local runner defaults into all jobs.
+  This is not a GitLab `.gitlab-ci.yml` feature and is intentionally kept outside GitLab pipeline syntax/parsing.
+  Pipeline variables in `.gitlab-ci.yml` remain authoritative over those injected defaults.
+- Opal bootstrap pre-step is runner-augmentation-only.
+  Opal supports a root-level `.opal/config.toml` `[bootstrap]` section to run a pre-execution command and inject bootstrap env/mounts into all jobs.
+  This is not a GitLab `.gitlab-ci.yml` feature and is intentionally implemented as local runner behavior.
 - `inherit:default` is subset-only.
   Opal now models `inherit:default` for the default keys it supports today:
   - `image`

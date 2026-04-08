@@ -1760,84 +1760,87 @@ mod tests {
         assert_eq!(args.max_parallel_jobs, 2);
     }
 
-    #[tokio::test]
-    async fn run_status_tool_reports_background_failure() {
+    #[test]
+    fn run_status_tool_reports_background_failure() {
         let _guard = TEST_ENV_LOCK.lock().expect("lock env");
-        let dir = tempdir().expect("tempdir");
-        let opal_home = dir.path().join("opal-home-run-status");
-        fs::create_dir_all(&opal_home).expect("opal home");
-        unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
-        }
-        run_operations().clear();
-        fs::write(
-            dir.path().join(".gitlab-ci.yml"),
-            "stages:\n  - test\nhello:\n  stage: test\n  script:\n    - echo hello\n",
-        )
-        .expect("write pipeline");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempdir().expect("tempdir");
+            let opal_home = dir.path().join("opal-home-run-status");
+            fs::create_dir_all(&opal_home).expect("opal home");
+            unsafe {
+                env::set_var("OPAL_HOME", &opal_home);
+            }
+            run_operations().clear();
+            fs::write(
+                dir.path().join(".gitlab-ci.yml"),
+                "stages:\n  - test\nhello:\n  stage: test\n  script:\n    - echo hello\n",
+            )
+            .expect("write pipeline");
 
-        let app = OpalApp::from_current_dir().expect("app");
-        let start = call_tool(
-            &app,
-            json!({
-                "name": "opal_run",
-                "arguments": {
-                    "workdir": dir.path().display().to_string(),
-                    "pipeline": "missing.yml"
-                }
-            }),
-        )
-        .await
-        .expect("start op");
-
-        assert_eq!(start["isError"], false);
-        let operation_id = start["structuredContent"]["operation"]["operation_id"]
-            .as_str()
-            .expect("operation id")
-            .to_string();
-
-        let mut terminal = None;
-        for _ in 0..50 {
-            let status = call_tool(
+            let app = OpalApp::from_current_dir().expect("app");
+            let start = call_tool(
                 &app,
                 json!({
-                    "name": "opal_run_status",
+                    "name": "opal_run",
                     "arguments": {
-                        "operation_id": operation_id
+                        "workdir": dir.path().display().to_string(),
+                        "pipeline": "missing.yml"
                     }
                 }),
             )
             .await
-            .expect("status");
-            let state = status["structuredContent"]["operation"]["status"]
+            .expect("start op");
+
+            assert_eq!(start["isError"], false);
+            let operation_id = start["structuredContent"]["operation"]["operation_id"]
                 .as_str()
+                .expect("operation id")
+                .to_string();
+
+            let mut terminal = None;
+            for _ in 0..50 {
+                let status = call_tool(
+                    &app,
+                    json!({
+                        "name": "opal_run_status",
+                        "arguments": {
+                            "operation_id": operation_id
+                        }
+                    }),
+                )
+                .await
                 .expect("status");
-            if state != "running" {
-                terminal = Some(status);
-                break;
+                let state = status["structuredContent"]["operation"]["status"]
+                    .as_str()
+                    .expect("status");
+                if state != "running" {
+                    terminal = Some(status);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
 
-        unsafe {
-            env::remove_var("OPAL_HOME");
-        }
+            unsafe {
+                env::remove_var("OPAL_HOME");
+            }
 
-        let terminal = terminal.expect("terminal status");
-        assert_eq!(
-            terminal["structuredContent"]["operation"]["status"],
-            "failed"
-        );
-        assert_eq!(
-            terminal["structuredContent"]["operation"]["run"],
-            Value::Null
-        );
-        assert!(
-            !terminal["structuredContent"]["operation"]["error"]
-                .as_str()
-                .expect("error")
-                .is_empty()
-        );
+            let terminal = terminal.expect("terminal status");
+            assert_eq!(
+                terminal["structuredContent"]["operation"]["status"],
+                "failed"
+            );
+            assert_eq!(
+                terminal["structuredContent"]["operation"]["run"],
+                Value::Null
+            );
+            assert!(
+                !terminal["structuredContent"]["operation"]["error"]
+                    .as_str()
+                    .expect("error")
+                    .is_empty()
+            );
+        });
     }
 
     #[test]

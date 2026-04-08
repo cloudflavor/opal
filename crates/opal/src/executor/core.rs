@@ -1,3 +1,4 @@
+mod bootstrap;
 mod history_store;
 mod launch;
 mod lifecycle;
@@ -28,7 +29,7 @@ use crate::model::{ArtifactSourceOutcome, CachePolicySpec, JobSpec, PipelineSpec
 use crate::naming::{generate_run_id, job_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
-    RuleContext,
+    RuleContext, VolumeMount,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -72,6 +73,7 @@ pub struct ExecutorCore {
     artifacts: ArtifactManager,
     cache: CacheManager,
     external_artifacts: Option<ExternalArtifactsManager>,
+    bootstrap_mounts: Vec<VolumeMount>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +147,7 @@ impl ExecutorCore {
         let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
         let container_session_dir = Path::new("/opal").join(&run_id);
 
-        let core = Self {
+        let mut core = Self {
             config,
             pipeline,
             use_color,
@@ -165,9 +167,11 @@ impl ExecutorCore {
             artifacts,
             cache,
             external_artifacts,
+            bootstrap_mounts: Vec::new(),
         };
 
         registry::ensure_registry_logins(&core)?;
+        bootstrap::apply_runner_bootstrap(&mut core).await?;
 
         Ok(core)
     }
@@ -1178,6 +1182,25 @@ fn build_executor_env_from(
             shared_env.insert(key.clone(), value.clone());
         }
     }
+    if !config.settings.configured_env().is_empty() {
+        let mut configured_env: Vec<(String, String)> = config
+            .settings
+            .configured_env()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        expand_env_list(&mut configured_env[..], &shared_env);
+        for (key, value) in configured_env {
+            if env_vars
+                .iter()
+                .any(|(existing_key, _)| existing_key == &key)
+            {
+                continue;
+            }
+            env_vars.push((key.clone(), value.clone()));
+            shared_env.insert(key, value);
+        }
+    }
 
     Ok(ExecutorEnvState {
         use_color,
@@ -1231,6 +1254,7 @@ mod tests {
     use super::{ExecutorEnvState, build_executor_env_from, prepare_executor_directories_at};
     use crate::{EngineKind, ExecutorConfig, config::OpalConfig};
     use anyhow::Result;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::{collections::HashMap, path::PathBuf};
     use tempfile::tempdir;
@@ -1304,6 +1328,69 @@ mod tests {
         assert_eq!(
             shared_env.get("APP_CONFIG").map(String::as_str),
             Some("/tmp/home/.config")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_executor_env_injects_root_config_env_entries() -> Result<()> {
+        let mut config = test_config();
+        config.settings = OpalConfig {
+            env: BTreeMap::from([
+                ("RUNNER_BOOTSTRAP".to_string(), "enabled".to_string()),
+                (
+                    "RUNNER_SCRIPT".to_string(),
+                    "$HOME/bootstrap.sh".to_string(),
+                ),
+            ]),
+            ..OpalConfig::default()
+        };
+
+        let host_env = HashMap::from([("HOME".to_string(), "/tmp/home".to_string())]);
+        let ExecutorEnvState {
+            env_vars,
+            shared_env,
+            ..
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert!(env_vars.contains(&("RUNNER_BOOTSTRAP".to_string(), "enabled".to_string())));
+        assert!(env_vars.contains(&(
+            "RUNNER_SCRIPT".to_string(),
+            "/tmp/home/bootstrap.sh".to_string()
+        )));
+        assert_eq!(
+            shared_env.get("RUNNER_SCRIPT").map(String::as_str),
+            Some("/tmp/home/bootstrap.sh")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_executor_env_prefers_explicit_env_includes_over_config_env() -> Result<()> {
+        let mut config = test_config();
+        config.env_includes = vec!["APP_*".to_string()];
+        config.settings = OpalConfig {
+            env: BTreeMap::from([("APP_TOKEN".to_string(), "from-config".to_string())]),
+            ..OpalConfig::default()
+        };
+
+        let host_env = HashMap::from([
+            ("APP_TOKEN".to_string(), "from-host".to_string()),
+            ("HOME".to_string(), "/tmp/home".to_string()),
+        ]);
+        let ExecutorEnvState {
+            env_vars,
+            shared_env,
+            ..
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert_eq!(
+            env_vars,
+            vec![("APP_TOKEN".to_string(), "from-host".to_string())]
+        );
+        assert_eq!(
+            shared_env.get("APP_TOKEN").map(String::as_str),
+            Some("from-host")
         );
         Ok(())
     }
