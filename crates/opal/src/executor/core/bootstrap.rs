@@ -1,5 +1,7 @@
 use super::ExecutorCore;
+use crate::env::expand_value;
 use crate::pipeline::VolumeMount;
+use crate::secrets::load_dotenv_env_pairs_async;
 use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use std::process::Stdio;
@@ -16,7 +18,7 @@ pub(super) async fn apply_runner_bootstrap(exec: &mut ExecutorCore) -> Result<()
     }
 
     if let Some(env_file) = bootstrap.env_file.as_ref() {
-        let env_from_file = crate::secrets::load_dotenv_env_pairs_async(env_file)
+        let env_from_file = load_dotenv_env_pairs_async(env_file)
             .await
             .with_context(|| {
                 format!(
@@ -31,7 +33,7 @@ pub(super) async fn apply_runner_bootstrap(exec: &mut ExecutorCore) -> Result<()
 
     let mut lookup = exec.shared_env.clone();
     for (key, raw_value) in &bootstrap.env {
-        let expanded = crate::env::expand_value(raw_value, &lookup);
+        let expanded = expand_value(raw_value, &lookup);
         upsert_executor_env(exec, key, &expanded);
         lookup.insert(key.clone(), expanded);
     }
