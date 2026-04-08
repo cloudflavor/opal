@@ -2881,6 +2881,11 @@ fn matches_log_filter(line: &str, filter: LogFilter) -> bool {
             content.contains("downloaded")
                 || content.contains("downloading")
                 || content.contains("fetching")
+                || content.contains("pulling")
+                || content.contains("extracting")
+                || content.contains("copying blob")
+                || content.contains("pull complete")
+                || content.contains("trying to pull")
         }
         LogFilter::Build => {
             content.contains("compiling")
@@ -4021,6 +4026,14 @@ mod tests {
     fn log_filter_modes_match_expected_lines() {
         assert!(matches_log_filter(
             "[11:45:19.541 0068] Downloaded serde v1.0.228",
+            LogFilter::Downloads
+        ));
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] a3ed95caeb02: Pulling fs layer",
+            LogFilter::Downloads
+        ));
+        assert!(matches_log_filter(
+            "[11:45:19.541 0068] Copying blob sha256:abc123",
             LogFilter::Downloads
         ));
         assert!(matches_log_filter(
