@@ -1,5 +1,17 @@
 # Repository Instructions
 
+## Branching Workflow
+
+- Never start a new body of work on `main`.
+- If the current branch is `main`, create and switch to a descriptive working branch before making edits.
+- Use suggestive branch prefixes:
+  - `feature/` for new capabilities
+  - `fix/` for bug fixes
+  - `chore/` for maintenance and tooling
+  - `docs/` for documentation-only work
+- Choose branch names that describe the scope clearly (for example, `feature/opal-root-config-env`).
+- Do not continue implementation work until the branch switch is complete.
+
 ## Critical: GitLab Parity Discipline
 
 - Treat current GitLab CI/CD documentation as the upstream source of truth for `.gitlab-ci.yml` behavior.
