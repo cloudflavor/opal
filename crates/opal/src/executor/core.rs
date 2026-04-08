@@ -1,3 +1,4 @@
+mod bootstrap;
 mod history_store;
 mod launch;
 mod lifecycle;
@@ -28,7 +29,7 @@ use crate::model::{ArtifactSourceOutcome, CachePolicySpec, JobSpec, PipelineSpec
 use crate::naming::{generate_run_id, job_name_slug};
 use crate::pipeline::{
     self, ArtifactManager, CacheManager, ExternalArtifactsManager, JobRunInfo, JobSummary,
-    RuleContext,
+    RuleContext, VolumeMount,
 };
 use crate::runner::ExecuteContext;
 use crate::secrets::SecretsStore;
@@ -72,6 +73,7 @@ pub struct ExecutorCore {
     artifacts: ArtifactManager,
     cache: CacheManager,
     external_artifacts: Option<ExternalArtifactsManager>,
+    bootstrap_mounts: Vec<VolumeMount>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +147,7 @@ impl ExecutorCore {
         let container_workdir = Path::new(CONTAINER_ROOT).join(project_dir);
         let container_session_dir = Path::new("/opal").join(&run_id);
 
-        let core = Self {
+        let mut core = Self {
             config,
             pipeline,
             use_color,
@@ -165,9 +167,11 @@ impl ExecutorCore {
             artifacts,
             cache,
             external_artifacts,
+            bootstrap_mounts: Vec::new(),
         };
 
         registry::ensure_registry_logins(&core)?;
+        bootstrap::apply_runner_bootstrap(&mut core).await?;
 
         Ok(core)
     }

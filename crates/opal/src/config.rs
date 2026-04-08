@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct OpalConfig {
     pub ai: AiSettingsConfig,
+    #[serde(alias = "runner_bootstrap")]
+    pub bootstrap: RunnerBootstrapConfig,
     pub container: Option<ContainerEngineConfig>,
     pub env: BTreeMap<String, String>,
     pub jobs: Vec<JobOverrideConfig>,
@@ -26,6 +28,35 @@ pub struct EngineSettings {
     pub default: Option<EngineChoice>,
     pub container: Option<ContainerEngineConfig>,
     pub preserve_runtime_objects: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RunnerBootstrapConfig {
+    pub enabled: Option<bool>,
+    pub command: Option<String>,
+    #[serde(alias = "dotenv")]
+    pub env_file: Option<PathBuf>,
+    pub env: BTreeMap<String, String>,
+    pub mounts: Vec<RunnerBootstrapMountConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RunnerBootstrapMountConfig {
+    pub host: PathBuf,
+    pub container: PathBuf,
+    pub read_only: bool,
+}
+
+impl Default for RunnerBootstrapMountConfig {
+    fn default() -> Self {
+        Self {
+            host: PathBuf::new(),
+            container: PathBuf::new(),
+            read_only: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +291,10 @@ impl OpalConfig {
         &self.env
     }
 
+    pub fn bootstrap_settings(&self) -> &RunnerBootstrapConfig {
+        &self.bootstrap
+    }
+
     pub fn registry_auth_for(&self, engine: EngineKind) -> Result<Vec<ResolvedRegistryAuth>> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -301,6 +336,7 @@ impl OpalConfig {
 
     fn merge(&mut self, mut other: OpalConfig) {
         self.ai.merge(other.ai);
+        self.bootstrap.merge(other.bootstrap);
         if let Some(new_container) = other.container.take() {
             match &mut self.container {
                 Some(existing) => existing.merge(new_container),
@@ -315,6 +351,48 @@ impl OpalConfig {
 
     fn resolve_relative_paths(&mut self, config_path: &Path) {
         self.ai.prompts.resolve_relative_paths(config_path);
+        self.bootstrap.resolve_relative_paths(config_path);
+    }
+}
+
+impl RunnerBootstrapConfig {
+    pub fn is_active(&self) -> bool {
+        self.enabled.unwrap_or_else(|| {
+            self.command.is_some()
+                || self.env_file.is_some()
+                || !self.env.is_empty()
+                || !self.mounts.is_empty()
+        })
+    }
+
+    fn merge(&mut self, other: RunnerBootstrapConfig) {
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+        if other.command.is_some() {
+            self.command = other.command;
+        }
+        if other.env_file.is_some() {
+            self.env_file = other.env_file;
+        }
+        self.env.extend(other.env);
+        self.mounts.extend(other.mounts);
+    }
+
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        let Some(base_dir) = config_path.parent() else {
+            return;
+        };
+        if let Some(path) = &mut self.env_file
+            && !path.is_absolute()
+        {
+            *path = base_dir.join(&*path);
+        }
+        for mount in &mut self.mounts {
+            if !mount.host.is_absolute() {
+                mount.host = base_dir.join(&mount.host);
+            }
+        }
     }
 }
 
@@ -492,7 +570,9 @@ fn engine_name(engine: EngineKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig, RegistryAuth};
+    use super::{
+        ContainerEngineConfig, JobOverrideConfig, OpalConfig, RegistryAuth, RunnerBootstrapConfig,
+    };
     use crate::EngineKind;
     use std::collections::BTreeMap;
     use std::env;
@@ -654,6 +734,98 @@ INIT_SCRIPT = "/opal/bootstrap/init.sh"
                 .map(String::as_str),
             Some("1")
         );
+    }
+
+    #[test]
+    fn parses_bootstrap_config_with_command_env_and_mounts() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[bootstrap]
+command = "bash .opal/bootstrap/setup.sh"
+env_file = ".opal/bootstrap/generated.env"
+
+[bootstrap.env]
+RUNNER_SCRIPT = "/opal/bootstrap/scripts/init.sh"
+
+[[bootstrap.mounts]]
+host = ".opal/bootstrap/scripts"
+container = "/opal/bootstrap/scripts"
+read_only = true
+"#,
+        )
+        .expect("parse config");
+
+        let bootstrap = parsed.bootstrap_settings();
+        assert_eq!(
+            bootstrap.command.as_deref(),
+            Some("bash .opal/bootstrap/setup.sh")
+        );
+        assert_eq!(
+            bootstrap.env.get("RUNNER_SCRIPT").map(String::as_str),
+            Some("/opal/bootstrap/scripts/init.sh")
+        );
+        assert_eq!(bootstrap.mounts.len(), 1);
+        assert_eq!(
+            bootstrap.mounts[0].container.as_os_str().to_string_lossy(),
+            "/opal/bootstrap/scripts"
+        );
+    }
+
+    #[test]
+    fn bootstrap_relative_paths_resolve_from_config_dir() {
+        let mut parsed: OpalConfig = toml::from_str(
+            r#"
+[bootstrap]
+env_file = "runtime/bootstrap.env"
+
+[[bootstrap.mounts]]
+host = "runtime/scripts"
+container = "/opal/bootstrap/scripts"
+"#,
+        )
+        .expect("parse config");
+
+        parsed.resolve_relative_paths(Path::new("/tmp/project/.opal/config.toml"));
+
+        assert_eq!(
+            parsed
+                .bootstrap_settings()
+                .env_file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .as_deref(),
+            Some("/tmp/project/.opal/runtime/bootstrap.env")
+        );
+        assert_eq!(
+            parsed.bootstrap_settings().mounts[0]
+                .host
+                .display()
+                .to_string(),
+            "/tmp/project/.opal/runtime/scripts"
+        );
+    }
+
+    #[test]
+    fn bootstrap_can_be_explicitly_disabled() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[bootstrap]
+enabled = false
+command = "echo should-not-run"
+"#,
+        )
+        .expect("parse config");
+
+        assert!(!parsed.bootstrap_settings().is_active());
+    }
+
+    #[test]
+    fn bootstrap_defaults_to_active_when_configured() {
+        let bootstrap = RunnerBootstrapConfig {
+            command: Some("echo hi".into()),
+            ..RunnerBootstrapConfig::default()
+        };
+        assert!(bootstrap.is_active());
     }
 
     #[test]

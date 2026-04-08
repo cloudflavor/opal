@@ -202,6 +202,9 @@ These features exist in Opal, but they do not match GitLab completely.
   Opal supports a root-level `.opal/config.toml` `[env]` table to inject local runner defaults into all jobs.
   This is not a GitLab `.gitlab-ci.yml` feature and is intentionally kept outside GitLab pipeline syntax/parsing.
   Pipeline variables in `.gitlab-ci.yml` remain authoritative over those injected defaults.
+- Opal bootstrap pre-step is runner-augmentation-only.
+  Opal supports a root-level `.opal/config.toml` `[bootstrap]` section to run a pre-execution command and inject bootstrap env/mounts into all jobs.
+  This is not a GitLab `.gitlab-ci.yml` feature and is intentionally implemented as local runner behavior.
 - `inherit:default` is subset-only.
   Opal now models `inherit:default` for the default keys it supports today:
   - `image`

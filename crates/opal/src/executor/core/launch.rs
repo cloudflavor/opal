@@ -282,6 +282,7 @@ mod tests {
             artifacts: crate::pipeline::ArtifactManager::new(PathBuf::from("/tmp/artifacts")),
             cache: crate::pipeline::CacheManager::new(PathBuf::from("/tmp/cache")),
             external_artifacts: None,
+            bootstrap_mounts: Vec::new(),
         }
     }
 

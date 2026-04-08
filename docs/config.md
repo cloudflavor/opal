@@ -19,6 +19,18 @@ preserve_runtime_objects = true
 RUNNER_BOOTSTRAP = "enabled"
 RUNNER_INIT_SCRIPT = "/opal/bootstrap/init.sh"
 
+[bootstrap]
+command = "bash .opal/bootstrap/prepare-runner.sh"
+env_file = ".opal/bootstrap/generated.env"
+
+[bootstrap.env]
+RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
+
+[[bootstrap.mounts]]
+host = ".opal/bootstrap/scripts"
+container = "/opal/bootstrap/scripts"
+read_only = true
+
 [ai]
 default_provider = "ollama"
 tail_lines = 200
@@ -128,6 +140,34 @@ Behavior and precedence:
 - `--env` passthrough values take precedence over conflicting `[env]` keys.
 - Pipeline variables from `.gitlab-ci.yml` (`default:variables` and job-level `variables`) still override injected defaults.
 - This is Opal runtime behavior only; it does not add any GitLab YAML keyword.
+
+## Runner bootstrap pre-step
+
+Use `[bootstrap]` to run an Opal-only pre-pipeline setup step and inject runner-like assets before jobs execute.
+
+```toml
+[bootstrap]
+enabled = true
+command = "bash .opal/bootstrap/prepare-runner.sh"
+env_file = ".opal/bootstrap/generated.env"
+
+[bootstrap.env]
+RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
+
+[[bootstrap.mounts]]
+host = ".opal/bootstrap/scripts"
+container = "/opal/bootstrap/scripts"
+read_only = true
+```
+
+Bootstrap behavior:
+
+- `command`: runs once before job execution starts, from the repository workdir.
+- `env_file`: optional dotenv file loaded after the command (useful when the bootstrap script computes values dynamically).
+- `bootstrap.env`: additional static env vars injected into every job.
+- `bootstrap.mounts`: host paths mounted into every job container, so you can expose local runner helper scripts/files.
+- Mounted `container` paths must be absolute.
+- This is Opal runtime behavior only; `.gitlab-ci.yml` stays unchanged.
 
 ## AI settings
 

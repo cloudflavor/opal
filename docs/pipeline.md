@@ -103,6 +103,29 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 - Values support shell-style expansion against available runtime environment values (for example `$HOME`).
 - These keys are local Opal runtime augmentation, not GitLab YAML syntax.
 
+### Runner bootstrap pre-step (`.opal/config.toml`)
+
+- Use `[bootstrap]` when you need Opal to prepare runner-like state before any jobs execute (for example generating helper scripts or runtime env files):
+
+  ```toml
+  [bootstrap]
+  command = "bash .opal/bootstrap/prepare-runner.sh"
+  env_file = ".opal/bootstrap/generated.env"
+
+  [bootstrap.env]
+  RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
+
+  [[bootstrap.mounts]]
+  host = ".opal/bootstrap/scripts"
+  container = "/opal/bootstrap/scripts"
+  read_only = true
+  ```
+
+- The bootstrap `command` runs once per Opal run before job execution.
+- `env_file` (dotenv) and `bootstrap.env` entries are injected into every job environment.
+- `bootstrap.mounts` are mounted into every job container, which is useful to mimic GitLab runner-provided scripts/tools.
+- This is Opal-only runtime augmentation; no new `.gitlab-ci.yml` syntax is introduced.
+
 ### Forwarding host env vars
 
 - Use `--env GLOB` (repeat) to forward selected host environment variables into every job. The glob uses [`globset`](https://docs.rs/globset/latest/globset/) syntax, so `*` and `?` work the way they do in shells:
