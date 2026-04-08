@@ -1,9 +1,28 @@
-use dirs::{config_dir, home_dir};
+use dirs::{config_dir, data_dir, home_dir};
 use std::env;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_HOME_DIR: &str = ".opal";
+const DEFAULT_STATE_DIR: &str = ".local/share/opal";
+const DEFAULT_CONFIG_DIR: &str = ".config/opal";
 const REPO_CONFIG_DIR: &str = ".opal";
+
+fn default_state_root() -> PathBuf {
+    if let Some(dir) = data_dir() {
+        return dir.join("opal");
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(DEFAULT_STATE_DIR)
+}
+
+fn default_config_root() -> PathBuf {
+    if let Some(dir) = config_dir() {
+        return dir.join("opal");
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(DEFAULT_CONFIG_DIR)
+}
 
 fn opal_home() -> PathBuf {
     if let Some(path) = env::var_os("OPAL_HOME")
@@ -17,9 +36,7 @@ fn opal_home() -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path);
     }
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(DEFAULT_HOME_DIR)
+    default_state_root()
 }
 
 pub fn runs_root() -> PathBuf {
@@ -49,11 +66,18 @@ pub fn resource_group_root() -> PathBuf {
 pub fn config_dirs(workdir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     paths.push(workdir.join(REPO_CONFIG_DIR).join("config.toml"));
-    paths.push(opal_home().join("config.toml"));
-    if let Some(mut dir) = config_dir() {
-        dir.push("opal");
-        dir.push("config.toml");
-        paths.push(dir);
+    paths.push(default_config_root().join("config.toml"));
+    if let Some(opal_home_dir) = env::var_os("OPAL_HOME").filter(|p| !p.is_empty()) {
+        let path = PathBuf::from(opal_home_dir);
+        let config_path = if path.is_absolute() {
+            path.join("config.toml")
+        } else {
+            env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+                .join("config.toml")
+        };
+        paths.push(config_path);
     }
     paths
 }

@@ -79,7 +79,7 @@ opal plan --pipeline .gitlab-ci.yml --workdir .
 ## Inspect Results
 
 - Highlight a job and press `o` to open its log in your pager (`$PAGER`, default `less -R`).
-- Artifacts are stored in `$OPAL_HOME/<run-id>/<job>/artifacts/` (default `~/.opal/<run-id>/<job>/artifacts/`).
+- Artifacts are stored in `$OPAL_HOME/<run-id>/<job>/artifacts/` (default `~/.local/share/opal/<run-id>/<job>/artifacts/`).
 
 ## Tips
 

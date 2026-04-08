@@ -83,7 +83,7 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 
 ## Artifacts & logs
 
-- Each run gets a session directory under `$OPAL_HOME/<run-id>/` (default `~/.opal/<run-id>/`). Job artifacts are stored under `$OPAL_HOME/<run-id>/<job>/artifacts/`.
+- Each run gets a session directory under `$OPAL_HOME/<run-id>/` (default `~/.local/share/opal/<run-id>/`). Job artifacts are stored under `$OPAL_HOME/<run-id>/<job>/artifacts/`.
 - Declared `artifacts.paths` are copied into that directory and can be consumed by downstream jobs that request `needs: { artifacts: true }`. `artifacts:untracked` is also collected.
 - `dependencies:` can mount a narrower artifact subset from earlier jobs, and `needs:project` can fetch artifacts from GitLab when `--gitlab-token` is configured.
 - Logs are archived under `$OPAL_HOME/<run-id>/logs/`. The TUI also keeps an in-memory buffer and highlights diff-like lines (`+`/`-`).

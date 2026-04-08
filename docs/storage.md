@@ -10,10 +10,10 @@ Resolution rules:
 
 - If `OPAL_HOME` is set and absolute, Opal uses it directly.
 - If `OPAL_HOME` is set and relative, Opal resolves it relative to the current working directory.
-- If `OPAL_HOME` is unset, Opal defaults to:
+- If `OPAL_HOME` is unset, Opal defaults to your XDG data directory:
 
 ```text
-~/.opal
+~/.local/share/opal
 ```
 
 ## Directory layout
@@ -278,15 +278,15 @@ Legacy compatibility:
 Opal loads and merges configuration from these paths in order:
 
 1. `<workdir>/.opal/config.toml`
-2. `$OPAL_HOME/config.toml`
-3. `$XDG_CONFIG_HOME/opal/config.toml`
+2. `$XDG_CONFIG_HOME/opal/config.toml`
+3. `$OPAL_HOME/config.toml` (legacy/custom override when `OPAL_HOME` is explicitly set)
 
 Earlier entries override later ones.
 
 That means:
 
 - project-level `.opal/config.toml` overrides your global/user defaults
-- `OPAL_HOME/config.toml` can act as a machine-local override layer
-- the XDG config file is the broadest user default layer
+- `$XDG_CONFIG_HOME/opal/config.toml` is the broad user default layer
+- `$OPAL_HOME/config.toml` can still be used as a legacy/custom override when desired
 
 This is the mechanism that lets you keep global defaults while still overriding them per project.
