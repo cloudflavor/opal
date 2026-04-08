@@ -110,13 +110,13 @@ This is intentionally a local-runner approximation, not a full reproduction of G
   ```toml
   [bootstrap]
   command = "bash .opal/bootstrap/prepare-runner.sh"
-  env_file = ".opal/bootstrap/generated.env"
+  env_file = "bootstrap/generated.env"
 
   [bootstrap.env]
   RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
 
   [[bootstrap.mounts]]
-  host = ".opal/bootstrap/scripts"
+  host = "bootstrap/scripts"
   container = "/opal/bootstrap/scripts"
   read_only = true
   ```
@@ -124,6 +124,7 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 - The bootstrap `command` runs once per Opal run before job execution.
 - `env_file` (dotenv) and `bootstrap.env` entries are injected into every job environment.
 - `bootstrap.mounts` are mounted into every job container, which is useful to mimic GitLab runner-provided scripts/tools.
+- `env_file` and `bootstrap.mounts.host` resolve relative to `.opal/config.toml`.
 - This is Opal-only runtime augmentation; no new `.gitlab-ci.yml` syntax is introduced.
 
 ### Forwarding host env vars

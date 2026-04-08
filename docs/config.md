@@ -21,13 +21,13 @@ RUNNER_INIT_SCRIPT = "/opal/bootstrap/init.sh"
 
 [bootstrap]
 command = "bash .opal/bootstrap/prepare-runner.sh"
-env_file = ".opal/bootstrap/generated.env"
+env_file = "bootstrap/generated.env"
 
 [bootstrap.env]
 RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
 
 [[bootstrap.mounts]]
-host = ".opal/bootstrap/scripts"
+host = "bootstrap/scripts"
 container = "/opal/bootstrap/scripts"
 read_only = true
 
@@ -149,13 +149,13 @@ Use `[bootstrap]` to run an Opal-only pre-pipeline setup step and inject runner-
 [bootstrap]
 enabled = true
 command = "bash .opal/bootstrap/prepare-runner.sh"
-env_file = ".opal/bootstrap/generated.env"
+env_file = "bootstrap/generated.env"
 
 [bootstrap.env]
 RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
 
 [[bootstrap.mounts]]
-host = ".opal/bootstrap/scripts"
+host = "bootstrap/scripts"
 container = "/opal/bootstrap/scripts"
 read_only = true
 ```
@@ -166,6 +166,7 @@ Bootstrap behavior:
 - `env_file`: optional dotenv file loaded after the command (useful when the bootstrap script computes values dynamically).
 - `bootstrap.env`: additional static env vars injected into every job.
 - `bootstrap.mounts`: host paths mounted into every job container, so you can expose local runner helper scripts/files.
+- `env_file` and `bootstrap.mounts.host` are resolved relative to the directory containing `.opal/config.toml`.
 - Mounted `container` paths must be absolute.
 - This is Opal runtime behavior only; `.gitlab-ci.yml` stays unchanged.
 

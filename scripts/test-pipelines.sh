@@ -11,6 +11,8 @@ LOG_DIR="${REPO_ROOT}/tests-temp/test-pipeline-logs"
 TEST_RUN_ID="$(date +%s%N)"
 mkdir -p "${LOG_DIR}"
 export OPAL_HOME="${OPAL_HOME:-${REPO_ROOT}/tests-temp/opal-home}"
+TEST_HOME="${REPO_ROOT}/tests-temp/test-home"
+mkdir -p "${TEST_HOME}"
 
 if [[ "${OPAL_BIN}" == */* && "${OPAL_BIN}" != /* ]]; then
   OPAL_BIN="${REPO_ROOT}/${OPAL_BIN}"
@@ -70,6 +72,7 @@ SCENARIOS_JSON='[
   {"name":"job-overrides-arch","pipeline":"pipelines/tests/job-overrides-arch.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-arch-workdir","repo_setup":"job_override_arch","command":"run","opal_args":"--engine container"},
   {"name":"job-overrides-capabilities","pipeline":"pipelines/tests/job-overrides-capabilities.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/job-overrides-cap-workdir","repo_setup":"job_override_caps","command":"run","opal_args":"--engine docker"},
   {"name":"dotenv-reports","pipeline":"pipelines/tests/dotenv-reports.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push"},
+  {"name":"bootstrap-runner","pipeline":"pipelines/tests/bootstrap-runner.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push","workdir":"tests-temp/bootstrap-runner-workdir","repo_setup":"bootstrap_runner"},
   {"name":"retry-parity","pipeline":"pipelines/tests/retry-parity.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_HOME=tests-temp/opal-home"},
   {"name":"interruptible-abort","pipeline":"pipelines/tests/interruptible-abort.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push OPAL_ABORT_AFTER_SECS=1"},
   {"name":"filters-branch","pipeline":"pipelines/tests/filters.gitlab-ci.yml","env":"CI_COMMIT_BRANCH=feature/foo CI_PIPELINE_SOURCE=push","command":"plan","opal_args":""},
@@ -251,6 +254,12 @@ verify_scenario_log() {
       assert_log_contains "${log_file}" "dependencies dotenv v1.2.3"
       assert_log_contains "${log_file}" "dotenv blocked by needs artifacts false"
       assert_log_contains "${log_file}" "dotenv blocked by empty dependencies"
+      ;;
+    bootstrap-runner)
+      assert_log_contains "${log_file}" "bootstrap env file ok from-dotenv"
+      assert_log_contains "${log_file}" "bootstrap env expansion ok from-dotenv-expanded"
+      assert_log_contains "${log_file}" "bootstrap job override ok from-job"
+      assert_log_contains "${log_file}" "bootstrap mount helper ok"
       ;;
     rules-schedule)
       assert_log_contains "${log_file}" "scheduled-maintenance"
@@ -513,6 +522,38 @@ TOML
 preserve_runtime_objects = true
 TOML
         ;;
+      bootstrap_runner)
+        mkdir -p "${workdir}/.opal/bootstrap/scripts"
+        cat > "${workdir}/.opal/config.toml" <<'TOML'
+[bootstrap]
+command = "sh .opal/bootstrap/prepare-runner.sh"
+env_file = "bootstrap/generated.env"
+
+[bootstrap.env]
+RUNNER_HELPER = "/opal/bootstrap/scripts/helper.sh"
+BOOTSTRAP_EXPANDED = "${BOOTSTRAP_BASE}-expanded"
+
+[[bootstrap.mounts]]
+host = "bootstrap/scripts"
+container = "/opal/bootstrap/scripts"
+read_only = true
+TOML
+        cat > "${workdir}/.opal/bootstrap/prepare-runner.sh" <<'SH'
+#!/usr/bin/env sh
+set -eu
+cat > .opal/bootstrap/generated.env <<'EOF'
+BOOTSTRAP_FROM_FILE=from-dotenv
+BOOTSTRAP_BASE=from-dotenv
+EOF
+SH
+        chmod +x "${workdir}/.opal/bootstrap/prepare-runner.sh"
+        cat > "${workdir}/.opal/bootstrap/scripts/helper.sh" <<'SH'
+#!/usr/bin/env sh
+set -eu
+echo "bootstrap mount helper ok"
+SH
+        chmod +x "${workdir}/.opal/bootstrap/scripts/helper.sh"
+        ;;
       *)
         echo "!! unknown repo setup: ${repo_setup}" >&2
         return 1
@@ -605,9 +646,9 @@ run_scenario() {
 
   if [[ -n "${env_string}" ]]; then
     # shellcheck disable=SC2086
-    env ${env_string} "${cmd[@]}" 2>&1 | tee "${log_file}"
+    env HOME="${TEST_HOME}" ${env_string} "${cmd[@]}" 2>&1 | tee "${log_file}"
   else
-    "${cmd[@]}" 2>&1 | tee "${log_file}"
+    env HOME="${TEST_HOME}" "${cmd[@]}" 2>&1 | tee "${log_file}"
   fi
   local status=$?
   popd >/dev/null
@@ -669,7 +710,7 @@ run_cache_fallback_scenario() {
 
     pushd "${REPO_ROOT}" >/dev/null
     # shellcheck disable=SC2086
-    env ${env_string} "${cmd[@]}" 2>&1 | tee -a "${log_file}"
+    env HOME="${TEST_HOME}" ${env_string} "${cmd[@]}" 2>&1 | tee -a "${log_file}"
     local status=${PIPESTATUS[0]}
     popd >/dev/null
     if (( status != 0 )); then
@@ -709,10 +750,10 @@ run_resource_group_cross_run_scenario() {
   pushd "${REPO_ROOT}" >/dev/null
   local start_ts
   start_ts=$(date +%s)
-  env CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.first" 2>&1 &
+  env HOME="${TEST_HOME}" CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.first" 2>&1 &
   local first_pid=$!
   sleep 1
-  env CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.second" 2>&1
+  env HOME="${TEST_HOME}" CI_COMMIT_BRANCH=main CI_PIPELINE_SOURCE=push "${cmd[@]}" > "${log_file}.second" 2>&1
   local second_status=$?
   wait ${first_pid}
   local first_status=$?
@@ -757,7 +798,7 @@ run_interruptible_abort_scenario() {
 
   pushd "${REPO_ROOT}" >/dev/null
   # shellcheck disable=SC2086
-  env ${env_string} "${cmd[@]}" > "${log_file}" 2>&1 &
+  env HOME="${TEST_HOME}" ${env_string} "${cmd[@]}" > "${log_file}" 2>&1 &
   local run_pid=$!
 
   local attempt
