@@ -1,7 +1,7 @@
 use crate::{EngineChoice, EngineKind, runtime};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct OpalConfig {
     pub ai: AiSettingsConfig,
     pub container: Option<ContainerEngineConfig>,
+    pub env: BTreeMap<String, String>,
     pub jobs: Vec<JobOverrideConfig>,
     #[serde(alias = "engine")]
     pub engines: EngineSettings,
@@ -255,6 +256,10 @@ impl OpalConfig {
         &self.ai
     }
 
+    pub fn configured_env(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
     pub fn registry_auth_for(&self, engine: EngineKind) -> Result<Vec<ResolvedRegistryAuth>> {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
@@ -302,6 +307,7 @@ impl OpalConfig {
                 slot @ None => *slot = Some(new_container),
             }
         }
+        self.env.extend(other.env);
         self.engines.merge(other.engines);
         self.jobs.extend(other.jobs);
         self.registries.extend(other.registries);
@@ -488,6 +494,7 @@ fn engine_name(engine: EngineKind) -> &'static str {
 mod tests {
     use super::{ContainerEngineConfig, JobOverrideConfig, OpalConfig, RegistryAuth};
     use crate::EngineKind;
+    use std::collections::BTreeMap;
     use std::env;
     use std::path::Path;
 
@@ -585,6 +592,68 @@ default = "container"
         );
 
         assert_eq!(base.default_engine(), Some(crate::EngineChoice::Container));
+    }
+
+    #[test]
+    fn parses_root_level_env_table() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[env]
+RUNNER_BOOTSTRAP = "enabled"
+INIT_SCRIPT = "/opal/bootstrap/init.sh"
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(
+            parsed
+                .configured_env()
+                .get("RUNNER_BOOTSTRAP")
+                .map(String::as_str),
+            Some("enabled")
+        );
+        assert_eq!(
+            parsed
+                .configured_env()
+                .get("INIT_SCRIPT")
+                .map(String::as_str),
+            Some("/opal/bootstrap/init.sh")
+        );
+    }
+
+    #[test]
+    fn project_level_env_overrides_global_values() {
+        let mut base = OpalConfig {
+            env: BTreeMap::from([
+                ("RUNNER_BOOTSTRAP".into(), "global".into()),
+                ("GLOBAL_ONLY".into(), "1".into()),
+            ]),
+            ..OpalConfig::default()
+        };
+        base.merge(OpalConfig {
+            env: BTreeMap::from([
+                ("RUNNER_BOOTSTRAP".into(), "project".into()),
+                ("PROJECT_ONLY".into(), "1".into()),
+            ]),
+            ..OpalConfig::default()
+        });
+
+        assert_eq!(
+            base.configured_env()
+                .get("RUNNER_BOOTSTRAP")
+                .map(String::as_str),
+            Some("project")
+        );
+        assert_eq!(
+            base.configured_env().get("GLOBAL_ONLY").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            base.configured_env()
+                .get("PROJECT_ONLY")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

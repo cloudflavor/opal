@@ -15,6 +15,10 @@ This means project-level `.opal/config.toml` overrides global defaults.
 default = "docker"   # override --engine auto for this project or machine
 preserve_runtime_objects = true
 
+[env]
+RUNNER_BOOTSTRAP = "enabled"
+RUNNER_INIT_SCRIPT = "/opal/bootstrap/init.sh"
+
 [ai]
 default_provider = "ollama"
 tail_lines = 200
@@ -105,6 +109,25 @@ Job-specific runtime overrides:
   - Any matching `[[jobs]]` override still applies to the selected job instances.
 
 Add more `[engine.<name>]` tables in the future to tune other runtimes.
+
+## Global injected env defaults
+
+Use a root-level `[env]` table to inject Opal-only environment defaults into every job without changing `.gitlab-ci.yml`:
+
+```toml
+[env]
+RUNNER_BOOTSTRAP = "enabled"
+RUNNER_INIT_SCRIPT = "/opal/bootstrap/init.sh"
+RUNNER_WORKDIR = "$HOME/opal-runner"
+```
+
+Behavior and precedence:
+
+- `[env]` entries are injected by Opal for all jobs as local runner defaults.
+- Values support the same shell-style expansion Opal uses elsewhere (for example `$HOME` or `${HOME}`).
+- `--env` passthrough values take precedence over conflicting `[env]` keys.
+- Pipeline variables from `.gitlab-ci.yml` (`default:variables` and job-level `variables`) still override injected defaults.
+- This is Opal runtime behavior only; it does not add any GitLab YAML keyword.
 
 ## AI settings
 
