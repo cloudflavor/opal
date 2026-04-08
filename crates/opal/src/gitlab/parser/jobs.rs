@@ -1309,10 +1309,12 @@ struct RawServiceConfig {
 
 impl RawServiceConfig {
     fn into_config(self) -> Result<ServiceConfig> {
+        if self.image.is_some() && self.name.is_none() {
+            bail!("service entry mapping must use 'name' for the image");
+        }
         let image = self
-            .image
-            .or(self.name)
-            .ok_or_else(|| anyhow!("service entry must specify an image (name)"))?;
+            .name
+            .ok_or_else(|| anyhow!("service entry mapping must specify 'name'"))?;
         let docker = self
             .docker
             .map(|value| parse_docker_executor_config(value, "services.docker"))

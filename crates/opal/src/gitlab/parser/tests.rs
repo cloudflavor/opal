@@ -720,6 +720,30 @@ service-job:
 }
 
 #[test]
+fn rejects_service_mapping_with_image_key_instead_of_name() {
+    let err = PipelineGraph::from_yaml_str(
+        r#"
+stages:
+  - test
+
+service-job:
+  stage: test
+  services:
+    - image: docker.io/library/redis:7.2
+      alias: cache
+  script:
+    - echo ok
+"#,
+    )
+    .expect_err("service image key should error");
+
+    assert!(
+        err.to_string()
+            .contains("service entry mapping must use 'name' for the image")
+    );
+}
+
+#[test]
 fn inherit_default_controls_modeled_default_keywords() {
     let pipeline = PipelineGraph::from_yaml_str(
         r#"

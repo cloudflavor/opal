@@ -326,6 +326,7 @@ These features exist in Opal, but they do not match GitLab completely.
   - documented executor-specific image options outside `docker:platform` / `docker:user`
 - `services` is subset-only.
   Opal supports string services plus mapping entries with `name`, `alias`, `entrypoint`, `command`, `variables`, `services:docker:platform`, and `services:docker:user`.
+  Mapping-form services now require the documented GitLab `name` key for the image and reject the non-standard `image` fallback.
   On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `services:docker:platform` and `services:docker:user` to the local engine's service container flags.
   On the Apple `container` engine, `services:docker:platform` is translated into `container run --arch`, `services:docker:user` is forwarded to `container run --user`, and Opal now fails fast when the engine's per-job network creation stalls instead of hanging indefinitely.
   Unsupported service behavior in Opal today includes:
