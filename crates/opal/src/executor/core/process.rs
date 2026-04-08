@@ -16,6 +16,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Child;
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
+use tracing::debug;
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
@@ -79,9 +80,17 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
     };
 
-    validate_engine_security_options(exec.config.engine, &command_ctx)?;
+    if let Err(err) = validate_engine_security_options(exec.config.engine, &command_ctx) {
+        let _ = exec.append_job_diagnostics(
+            log_path,
+            [format!(
+                "job container configuration failed before start: {err}"
+            )],
+        );
+        return Err(err);
+    }
 
-    let mut proc = spawn_container_process(exec, &command_ctx)?;
+    let mut proc = spawn_container_process(exec, &command_ctx, log_path)?;
     let output_line_count = capture_output(
         proc.stdout
             .take()
@@ -99,6 +108,15 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
     let status = proc.wait()?;
     if !status.success() {
         if output_line_count == 0 {
+            let _ = exec.append_job_diagnostics(
+                log_path,
+                [format!(
+                    "container command exited with status {:?} before script output (image: {}, script: {})",
+                    status.code(),
+                    image,
+                    container_script.display()
+                )],
+            );
             return Err(anyhow!(
                 "container command exited with status {:?} before script output; check runtime env keys and container startup (script: {}, image: {})",
                 status.code(),
@@ -129,7 +147,11 @@ fn validate_engine_security_options(
     Ok(())
 }
 
-fn spawn_container_process(exec: &ExecutorCore, ctx: &EngineCommandContext<'_>) -> Result<Child> {
+fn spawn_container_process(
+    exec: &ExecutorCore,
+    ctx: &EngineCommandContext<'_>,
+    log_path: &Path,
+) -> Result<Child> {
     let mut command = match exec.config.engine {
         EngineKind::ContainerCli => ContainerExecutor::build_command(ctx),
         EngineKind::Docker => DockerExecutor::build_command(ctx),
@@ -137,10 +159,44 @@ fn spawn_container_process(exec: &ExecutorCore, ctx: &EngineCommandContext<'_>) 
         EngineKind::Nerdctl => NerdctlExecutor::build_command(ctx),
         EngineKind::Orbstack => OrbstackExecutor::build_command(ctx),
     };
+    let command_line = describe_command(&command);
+    debug!(
+        engine = ?exec.config.engine,
+        command = %command_line,
+        "running job container command"
+    );
 
-    command
-        .spawn()
-        .with_context(|| format!("failed to run {:?} command", exec.config.engine))
+    match command.spawn() {
+        Ok(child) => Ok(child),
+        Err(err) => {
+            let _ = exec.append_job_diagnostics(
+                log_path,
+                [
+                    format!("job container engine command: {command_line}"),
+                    format!("failed to start job container: {err}"),
+                ],
+            );
+            Err(err).with_context(|| {
+                format!(
+                    "failed to run {:?} command: {}",
+                    exec.config.engine, command_line
+                )
+            })
+        }
+    }
+}
+
+fn describe_command(command: &std::process::Command) -> String {
+    let program = command.get_program().to_string_lossy();
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if args.is_empty() {
+        program.into_owned()
+    } else {
+        format!("{} {}", program, args.join(" "))
+    }
 }
 
 fn capture_output(

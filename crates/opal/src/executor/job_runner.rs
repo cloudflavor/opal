@@ -90,7 +90,16 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         ui,
     } = request;
 
-    let mut prepared = runtime_handle.block_on(exec.prepare_job_run(plan, job))?;
+    let mut prepared = match runtime_handle.block_on(exec.prepare_job_run(plan, job)) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let _ = exec.append_job_diagnostics(
+                log_path,
+                [format!("job setup failed before container start: {err}")],
+            );
+            return Err(err);
+        }
+    };
     let container_name = run_info.container_name.clone();
     let exec_result = exec.execute(execute_context(
         &prepared,

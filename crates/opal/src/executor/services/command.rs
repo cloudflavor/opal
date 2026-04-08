@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio::process::Command as TokioCommand;
 use tokio::time::sleep;
+use tracing::debug;
 
 const CONTAINER_COMMAND_TIMEOUT_DEFAULT_SECS: u64 = 10;
 
@@ -69,6 +70,7 @@ pub(super) async fn run_command_with_timeout(
     let mut cmd = TokioCommand::from(cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let debug_command = format!("{cmd:?}");
+    debug!(command = %debug_command, "running service/runtime engine command");
     let mut child = cmd.spawn()?;
     let started = Instant::now();
 
@@ -128,6 +130,7 @@ pub(super) fn command_failed(
 
 async fn run_command(cmd: Command) -> Result<()> {
     let debug_command = format!("{cmd:?}");
+    debug!(command = %debug_command, "running service/runtime engine command");
     let output = TokioCommand::from(cmd).output().await?;
     if output.status.success() {
         Ok(())

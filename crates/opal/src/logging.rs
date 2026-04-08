@@ -4,8 +4,13 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
+
+const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
+    format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
 
 pub struct LogFormatter<'a> {
     use_color: bool,
@@ -164,4 +169,79 @@ pub fn write_log_line(
         format_plain_log_line(timestamp, line_no, text)
     )?;
     Ok(())
+}
+
+pub fn append_diagnostic_log_lines<I, S>(
+    log_path: &Path,
+    formatter: &LogFormatter<'_>,
+    lines: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let line_count = std::fs::read_to_string(log_path)
+        .ok()
+        .map_or(0, |contents| contents.lines().count());
+    let mut next_line_no = line_count + 1;
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    for line in lines {
+        let timestamp = OffsetDateTime::now_utc()
+            .format(TIMESTAMP_FORMAT)
+            .unwrap_or_else(|_| "??????????".to_string());
+        for fragment in sanitize_fragments(line.as_ref()) {
+            let masked = formatter.mask(&fragment);
+            write_log_line(&mut log_file, &timestamp, next_line_no, masked.as_ref())?;
+            next_line_no += 1;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LogFormatter, append_diagnostic_log_lines};
+    use crate::secrets::SecretsStore;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn append_diagnostic_log_lines_appends_and_masks() {
+        let temp_root = temp_path("diagnostic-log-lines");
+        let secrets_root = temp_root.join(".opal").join("env");
+        fs::create_dir_all(&secrets_root).expect("create secrets dir");
+        fs::write(secrets_root.join("API_TOKEN"), "super-secret").expect("write secret");
+        let log_path = temp_root.join("job.log");
+        fs::write(&log_path, "[00:00:00.000 0001] existing\n").expect("seed log");
+
+        let secrets = SecretsStore::load(&temp_root).expect("load secrets");
+        let formatter = LogFormatter::new(false).with_secrets(&secrets);
+        append_diagnostic_log_lines(
+            &log_path,
+            &formatter,
+            ["command --env API_TOKEN=super-secret", "spawn failed"],
+        )
+        .expect("append diagnostics");
+
+        let contents = fs::read_to_string(&log_path).expect("read log");
+        assert!(contents.contains("0001] existing"));
+        assert!(contents.contains("0002] command --env API_TOKEN=[MASKED]"));
+        assert!(contents.contains("0003] spawn failed"));
+        assert!(!contents.contains("super-secret"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("opal-{label}-{nanos}"))
+    }
 }

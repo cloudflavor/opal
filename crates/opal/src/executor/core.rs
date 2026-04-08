@@ -591,6 +591,15 @@ impl ExecutorCore {
         }
     }
 
+    pub(crate) fn append_job_diagnostics<I, S>(&self, log_path: &Path, lines: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let formatter = logging::LogFormatter::new(false).with_secrets(&self.secrets);
+        logging::append_diagnostic_log_lines(log_path, &formatter, lines)
+    }
+
     pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
         lifecycle::kill_container(self, job_name, container_name);
     }
