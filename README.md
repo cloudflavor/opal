@@ -154,6 +154,35 @@ Build release artifacts with:
 bash ./scripts/build-release-artifacts.sh
 ```
 
+Containerized Linux release builds pass `--dns` to the container runtime by default (`CONTAINER_DNS=1.1.1.1`). Override it as needed, for example:
+
+```bash
+CONTAINER_DNS=8.8.8.8 bash ./scripts/build-release-artifacts.sh
+```
+
+Containerized builds use repo-local Rust caches by default:
+
+- `HOST_CARGO_HOME=target/.container-cache/cargo-home`
+- `HOST_RUSTUP_HOME=target/.container-cache/rustup-home`
+
+Override those paths only if you intentionally want a different cache location.
+
+Build Linux release artifacts with Docker and write them to a local folder:
+
+```bash
+docker build \
+  --target release-artifacts \
+  --build-arg RELEASE_TARGETS=x86_64-unknown-linux-gnu \
+  --output type=local,dest=./releases/docker \
+  .
+```
+
+To build both Linux release targets in one run, pass:
+
+```bash
+--build-arg RELEASE_TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+```
+
 To build just the macOS Apple Silicon release tarball locally and print its checksum for manual upload:
 
 ```bash

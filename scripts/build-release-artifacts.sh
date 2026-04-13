@@ -11,8 +11,9 @@ HOST_ARCH="$(uname -m)"
 RUST_IMAGE="${RUST_IMAGE:-docker.io/library/rust:1.90}"
 CONTAINER_CPUS="${CONTAINER_CPUS:-4}"
 CONTAINER_MEMORY="${CONTAINER_MEMORY:-2g}"
-HOST_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-HOST_RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+CONTAINER_DNS="${CONTAINER_DNS:-1.1.1.1}"
+HOST_CARGO_HOME="${HOST_CARGO_HOME:-${REPO_ROOT}/target/.container-cache/cargo-home}"
+HOST_RUSTUP_HOME="${HOST_RUSTUP_HOME:-${REPO_ROOT}/target/.container-cache/rustup-home}"
 mkdir -p "${HOST_CARGO_HOME}" "${HOST_RUSTUP_HOME}" "${REPO_ROOT}/target" "${REPO_ROOT}/releases"
 HOST_CARGO_HOME="$(cd "${HOST_CARGO_HOME}" && pwd)"
 HOST_RUSTUP_HOME="$(cd "${HOST_RUSTUP_HOME}" && pwd)"
@@ -141,11 +142,10 @@ run_container_build() {
 
   ensure_container_helper
   local helper_in_container="${CONTAINER_HELPER_CONTAINER}"
-  local volumes=(
-    "--volume" "${REPO_ROOT}:/work"
-    "--volume" "${HOST_CARGO_HOME}:/cargo-home"
-    "--volume" "${HOST_RUSTUP_HOME}:/rustup-home"
-  )
+  local -a dns_args=()
+  if [[ -n "${CONTAINER_DNS}" ]]; then
+    dns_args=(--dns "${CONTAINER_DNS}")
+  fi
 
   case "${CONTAINER_CLI}" in
     container)
@@ -157,6 +157,7 @@ run_container_build() {
         --workdir /work \
         --cpus "${CONTAINER_CPUS}" \
         --memory "${CONTAINER_MEMORY}" \
+        "${dns_args[@]}" \
         --env "CARGO_HOME=/cargo-home" \
         --env "RUSTUP_HOME=/rustup-home" \
         --env "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
@@ -180,6 +181,7 @@ run_container_build() {
       "${CONTAINER_CLI}" run \
         ${remove_flag} \
         "${platform_args[@]}" \
+        "${dns_args[@]}" \
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
@@ -194,6 +196,7 @@ run_container_build() {
     nerdctl)
       "${CONTAINER_CLI}" run \
         --rm \
+        "${dns_args[@]}" \
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
