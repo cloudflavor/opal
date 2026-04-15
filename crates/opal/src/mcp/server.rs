@@ -120,7 +120,7 @@ fn initialize_result() -> Value {
         },
         "serverInfo": {
             "name": "opal",
-            "version": env!("CARGO_PKG_VERSION")
+            "version": env!("OPAL_BUILD_VERSION")
         },
         "instructions": "Use the Opal MCP tools to plan runs, explain job planning decisions, start background pipeline runs and reruns, poll their status, inspect recorded history and logs, compare recent runs, search prior logs, list recent runs with status, date, branch, and pipeline-file filters, and quickly identify failed jobs in the latest or a selected run."
     })

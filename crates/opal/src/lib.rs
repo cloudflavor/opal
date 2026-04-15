@@ -32,7 +32,7 @@ pub mod ui;
 /// run selected jobs in local containers, browse run history, and expose
 /// an MCP server for editor and agent integrations.
 #[derive(StructOpt)]
-#[structopt(name = "opal", version = env!("CARGO_PKG_VERSION"))]
+#[structopt(name = "opal", version = env!("OPAL_BUILD_VERSION"))]
 pub struct Cli {
     /// Logging verbosity for Opal itself.
     ///
