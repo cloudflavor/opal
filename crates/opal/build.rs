@@ -1,8 +1,8 @@
+use git2::{DescribeFormatOptions, DescribeOptions, Repository, StatusOptions};
 use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[path = "src/version_scheme.rs"]
 mod version_scheme;
@@ -20,6 +20,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
     let docs_out = out_dir.join("embedded-docs");
     let prompts_out = out_dir.join("embedded-prompts-ai");
+    let repository = open_repository(&workspace_root);
 
     copy_dir_contents(&docs_src, &docs_out).expect("copy embedded docs");
     copy_dir_contents(&prompts_src, &prompts_out).expect("copy embedded prompts");
@@ -34,7 +35,7 @@ fn main() {
     );
     println!(
         "cargo:rustc-env=OPAL_BUILD_VERSION={}",
-        compute_build_version(&workspace_root)
+        compute_build_version(repository.as_ref())
     );
 
     println!("cargo:rerun-if-changed={}", docs_src.display());
@@ -43,7 +44,7 @@ fn main() {
         "cargo:rerun-if-changed={}",
         fallback_root.join("prompts").join("ai").display()
     );
-    emit_git_rerun_hints(&workspace_root);
+    emit_git_rerun_hints(&workspace_root, repository.as_ref());
 }
 
 fn required_dir(path: PathBuf) -> PathBuf {
@@ -85,22 +86,16 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn compute_build_version(workspace_root: &Path) -> String {
-    let package_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| String::from("0.0.0"));
-    let dirty = is_workspace_dirty(workspace_root).unwrap_or(false);
+fn open_repository(workspace_root: &Path) -> Option<Repository> {
+    Repository::open(workspace_root).ok()
+}
 
-    if let Some(describe) = git_stdout(
-        workspace_root,
-        &[
-            "describe",
-            "--tags",
-            "--match",
-            "v[0-9]*.[0-9]*.[0-9]*",
-            "--long",
-            "--abbrev=7",
-            "HEAD",
-        ],
-    ) && let Some(version) = version_scheme::version_from_git_describe(&describe, dirty)
+fn compute_build_version(repository: Option<&Repository>) -> String {
+    let package_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| String::from("0.0.0"));
+    let dirty = repository.and_then(is_workspace_dirty).unwrap_or(false);
+
+    if let Some(describe) = repository.and_then(release_describe)
+        && let Some(version) = version_scheme::version_from_git_describe(&describe, dirty)
     {
         return version;
     }
@@ -118,46 +113,55 @@ fn compute_build_version(workspace_root: &Path) -> String {
         return version;
     }
 
-    let short_sha = git_stdout(workspace_root, &["rev-parse", "--short=7", "HEAD"]);
+    let short_sha = repository.and_then(head_short_sha);
     version_scheme::fallback_version(&package_version, short_sha.as_deref(), dirty)
 }
 
-fn is_workspace_dirty(workspace_root: &Path) -> Option<bool> {
-    let status = git_stdout(
-        workspace_root,
-        &["status", "--porcelain", "--untracked-files=normal"],
-    )?;
-    Some(!status.is_empty())
+fn release_describe(repository: &Repository) -> Option<String> {
+    let mut describe_options = DescribeOptions::new();
+    describe_options
+        .describe_tags()
+        .pattern("v[0-9]*.[0-9]*.[0-9]*");
+
+    let describe = repository.describe(&describe_options).ok()?;
+    let mut format_options = DescribeFormatOptions::new();
+    format_options
+        .always_use_long_format(true)
+        .abbreviated_size(7);
+    describe.format(Some(&format_options)).ok()
 }
 
-fn git_stdout(workspace_root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    Some(stdout.trim().to_string())
+fn is_workspace_dirty(repository: &Repository) -> Option<bool> {
+    let mut options = StatusOptions::new();
+    options.include_untracked(true).recurse_untracked_dirs(true);
+    let statuses = repository.statuses(Some(&mut options)).ok()?;
+    Some(!statuses.is_empty())
 }
 
-fn emit_git_rerun_hints(workspace_root: &Path) {
+fn head_short_sha(repository: &Repository) -> Option<String> {
+    let head_oid = repository.head().ok()?.target()?;
+    let full = head_oid.to_string();
+    Some(full.chars().take(7).collect())
+}
+
+fn emit_git_rerun_hints(workspace_root: &Path, repository: Option<&Repository>) {
     for candidate in [
         workspace_root.join(".git"),
         workspace_root.join(".git").join("HEAD"),
-        workspace_root.join(".git").join("index"),
-        workspace_root.join(".git").join("packed-refs"),
-        workspace_root.join(".git").join("refs"),
     ] {
         println!("cargo:rerun-if-changed={}", candidate.display());
     }
 
-    for git_path in ["HEAD", "index", "packed-refs", "refs"] {
-        if let Some(path) = git_stdout(workspace_root, &["rev-parse", "--git-path", git_path]) {
-            println!("cargo:rerun-if-changed={path}");
+    if let Some(repository) = repository {
+        let git_dir = repository.path().to_path_buf();
+        for candidate in [
+            git_dir.clone(),
+            git_dir.join("HEAD"),
+            git_dir.join("index"),
+            git_dir.join("packed-refs"),
+            git_dir.join("refs"),
+        ] {
+            println!("cargo:rerun-if-changed={}", candidate.display());
         }
     }
 }
