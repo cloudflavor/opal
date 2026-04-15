@@ -19,6 +19,11 @@ pub fn repository_root(workdir: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("repository has no working directory"))
 }
 
+pub fn repository_common_dir(workdir: &Path) -> Result<PathBuf> {
+    let repo = open_repository(workdir)?;
+    Ok(repo.commondir().to_path_buf())
+}
+
 fn resolve_commit<'repo>(repo: &'repo Repository, spec: &str) -> Result<git2::Commit<'repo>> {
     repo.revparse_single(spec)
         .with_context(|| format!("failed to resolve git revision '{spec}'"))?
