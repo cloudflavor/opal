@@ -20,6 +20,13 @@ impl DockerExecutor {
         self.core.run().await
     }
 
+    pub async fn run_with_progress(
+        &self,
+        progress: Option<super::core::ExecutionProgressCallback>,
+    ) -> ExecutionOutcome {
+        self.core.run_with_progress(progress).await
+    }
+
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
         DockerCommandBuilder::new(ctx)
             .with_workspace_volume()

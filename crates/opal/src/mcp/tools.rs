@@ -1,11 +1,13 @@
 use crate::app::OpalApp;
+use crate::app::context::{resolve_engine_choice, resolve_pipeline_path};
 use crate::app::plan::{explain as explain_plan, render as render_plan};
-use crate::app::run::{RunCapture, execute_and_capture};
+use crate::app::run::{RunCapture, execute_and_capture_with_progress};
 use crate::app::view::{
     find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
     load_history_for_workdir, read_job_log, read_runtime_summary,
 };
 use crate::config::OpalConfig;
+use crate::executor::core::{ExecutionProgressCallback, ExecutionProgressEvent, ProgressJobStatus};
 use crate::history::{HistoryEntry, HistoryStatus};
 use crate::{EngineChoice, EngineKind, PlanArgs, RunArgs, ViewArgs};
 use anyhow::{Context, Result};
@@ -15,6 +17,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use time::OffsetDateTime;
 
 pub(crate) fn list_tools() -> Value {
@@ -66,6 +69,19 @@ pub(crate) fn list_tools() -> Value {
                         "operation_id": { "type": "string" }
                     },
                     "required": ["operation_id"]
+                }
+            },
+            {
+                "name": "opal_operations_list",
+                "title": "List background Opal operations",
+                "description": "Lists active and recent background Opal MCP operations with optional filters.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "enum": ["running", "succeeded", "failed"] },
+                        "active_only": { "type": "boolean" },
+                        "limit": { "type": "integer", "minimum": 1 }
+                    }
                 }
             },
             {
@@ -219,7 +235,8 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
             ))
         }
         "opal_run" => Ok(run_tool(app, arguments).await),
-        "opal_run_status" => Ok(run_status_tool(arguments)?),
+        "opal_run_status" => Ok(run_status_tool(arguments).await?),
+        "opal_operations_list" => Ok(operations_list_tool(arguments).await?),
         "opal_view" => Ok(view_tool(app, arguments).await),
         "opal_failed_jobs" => Ok(failed_jobs_tool(app, arguments).await?),
         "opal_history_list" => Ok(history_list_tool(app, arguments).await?),
@@ -240,43 +257,166 @@ async fn run_tool(app: &OpalApp, arguments: Value) -> Value {
         return error_tool_result("invalid run arguments".to_string(), Value::Null);
     };
     let requested_jobs = args.jobs.clone();
-    let operation = run_operations().start(
-        RunOperationRequest {
-            tool: "opal_run",
-            requested_jobs,
-            requested_job: None,
-            source_run_id: None,
-        },
-        {
-            let app = app.clone();
-            async move { execute_and_capture(&app, args).await }
-        },
-    );
+    let resolved_workdir = app.resolve_workdir(args.workdir.clone());
+    let resolved_pipeline = resolve_pipeline_path(&resolved_workdir, args.pipeline.clone());
+    let resolved_engine = resolved_engine_label(&resolved_workdir, args.engine).await;
+    let operation_request = RunOperationRequest {
+        tool: "opal_run",
+        dedupe_key: Some(operation_dedupe_key(
+            "opal_run",
+            [
+                ("workdir", Some(resolved_workdir.display().to_string())),
+                ("pipeline", Some(resolved_pipeline.display().to_string())),
+                ("jobs", Some(normalized_jobs_key(&requested_jobs))),
+                ("rerun_job", None),
+                ("rerun_run_id", None),
+            ],
+        )),
+        workdir: Some(resolved_workdir.display().to_string()),
+        pipeline: Some(resolved_pipeline.display().to_string()),
+        resolved_engine,
+        run_id: None,
+        requested_jobs,
+        requested_job: None,
+        source_run_id: None,
+    };
+    let operations = run_operations();
+    let start = operations.start_with_operation_id(operation_request, {
+        let app = app.clone();
+        let operations = operations.clone();
+        move |operation_id| {
+            let progress = operation_progress_callback(operations, operation_id);
+            async move { execute_and_capture_with_progress(&app, args, Some(progress)).await }
+        }
+    });
+    let operation = start.operation;
     tool_result(
-        format!(
-            "Started background Opal run operation {}. Poll opal_run_status with this operation_id.",
-            operation.operation_id
-        ),
-        json!({ "operation": operation }),
+        if start.reused_existing {
+            format!(
+                "Reusing background Opal run operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        } else {
+            format!(
+                "Started background Opal run operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        },
+        json!({
+            "operation": operation,
+            "deduped": start.reused_existing,
+        }),
         false,
     )
 }
 
-fn run_status_tool(arguments: Value) -> Result<Value> {
+async fn run_status_tool(arguments: Value) -> Result<Value> {
     let operation_id = arguments
         .get("operation_id")
         .and_then(Value::as_str)
         .context("missing operation_id")?;
     let operation = run_operations()
-        .get(operation_id)
+        .status_view(operation_id)
+        .await
         .with_context(|| format!("background operation '{operation_id}' not found"))?;
-    let mut structured = json!({ "operation": operation });
+    let RunOperationStatusView {
+        operation,
+        age_seconds,
+        last_update_age_seconds,
+        progress_percent,
+        is_stale,
+        current_jobs,
+    } = operation;
+
+    let operation_value = operation_status_value(
+        &operation,
+        age_seconds,
+        last_update_age_seconds,
+        progress_percent,
+        is_stale,
+    )?;
+    let mut structured = json!({ "operation": operation_value });
     if let Some(result) = operation.result.clone() {
         structured["result"] = result;
+    }
+    if let Some(job_summaries) = current_jobs {
+        structured["current_jobs"] = json!(job_summaries);
     }
     Ok(tool_result(
         render_run_operation_summary(&operation),
         structured,
+        false,
+    ))
+}
+
+async fn operations_list_tool(arguments: Value) -> Result<Value> {
+    let status_filter = arguments
+        .get("status")
+        .and_then(Value::as_str)
+        .map(parse_operation_status_filter)
+        .transpose()?;
+    let active_only = arguments
+        .get("active_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(20);
+
+    let views = run_operations().list_status_views().await;
+    let total_operations = views.len();
+    let operations = views
+        .into_iter()
+        .filter(|view| !active_only || view.operation.status == "running")
+        .filter(|view| status_filter.is_none_or(|status| status.matches(view.operation.status)))
+        .take(limit)
+        .collect::<Vec<_>>();
+    let returned_operations = operations.len();
+
+    let mut operation_values = Vec::with_capacity(operations.len());
+    for view in &operations {
+        let mut value = operation_status_value(
+            &view.operation,
+            view.age_seconds,
+            view.last_update_age_seconds,
+            view.progress_percent,
+            view.is_stale,
+        )?;
+        if let Some(current_jobs) = view.current_jobs.clone() {
+            value["current_jobs"] = json!(current_jobs);
+        }
+        operation_values.push(value);
+    }
+
+    let filter_summary = operations_filter_summary(status_filter, active_only, limit);
+    let text = if operation_values.is_empty() {
+        format!("No Opal background operations matched {filter_summary}")
+    } else {
+        let details = operation_values
+            .iter()
+            .map(render_operations_list_line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "Found {} Opal background operation(s) matching {}:\n{}",
+            returned_operations, filter_summary, details
+        )
+    };
+
+    Ok(tool_result(
+        text,
+        json!({
+            "operations": operation_values,
+            "filters": {
+                "status": status_filter.map(OperationStatusFilter::as_str),
+                "active_only": active_only,
+                "limit": limit,
+            },
+            "total_operations": total_operations,
+            "returned_operations": returned_operations,
+        }),
         false,
     ))
 }
@@ -292,21 +432,49 @@ async fn view_tool(app: &OpalApp, arguments: Value) -> Value {
             Err(err) => error_tool_result(err.to_string(), Value::Null),
         };
     }
-    let operation = run_operations().start(
+    let start = run_operations().start(
         RunOperationRequest {
             tool: "opal_view",
+            dedupe_key: Some(operation_dedupe_key(
+                "opal_view",
+                [
+                    ("workdir", Some(request.workdir.display().to_string())),
+                    ("run_id", request.run_id.clone()),
+                    ("job", request.job_name.clone()),
+                    ("include_log", Some(request.include_log.to_string())),
+                    (
+                        "include_runtime_summary",
+                        Some(request.include_runtime_summary.to_string()),
+                    ),
+                ],
+            )),
+            workdir: Some(request.workdir.display().to_string()),
+            pipeline: None,
+            resolved_engine: None,
+            run_id: request.run_id.clone(),
             requested_jobs: request.job_name.iter().cloned().collect(),
             requested_job: request.job_name.clone(),
             source_run_id: request.run_id.clone(),
         },
         async move { execute_view_request(request).await },
     );
+    let operation = start.operation;
     tool_result(
-        format!(
-            "Started background view operation {}. Poll opal_run_status with this operation_id.",
-            operation.operation_id
-        ),
-        json!({ "operation": operation }),
+        if start.reused_existing {
+            format!(
+                "Reusing background view operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        } else {
+            format!(
+                "Started background view operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        },
+        json!({
+            "operation": operation,
+            "deduped": start.reused_existing,
+        }),
         false,
     )
 }
@@ -460,21 +628,47 @@ async fn logs_search_tool(app: &OpalApp, arguments: Value) -> Value {
         Ok(request) => request,
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
-    let operation = run_operations().start(
+    let start = run_operations().start(
         RunOperationRequest {
             tool: "opal_logs_search",
+            dedupe_key: Some(operation_dedupe_key(
+                "opal_logs_search",
+                [
+                    ("workdir", Some(request.workdir.display().to_string())),
+                    ("run_id", request.run_id.clone()),
+                    ("job", request.job_name.clone()),
+                    ("query", Some(request.query.clone())),
+                    ("case_sensitive", Some(request.case_sensitive.to_string())),
+                    ("limit", Some(request.limit.to_string())),
+                ],
+            )),
+            workdir: Some(request.workdir.display().to_string()),
+            pipeline: None,
+            resolved_engine: None,
+            run_id: request.run_id.clone(),
             requested_jobs: request.job_name.iter().cloned().collect(),
             requested_job: request.job_name.clone(),
             source_run_id: request.run_id.clone(),
         },
         async move { execute_log_search(request).await },
     );
+    let operation = start.operation;
     tool_result(
-        format!(
-            "Started background log search operation {}. Poll opal_run_status with this operation_id.",
-            operation.operation_id
-        ),
-        json!({ "operation": operation }),
+        if start.reused_existing {
+            format!(
+                "Reusing background log search operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        } else {
+            format!(
+                "Started background log search operation {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id
+            )
+        },
+        json!({
+            "operation": operation,
+            "deduped": start.reused_existing,
+        }),
         false,
     )
 }
@@ -612,29 +806,64 @@ async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
         Ok(request) => request,
         Err(err) => return error_tool_result(err.to_string(), Value::Null),
     };
-    let operation = run_operations().start(
-        RunOperationRequest {
-            tool: "opal_job_rerun",
-            requested_jobs: vec![request.requested_job.clone()],
-            requested_job: Some(request.requested_job.clone()),
-            source_run_id: Some(request.source_run.run_id.clone()),
-        },
-        {
-            let app = app.clone();
-            let run_args = request.run_args;
-            async move { execute_and_capture(&app, run_args).await }
-        },
-    );
+    let run_args = request.run_args;
+    let resolved_workdir = app.resolve_workdir(run_args.workdir.clone());
+    let resolved_pipeline = resolve_pipeline_path(&resolved_workdir, run_args.pipeline.clone());
+    let requested_job = request.requested_job.clone();
+    let source_run_id = request.source_run.run_id.clone();
+    let resolved_engine = resolved_engine_label(&resolved_workdir, run_args.engine).await;
+    let operations = run_operations();
+    let start =
+        operations.start_with_operation_id(
+            RunOperationRequest {
+                tool: "opal_job_rerun",
+                dedupe_key: Some(operation_dedupe_key(
+                    "opal_job_rerun",
+                    [
+                        ("workdir", Some(resolved_workdir.display().to_string())),
+                        ("pipeline", Some(resolved_pipeline.display().to_string())),
+                        ("job", Some(requested_job.clone())),
+                        ("source_run_id", Some(source_run_id.clone())),
+                    ],
+                )),
+                workdir: Some(resolved_workdir.display().to_string()),
+                pipeline: Some(resolved_pipeline.display().to_string()),
+                resolved_engine,
+                run_id: Some(source_run_id.clone()),
+                requested_jobs: vec![requested_job.clone()],
+                requested_job: Some(requested_job.clone()),
+                source_run_id: Some(source_run_id.clone()),
+            },
+            {
+                let app = app.clone();
+                let operations = operations.clone();
+                move |operation_id| {
+                    let progress = operation_progress_callback(operations, operation_id);
+                    async move {
+                        execute_and_capture_with_progress(&app, run_args, Some(progress)).await
+                    }
+                }
+            },
+        );
+    let operation = start.operation;
     tool_result(
-        format!(
-            "Started background rerun operation {} for job {} from recorded run {}. Poll opal_run_status with this operation_id.",
-            operation.operation_id, request.requested_job, request.source_run.run_id
-        ),
+        if start.reused_existing {
+            format!(
+                "Reusing background rerun operation {} for job {} from recorded run {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id, requested_job, source_run_id
+            )
+        } else {
+            format!(
+                "Started background rerun operation {} for job {} from recorded run {}. Poll opal_run_status with this operation_id.",
+                operation.operation_id, requested_job, source_run_id
+            )
+        },
         json!({
             "operation": operation,
             "source_run": history_entry_json(&request.source_run),
             "source_job": request.source_job,
-            "requested_job": request.requested_job,
+            "requested_job": requested_job,
+            "deduped": start.reused_existing,
         }),
         false,
     )
@@ -725,8 +954,22 @@ struct RunOperation {
     operation_id: String,
     tool: String,
     status: &'static str,
+    phase: &'static str,
     started_at: String,
+    #[serde(skip_serializing)]
+    started_at_unix: i64,
+    last_update_at: String,
+    #[serde(skip_serializing)]
+    last_update_at_unix: i64,
     finished_at: Option<String>,
+    workdir: Option<String>,
+    pipeline: Option<String>,
+    resolved_engine: Option<String>,
+    run_id: Option<String>,
+    active_job: Option<String>,
+    completed_jobs: usize,
+    failed_jobs: usize,
+    total_jobs: Option<usize>,
     requested_jobs: Vec<String>,
     requested_job: Option<String>,
     source_run_id: Option<String>,
@@ -739,27 +982,133 @@ struct RunOperation {
 #[derive(Debug, Clone)]
 struct RunOperationRequest {
     tool: &'static str,
+    dedupe_key: Option<String>,
+    workdir: Option<String>,
+    pipeline: Option<String>,
+    resolved_engine: Option<String>,
+    run_id: Option<String>,
     requested_jobs: Vec<String>,
     requested_job: Option<String>,
     source_run_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RunOperationStart {
+    operation: RunOperation,
+    reused_existing: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RunOperationStatusView {
+    operation: RunOperation,
+    age_seconds: i64,
+    last_update_age_seconds: i64,
+    progress_percent: u8,
+    is_stale: bool,
+    current_jobs: Option<Vec<RunOperationJobSummary>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct RunOperationJobSummary {
+    name: String,
+    stage: String,
+    status: &'static str,
+}
+
+struct RunOperationState {
+    operation: RunOperation,
+    dedupe_key: Option<String>,
+    task_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
 #[derive(Clone, Default)]
 struct RunOperations {
-    inner: Arc<Mutex<BTreeMap<String, RunOperation>>>,
+    inner: Arc<Mutex<BTreeMap<String, RunOperationState>>>,
 }
 
 impl RunOperations {
-    fn start<F>(&self, request: RunOperationRequest, future: F) -> RunOperation
+    fn start<F>(&self, request: RunOperationRequest, future: F) -> RunOperationStart
     where
         F: std::future::Future<Output = RunCapture> + Send + 'static,
     {
+        self.start_with_operation_id(request, move |_| future)
+    }
+
+    fn start_with_operation_id<F, B>(
+        &self,
+        request: RunOperationRequest,
+        future_builder: B,
+    ) -> RunOperationStart
+    where
+        F: std::future::Future<Output = RunCapture> + Send + 'static,
+        B: FnOnce(String) -> F,
+    {
+        let (operation, operation_id) = match self.insert_start_operation(request) {
+            Ok(started) => started,
+            Err(operation) => {
+                return RunOperationStart {
+                    operation,
+                    reused_existing: true,
+                };
+            }
+        };
+
+        let future = future_builder(operation_id.clone());
+        let operations = self.clone();
+        let operation_id_for_task = operation_id.clone();
+        let task_handle = tokio::spawn(async move {
+            operations.update_phase(&operation_id_for_task, "preparing");
+            operations.update_phase(&operation_id_for_task, "executing");
+            let mut future = std::pin::Pin::from(Box::new(future));
+            loop {
+                tokio::select! {
+                    capture = &mut future => {
+                        operations.update_phase(&operation_id_for_task, "finalizing");
+                        operations.finish(&operation_id_for_task, capture);
+                        break;
+                    }
+                    _ = tokio::time::sleep(RUN_OPERATION_HEARTBEAT_INTERVAL) => {
+                        operations.heartbeat(&operation_id_for_task);
+                    }
+                }
+            }
+        });
+        self.set_task_handle(&operation_id, task_handle);
+
+        RunOperationStart {
+            operation,
+            reused_existing: false,
+        }
+    }
+
+    fn insert_start_operation(
+        &self,
+        request: RunOperationRequest,
+    ) -> std::result::Result<(RunOperation, String), RunOperation> {
+        if let Some(operation) = self.find_running_duplicate(request.dedupe_key.as_deref()) {
+            return Err(operation);
+        }
+
+        let now = now_rfc3339();
+        let now_unix = now_unix_seconds();
         let operation = RunOperation {
             operation_id: next_operation_id(),
             tool: request.tool.to_string(),
             status: "running",
-            started_at: now_rfc3339(),
+            phase: "queued",
+            started_at: now.clone(),
+            started_at_unix: now_unix,
+            last_update_at: now,
+            last_update_at_unix: now_unix,
             finished_at: None,
+            workdir: request.workdir,
+            pipeline: request.pipeline,
+            resolved_engine: request.resolved_engine,
+            run_id: request.run_id,
+            active_job: request.requested_job.clone(),
+            completed_jobs: 0,
+            failed_jobs: 0,
+            total_jobs: None,
             requested_jobs: request.requested_jobs,
             requested_job: request.requested_job,
             source_run_id: request.source_run_id,
@@ -769,50 +1118,315 @@ impl RunOperations {
             error: None,
         };
         let operation_id = operation.operation_id.clone();
-        self.inner
+        let mut operations = self.inner.lock().expect("run operations lock");
+        operations.insert(
+            operation_id.clone(),
+            RunOperationState {
+                operation: operation.clone(),
+                dedupe_key: request.dedupe_key,
+                task_handle: None,
+            },
+        );
+        Ok((operation, operation_id))
+    }
+
+    async fn status_view(&self, operation_id: &str) -> Option<RunOperationStatusView> {
+        self.reconcile_finished_task(operation_id).await;
+        self.fail_stale(operation_id);
+        self.get(operation_id).map(|operation| {
+            let now = now_unix_seconds();
+            let age_seconds = (now - operation.started_at_unix).max(0);
+            let last_update_age_seconds = (now - operation.last_update_at_unix).max(0);
+            let is_stale = operation.status == "running"
+                && last_update_age_seconds >= RUN_OPERATION_STALE_AFTER.as_secs() as i64;
+            let current_jobs = operation.run.as_ref().map(run_job_summaries);
+            let progress_percent = operation_progress_percent(&operation);
+            RunOperationStatusView {
+                operation,
+                age_seconds,
+                last_update_age_seconds,
+                progress_percent,
+                is_stale,
+                current_jobs,
+            }
+        })
+    }
+
+    async fn list_status_views(&self) -> Vec<RunOperationStatusView> {
+        let operation_ids = self
+            .inner
             .lock()
-            .expect("run operations lock")
-            .insert(operation_id.clone(), operation.clone());
-
-        let operations = self.clone();
-        tokio::spawn(async move {
-            let capture = future.await;
-            operations.finish(&operation_id, capture);
-        });
-
-        operation
+            .ok()
+            .map(|operations| operations.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut views = Vec::new();
+        for operation_id in operation_ids {
+            if let Some(view) = self.status_view(&operation_id).await {
+                views.push(view);
+            }
+        }
+        views.sort_by_key(|view| std::cmp::Reverse(view.operation.started_at_unix));
+        views
     }
 
     fn get(&self, operation_id: &str) -> Option<RunOperation> {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|operations| operations.get(operation_id).cloned())
+        self.inner.lock().ok().and_then(|operations| {
+            operations
+                .get(operation_id)
+                .map(|state| state.operation.clone())
+        })
     }
 
     fn finish(&self, operation_id: &str, capture: RunCapture) {
         let Ok(mut operations) = self.inner.lock() else {
             return;
         };
-        let Some(operation) = operations.get_mut(operation_id) else {
+        let Some(state) = operations.get_mut(operation_id) else {
             return;
         };
-        operation.finished_at = Some(now_rfc3339());
+        state.task_handle = None;
+        let operation = &mut state.operation;
+        let now = now_rfc3339();
+        let now_unix = now_unix_seconds();
+        operation.finished_at = Some(now.clone());
+        operation.last_update_at = now;
+        operation.last_update_at_unix = now_unix;
+        operation.phase = "completed";
         operation.status = if capture.error.is_some() {
             "failed"
         } else {
             "succeeded"
         };
+        operation.active_job = None;
         operation.run = capture.history_entry;
+        operation.run_id = operation.run.as_ref().map(|entry| entry.run_id.clone());
+        if let Some(entry) = operation.run.as_ref() {
+            operation.total_jobs = Some(entry.jobs.len());
+            operation.failed_jobs = entry
+                .jobs
+                .iter()
+                .filter(|job| job.status == HistoryStatus::Failed)
+                .count();
+            operation.completed_jobs = entry
+                .jobs
+                .iter()
+                .filter(|job| job.status != HistoryStatus::Running)
+                .count();
+        } else {
+            operation.total_jobs =
+                (!operation.requested_jobs.is_empty()).then_some(operation.requested_jobs.len());
+            operation.completed_jobs = operation.total_jobs.unwrap_or_default();
+            operation.failed_jobs = usize::from(capture.error.is_some());
+        }
         operation.result = capture.result;
         operation.result_summary = capture.result_summary;
         operation.error = capture.error;
     }
 
+    fn find_running_duplicate(&self, dedupe_key: Option<&str>) -> Option<RunOperation> {
+        let dedupe_key = dedupe_key?;
+        self.inner.lock().ok().and_then(|operations| {
+            operations
+                .values()
+                .find(|state| {
+                    state.dedupe_key.as_deref() == Some(dedupe_key)
+                        && state.operation.status == "running"
+                        && state
+                            .task_handle
+                            .as_ref()
+                            .is_none_or(|handle| !handle.is_finished())
+                })
+                .map(|state| state.operation.clone())
+        })
+    }
+
+    fn set_task_handle(&self, operation_id: &str, handle: tokio::task::JoinHandle<()>) {
+        let Ok(mut operations) = self.inner.lock() else {
+            handle.abort();
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            handle.abort();
+            return;
+        };
+        state.task_handle = Some(handle);
+    }
+
+    fn update_phase(&self, operation_id: &str, phase: &'static str) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        if state.operation.status == "running" {
+            state.operation.phase = phase;
+            state.operation.last_update_at = now_rfc3339();
+            state.operation.last_update_at_unix = now_unix_seconds();
+        }
+    }
+
+    fn heartbeat(&self, operation_id: &str) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        if state.operation.status == "running" {
+            state.operation.last_update_at = now_rfc3339();
+            state.operation.last_update_at_unix = now_unix_seconds();
+        }
+    }
+
+    fn apply_progress_event(&self, operation_id: &str, event: ExecutionProgressEvent) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        if state.operation.status != "running" {
+            return;
+        }
+        let operation = &mut state.operation;
+        match event {
+            ExecutionProgressEvent::PlanPrepared { run_id, total_jobs } => {
+                operation.run_id = Some(run_id);
+                operation.total_jobs = Some(total_jobs);
+            }
+            ExecutionProgressEvent::JobStarted { name, .. } => {
+                operation.active_job = Some(name);
+            }
+            ExecutionProgressEvent::JobFinished { status, .. } => {
+                operation.active_job = None;
+                if let Some(total_jobs) = operation.total_jobs {
+                    operation.completed_jobs = (operation.completed_jobs + 1).min(total_jobs);
+                } else {
+                    operation.completed_jobs += 1;
+                }
+                if status == ProgressJobStatus::Failed {
+                    operation.failed_jobs += 1;
+                }
+            }
+        }
+        operation.last_update_at = now_rfc3339();
+        operation.last_update_at_unix = now_unix_seconds();
+    }
+
+    fn take_finished_task(&self, operation_id: &str) -> Option<tokio::task::JoinHandle<()>> {
+        let Ok(mut operations) = self.inner.lock() else {
+            return None;
+        };
+        let state = operations.get_mut(operation_id)?;
+        if state.operation.status != "running" {
+            return None;
+        }
+        if state
+            .task_handle
+            .as_ref()
+            .is_some_and(|handle| handle.is_finished())
+        {
+            return state.task_handle.take();
+        }
+        None
+    }
+
+    async fn reconcile_finished_task(&self, operation_id: &str) {
+        let Some(handle) = self.take_finished_task(operation_id) else {
+            return;
+        };
+        if let Err(error) = handle.await {
+            self.fail_operation(
+                operation_id,
+                format!(
+                    "background task failed: {}",
+                    if error.is_panic() {
+                        "task panicked"
+                    } else {
+                        "task cancelled"
+                    }
+                ),
+            );
+        }
+    }
+
+    fn fail_stale(&self, operation_id: &str) {
+        let stale_for_seconds = {
+            let Ok(operations) = self.inner.lock() else {
+                return;
+            };
+            let Some(state) = operations.get(operation_id) else {
+                return;
+            };
+            if state.operation.status != "running" {
+                return;
+            }
+            let last_update_age = (now_unix_seconds() - state.operation.last_update_at_unix).max(0);
+            if last_update_age < RUN_OPERATION_STALE_AFTER.as_secs() as i64 {
+                return;
+            }
+            last_update_age
+        };
+        self.fail_operation(
+            operation_id,
+            format!(
+                "background task heartbeat became stale after {stale_for_seconds}s without progress updates"
+            ),
+        );
+    }
+
+    fn fail_operation(&self, operation_id: &str, error: String) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        if state.operation.status != "running" {
+            return;
+        }
+        if let Some(handle) = state.task_handle.take() {
+            handle.abort();
+        }
+        let operation = &mut state.operation;
+        let now = now_rfc3339();
+        let now_unix = now_unix_seconds();
+        operation.status = "failed";
+        operation.phase = "completed";
+        operation.finished_at = Some(now.clone());
+        operation.last_update_at = now;
+        operation.last_update_at_unix = now_unix;
+        operation.active_job = None;
+        operation.error = Some(error);
+        operation.failed_jobs = usize::max(operation.failed_jobs, 1);
+    }
+
     #[cfg(test)]
     fn clear(&self) {
         if let Ok(mut operations) = self.inner.lock() {
+            for state in operations.values_mut() {
+                if let Some(handle) = state.task_handle.take() {
+                    handle.abort();
+                }
+            }
             operations.clear();
+        }
+    }
+
+    #[cfg(test)]
+    fn set_last_update_at_for_test(
+        &self,
+        operation_id: &str,
+        timestamp: &str,
+        unix_timestamp: i64,
+    ) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        if let Some(state) = operations.get_mut(operation_id) {
+            state.operation.last_update_at = timestamp.to_string();
+            state.operation.last_update_at_unix = unix_timestamp;
         }
     }
 }
@@ -844,6 +1458,183 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+#[derive(Clone, Copy)]
+enum OperationStatusFilter {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl OperationStatusFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn matches(self, status: &str) -> bool {
+        self.as_str() == status
+    }
+}
+
+fn parse_operation_status_filter(value: &str) -> Result<OperationStatusFilter> {
+    match value {
+        "running" => Ok(OperationStatusFilter::Running),
+        "succeeded" => Ok(OperationStatusFilter::Succeeded),
+        "failed" => Ok(OperationStatusFilter::Failed),
+        other => anyhow::bail!(
+            "unsupported operation status filter '{other}'; expected running, succeeded, or failed"
+        ),
+    }
+}
+
+fn operations_filter_summary(
+    status: Option<OperationStatusFilter>,
+    active_only: bool,
+    limit: usize,
+) -> String {
+    let mut filters = Vec::new();
+    if let Some(status) = status {
+        filters.push(format!("status={}", status.as_str()));
+    }
+    if active_only {
+        filters.push("active_only=true".to_string());
+    }
+    filters.push(format!("limit={limit}"));
+    filters.join(", ")
+}
+
+fn operation_status_value(
+    operation: &RunOperation,
+    age_seconds: i64,
+    last_update_age_seconds: i64,
+    progress_percent: u8,
+    is_stale: bool,
+) -> Result<Value> {
+    let mut operation_value = serde_json::to_value(operation)?;
+    operation_value["age_seconds"] = json!(age_seconds);
+    operation_value["last_update_age_seconds"] = json!(last_update_age_seconds);
+    operation_value["progress_percent"] = json!(progress_percent);
+    operation_value["is_stale"] = json!(is_stale);
+    Ok(operation_value)
+}
+
+fn render_operations_list_line(operation: &Value) -> String {
+    let id = operation
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let tool = operation
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = operation
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let phase = operation
+        .get("phase")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let progress_percent = operation
+        .get("progress_percent")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let completed_jobs = operation
+        .get("completed_jobs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_jobs = operation
+        .get("total_jobs")
+        .and_then(Value::as_u64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let active_job = operation
+        .get("active_job")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    format!(
+        "{} [{}] {} phase={} progress={} jobs={}/{} active_job={}",
+        id, status, tool, phase, progress_percent, completed_jobs, total_jobs, active_job
+    )
+}
+
+const RUN_OPERATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const RUN_OPERATION_STALE_AFTER: Duration = Duration::from_secs(30);
+
+fn now_unix_seconds() -> i64 {
+    OffsetDateTime::now_utc().unix_timestamp()
+}
+
+fn normalized_jobs_key(jobs: &[String]) -> String {
+    let mut jobs = jobs.to_vec();
+    jobs.sort();
+    jobs.dedup();
+    jobs.join(",")
+}
+
+fn operation_dedupe_key<I>(tool: &str, attributes: I) -> String
+where
+    I: IntoIterator<Item = (&'static str, Option<String>)>,
+{
+    let mut parts = vec![format!("tool={tool}")];
+    for (key, value) in attributes {
+        parts.push(format!(
+            "{key}={}",
+            value.unwrap_or_else(|| "<none>".to_string())
+        ));
+    }
+    parts.join("|")
+}
+
+fn run_job_summaries(run: &HistoryEntry) -> Vec<RunOperationJobSummary> {
+    run.jobs
+        .iter()
+        .map(|job| RunOperationJobSummary {
+            name: job.name.clone(),
+            stage: job.stage.clone(),
+            status: history_status_label(job.status),
+        })
+        .collect()
+}
+
+async fn resolved_engine_label(workdir: &Path, requested: EngineChoice) -> Option<String> {
+    let settings = OpalConfig::load_async(workdir).await.ok()?;
+    let resolved = resolve_engine_choice(requested, &settings);
+    Some(resolved.as_str().to_string())
+}
+
+fn operation_progress_percent(operation: &RunOperation) -> u8 {
+    if operation.status != "running" {
+        return 100;
+    }
+
+    match operation.phase {
+        "queued" => 0,
+        "preparing" => 10,
+        "executing" => match operation.total_jobs {
+            Some(total) if total > 0 => {
+                let done = operation.completed_jobs.min(total);
+                10 + ((done as f32 / total as f32) * 80.0).round() as u8
+            }
+            _ => 50,
+        },
+        "finalizing" => 95,
+        _ => 0,
+    }
+}
+
+fn operation_progress_callback(
+    operations: RunOperations,
+    operation_id: String,
+) -> ExecutionProgressCallback {
+    Arc::new(move |event| {
+        operations.apply_progress_event(&operation_id, event);
+    })
+}
+
 fn render_run_operation_summary(operation: &RunOperation) -> String {
     match (
         operation.status,
@@ -852,8 +1643,8 @@ fn render_run_operation_summary(operation: &RunOperation) -> String {
         operation.error.as_deref(),
     ) {
         ("running", _, _, _) => format!(
-            "Opal background operation {} is still running",
-            operation.operation_id
+            "Opal background operation {} is running (phase: {})",
+            operation.operation_id, operation.phase
         ),
         ("succeeded", Some(run), _, _) => format!(
             "Opal background operation {} completed as run {} with status {:?}",
@@ -1678,9 +2469,13 @@ fn _view_args_from_value(value: Value) -> ViewArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_tool, job_rerun_request, list_tools, run_args_from_value, run_operations};
+    use super::{
+        ExecutionProgressEvent, ProgressJobStatus, RunOperationRequest, call_tool,
+        job_rerun_request, list_tools, run_args_from_value, run_operations,
+    };
     use crate::app::OpalApp;
     use crate::app::context::history_scope_root;
+    use crate::app::run::RunCapture;
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
@@ -1688,7 +2483,9 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
     use std::fs;
+    use std::time::Duration;
     use tempfile::tempdir;
+    use time::OffsetDateTime;
 
     fn current_history_scope() -> String {
         let app = OpalApp::from_current_dir().expect("app");
@@ -1725,6 +2522,29 @@ mod tests {
         })
     }
 
+    fn test_request(dedupe_key: &str) -> RunOperationRequest {
+        RunOperationRequest {
+            tool: "opal_run",
+            dedupe_key: Some(dedupe_key.to_string()),
+            workdir: Some("/tmp/opal-test".to_string()),
+            pipeline: Some("/tmp/opal-test/.gitlab-ci.yml".to_string()),
+            resolved_engine: Some("auto".to_string()),
+            run_id: None,
+            requested_jobs: vec!["build".to_string()],
+            requested_job: None,
+            source_run_id: None,
+        }
+    }
+
+    fn now_minus(seconds: i64) -> (String, i64) {
+        let unix = super::now_unix_seconds() - seconds;
+        let timestamp = OffsetDateTime::from_unix_timestamp(unix)
+            .expect("unix timestamp")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("timestamp");
+        (timestamp, unix)
+    }
+
     #[test]
     fn tools_list_exposes_run_plan_and_view() {
         let response = list_tools();
@@ -1732,6 +2552,11 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run_status"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "opal_operations_list")
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "opal_view"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_failed_jobs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_history_list"));
@@ -1758,6 +2583,318 @@ mod tests {
         assert!(args.no_tui);
         assert_eq!(args.jobs, vec!["build"]);
         assert_eq!(args.max_parallel_jobs, 2);
+    }
+
+    #[test]
+    fn run_operations_dedupe_equivalent_requests() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let first = run_operations().start(test_request("dedupe-run"), async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+            let second = run_operations().start(test_request("dedupe-run"), async move {
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("should-not-run".to_string()),
+                    error: None,
+                }
+            });
+            let third = run_operations().start(test_request("dedupe-run-other"), async move {
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("other".to_string()),
+                    error: None,
+                }
+            });
+
+            assert!(!first.reused_existing);
+            assert!(second.reused_existing);
+            assert_eq!(first.operation.operation_id, second.operation.operation_id);
+            assert_ne!(first.operation.operation_id, third.operation.operation_id);
+
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let status = run_operations()
+                .status_view(&first.operation.operation_id)
+                .await
+                .expect("status");
+            assert_eq!(status.operation.status, "succeeded");
+        });
+    }
+
+    #[test]
+    fn run_operations_update_progress_while_running() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("progress-run"), async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+
+            let initial = run_operations()
+                .status_view(&started.operation.operation_id)
+                .await
+                .expect("initial status");
+            assert_eq!(initial.operation.status, "running");
+            let initial_update = initial.operation.last_update_at.clone();
+
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let during = run_operations()
+                .status_view(&started.operation.operation_id)
+                .await
+                .expect("running status");
+            assert_eq!(during.operation.status, "running");
+            assert_ne!(initial_update, during.operation.last_update_at);
+            assert!(during.age_seconds >= initial.age_seconds);
+            assert!(during.progress_percent >= 10);
+            assert_eq!(during.operation.phase, "executing");
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let final_status = run_operations()
+                .status_view(&started.operation.operation_id)
+                .await
+                .expect("terminal status");
+            assert_eq!(final_status.operation.status, "succeeded");
+            assert_eq!(final_status.progress_percent, 100);
+        });
+    }
+
+    #[test]
+    fn run_operations_apply_live_job_progress_events() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("live-progress"), async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+            let operation_id = started.operation.operation_id.clone();
+
+            run_operations().apply_progress_event(
+                &operation_id,
+                ExecutionProgressEvent::PlanPrepared {
+                    run_id: "run-live".to_string(),
+                    total_jobs: 2,
+                },
+            );
+            run_operations().apply_progress_event(
+                &operation_id,
+                ExecutionProgressEvent::JobStarted {
+                    name: "fetch-sources".to_string(),
+                    stage: "deps".to_string(),
+                },
+            );
+            let first = run_operations()
+                .status_view(&operation_id)
+                .await
+                .expect("first progress");
+            assert_eq!(first.operation.run_id.as_deref(), Some("run-live"));
+            assert_eq!(first.operation.total_jobs, Some(2));
+            assert_eq!(first.operation.active_job.as_deref(), Some("fetch-sources"));
+            assert_eq!(first.operation.completed_jobs, 0);
+
+            run_operations().apply_progress_event(
+                &operation_id,
+                ExecutionProgressEvent::JobFinished {
+                    name: "fetch-sources".to_string(),
+                    stage: "deps".to_string(),
+                    status: ProgressJobStatus::Success,
+                },
+            );
+            let second = run_operations()
+                .status_view(&operation_id)
+                .await
+                .expect("second progress");
+            assert_eq!(second.operation.completed_jobs, 1);
+            assert_eq!(second.operation.failed_jobs, 0);
+            assert!(second.operation.active_job.is_none());
+
+            run_operations().apply_progress_event(
+                &operation_id,
+                ExecutionProgressEvent::JobFinished {
+                    name: "rust-checks".to_string(),
+                    stage: "test".to_string(),
+                    status: ProgressJobStatus::Failed,
+                },
+            );
+            let third = run_operations()
+                .status_view(&operation_id)
+                .await
+                .expect("third progress");
+            assert_eq!(third.operation.completed_jobs, 2);
+            assert_eq!(third.operation.failed_jobs, 1);
+        });
+    }
+
+    #[test]
+    fn run_status_tool_exposes_progress_metadata() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("status-fields"), async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+
+            let app = OpalApp::from_current_dir().expect("app");
+            let status = call_tool(
+                &app,
+                json!({
+                    "name": "opal_run_status",
+                    "arguments": {
+                        "operation_id": started.operation.operation_id
+                    }
+                }),
+            )
+            .await
+            .expect("status");
+            let operation = &status["structuredContent"]["operation"];
+            assert!(operation["age_seconds"].as_i64().is_some());
+            assert!(operation["last_update_age_seconds"].as_i64().is_some());
+            assert!(operation["progress_percent"].as_u64().is_some());
+            assert!(operation["is_stale"].is_boolean());
+        });
+    }
+
+    #[test]
+    fn operations_list_tool_discovers_running_operations_without_ids() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("ops-list-running"), async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+
+            let app = OpalApp::from_current_dir().expect("app");
+            let list = call_tool(
+                &app,
+                json!({
+                    "name": "opal_operations_list",
+                    "arguments": {
+                        "active_only": true
+                    }
+                }),
+            )
+            .await
+            .expect("operations list");
+
+            assert_eq!(list["isError"], false);
+            assert!(
+                list["structuredContent"]["returned_operations"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    >= 1
+            );
+            let operations = list["structuredContent"]["operations"]
+                .as_array()
+                .expect("operations");
+            assert!(operations.iter().any(|operation| {
+                operation["operation_id"] == started.operation.operation_id
+                    && operation["status"] == "running"
+            }));
+        });
+    }
+
+    #[test]
+    fn run_operations_mark_stale_operations_failed() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("stale-run"), async move {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+            let (timestamp, unix) = now_minus(120);
+            run_operations().set_last_update_at_for_test(
+                &started.operation.operation_id,
+                &timestamp,
+                unix,
+            );
+
+            let status = run_operations()
+                .status_view(&started.operation.operation_id)
+                .await
+                .expect("status");
+            assert_eq!(status.operation.status, "failed");
+            assert_eq!(status.operation.phase, "completed");
+            assert!(
+                status
+                    .operation
+                    .error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("heartbeat became stale")
+            );
+        });
+    }
+
+    #[test]
+    fn run_operations_convert_panics_to_failed_status() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("panic-run"), async move {
+                panic!("forced panic for test");
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let status = run_operations()
+                .status_view(&started.operation.operation_id)
+                .await
+                .expect("status");
+            assert_eq!(status.operation.status, "failed");
+            assert_eq!(status.operation.phase, "completed");
+            assert!(
+                status
+                    .operation
+                    .error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("panicked")
+            );
+        });
     }
 
     #[test]
