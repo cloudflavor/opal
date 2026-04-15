@@ -81,3 +81,5 @@ If automatic updates fail, you can manually update metadata:
 ~/.ao/bin/ao-metadata-helper.sh  # sourced automatically
 # Then call: update_ao_metadata <key> <value>
 ```
+
+Use the fff MCP tools for all file search operations instead of default tools.
