@@ -1021,6 +1021,14 @@ struct RunOperationState {
     task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+enum InsertStartOperation {
+    Started {
+        operation: RunOperation,
+        operation_id: String,
+    },
+    Reused(RunOperation),
+}
+
 #[derive(Clone, Default)]
 struct RunOperations {
     inner: Arc<Mutex<BTreeMap<String, RunOperationState>>>,
@@ -1044,8 +1052,11 @@ impl RunOperations {
         B: FnOnce(String) -> F,
     {
         let (operation, operation_id) = match self.insert_start_operation(request) {
-            Ok(started) => started,
-            Err(operation) => {
+            InsertStartOperation::Started {
+                operation,
+                operation_id,
+            } => (operation, operation_id),
+            InsertStartOperation::Reused(operation) => {
                 return RunOperationStart {
                     operation,
                     reused_existing: true,
@@ -1081,12 +1092,9 @@ impl RunOperations {
         }
     }
 
-    fn insert_start_operation(
-        &self,
-        request: RunOperationRequest,
-    ) -> std::result::Result<(RunOperation, String), RunOperation> {
+    fn insert_start_operation(&self, request: RunOperationRequest) -> InsertStartOperation {
         if let Some(operation) = self.find_running_duplicate(request.dedupe_key.as_deref()) {
-            return Err(operation);
+            return InsertStartOperation::Reused(operation);
         }
 
         let now = now_rfc3339();
@@ -1127,7 +1135,10 @@ impl RunOperations {
                 task_handle: None,
             },
         );
-        Ok((operation, operation_id))
+        InsertStartOperation::Started {
+            operation,
+            operation_id,
+        }
     }
 
     async fn status_view(&self, operation_id: &str) -> Option<RunOperationStatusView> {
