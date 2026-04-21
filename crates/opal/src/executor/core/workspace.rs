@@ -3,12 +3,13 @@ use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result};
-use git2::{IndexAddOption, Repository, Signature, StatusOptions};
+use git2::{IndexAddOption, Repository, RepositoryInitOptions, Signature, StatusOptions};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::warn;
 
 pub(super) struct PreparedWorkspace {
     pub host_workdir: PathBuf,
@@ -40,9 +41,8 @@ pub(super) fn prepare_job_workspace(
 }
 
 fn refresh_git_snapshot_state(workdir: &Path) -> Result<()> {
-    let repo = match Repository::open(workdir) {
-        Ok(repo) => repo,
-        Err(_) => return Ok(()),
+    let Some(repo) = open_or_reinitialize_repository(workdir)? else {
+        return Ok(());
     };
 
     let mut status_options = StatusOptions::new();
@@ -100,6 +100,76 @@ fn refresh_git_snapshot_state(workdir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn open_or_reinitialize_repository(workdir: &Path) -> Result<Option<Repository>> {
+    match Repository::open(workdir) {
+        Ok(repo) => Ok(Some(repo)),
+        Err(err) => {
+            let git_path = workdir.join(".git");
+            if !git_path.exists() {
+                return Ok(None);
+            }
+            warn!(
+                workspace = %workdir.display(),
+                error = %err,
+                "workspace git metadata is not portable; reinitializing snapshot repository"
+            );
+            Ok(Some(reinitialize_snapshot_repository(workdir, &git_path)?))
+        }
+    }
+}
+
+fn reinitialize_snapshot_repository(workdir: &Path, git_path: &Path) -> Result<Repository> {
+    if git_path.exists() {
+        let metadata = fs::symlink_metadata(git_path)
+            .with_context(|| format!("failed to inspect {}", git_path.display()))?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(git_path)
+                .with_context(|| format!("failed to remove {}", git_path.display()))?;
+        } else {
+            fs::remove_file(git_path)
+                .with_context(|| format!("failed to remove {}", git_path.display()))?;
+        }
+    }
+
+    let mut init = RepositoryInitOptions::new();
+    init.initial_head("main");
+    let repo = Repository::init_opts(workdir, &init).with_context(|| {
+        format!(
+            "failed to initialize git repository in {}",
+            workdir.display()
+        )
+    })?;
+    let mut index = repo
+        .index()
+        .context("failed to open git index for workspace snapshot")?;
+    index
+        .add_all(["*"], IndexAddOption::DEFAULT, None)
+        .context("failed to refresh git index for workspace snapshot")?;
+    index
+        .write()
+        .context("failed to write refreshed git index for workspace snapshot")?;
+
+    let tree_id = index
+        .write_tree()
+        .context("failed to write tree for workspace snapshot")?;
+    let tree = repo
+        .find_tree(tree_id)
+        .context("failed to find written tree for workspace snapshot")?;
+    let signature = Signature::now("Opal", "opal@local.invalid")
+        .context("failed to create snapshot git signature")?;
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "opal workspace snapshot",
+        &tree,
+        &[],
+    )
+    .context("failed to create initial workspace snapshot commit")?;
+    drop(tree);
+    Ok(repo)
 }
 
 fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
@@ -368,6 +438,29 @@ mod tests {
         assert!(prepared.host_workdir.join("Cargo.toml").exists());
         assert!(prepared.host_workdir.join(".git").join("HEAD").exists());
         assert!(prepared.mounts.is_empty());
+
+        let _ = fs::remove_dir_all(workdir);
+        let _ = fs::remove_dir_all(session_dir);
+    }
+
+    #[test]
+    fn prepare_job_workspace_reinitializes_broken_worktree_git_pointer() {
+        let workdir = temp_path("workspace-worktree-pointer");
+        fs::create_dir_all(&workdir).expect("create workdir");
+        fs::write(
+            workdir.join(".git"),
+            "gitdir: /tmp/nonexistent-root/.git/worktrees/opal-worktree2\n",
+        )
+        .expect("write worktree gitdir pointer");
+        fs::write(workdir.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
+
+        let session_dir = temp_path("workspace-session-worktree-pointer");
+        fs::create_dir_all(&session_dir).expect("create session");
+        let exec = test_core(workdir.clone(), session_dir.clone());
+        let prepared = prepare_job_workspace(&exec, &job("build")).expect("prepare workspace");
+
+        assert!(prepared.host_workdir.join(".git").is_dir());
+        git2::Repository::open(&prepared.host_workdir).expect("snapshot repo is valid");
 
         let _ = fs::remove_dir_all(workdir);
         let _ = fs::remove_dir_all(session_dir);

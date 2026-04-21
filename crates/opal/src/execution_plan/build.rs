@@ -45,6 +45,7 @@ where
 mod tests {
     use super::*;
     use crate::compiler::{JobInstance, JobVariantInfo, compile_pipeline};
+    use crate::git::test_support::init_repo_with_commit_and_tag;
     use crate::model::{
         ArtifactSpec, DependencySourceSpec, JobDependencySpec, JobSpec, PipelineSpec,
         RetryPolicySpec,
@@ -193,8 +194,9 @@ mod tests {
     fn build_execution_plan_resolves_matrix_needs_to_variant_names() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
@@ -239,8 +241,9 @@ mod tests {
     fn build_execution_plan_preserves_inline_variant_metadata() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
@@ -271,8 +274,9 @@ mod tests {
     fn selected_jobs_include_upstream_dependencies() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
@@ -296,8 +300,9 @@ mod tests {
     fn selecting_base_name_includes_all_variants() {
         let pipeline = PipelineSpec::from_path(&fixture_path("control-flow-parity.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
