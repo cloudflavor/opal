@@ -3,7 +3,9 @@ use super::resource_groups::{ResourceAcquire, ResourceGroups};
 use super::retry::retry_allowed;
 use super::{interruptible_running_jobs, planned_summary, spawn_analysis, spawn_prompt_preview};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
-use crate::executor::core::ExecutorCore;
+use crate::executor::core::{
+    ExecutionProgressCallback, ExecutionProgressEvent, ExecutorCore, ProgressJobStatus,
+};
 use crate::model::ArtifactSourceOutcome;
 use crate::pipeline::{self, HaltKind, JobEvent, JobStatus, JobSummary, RuleWhen};
 use crate::runtime;
@@ -41,6 +43,7 @@ pub(super) struct ExecutionCoordinator<'a> {
     halt_kind: HaltKind,
     halt_error: Option<anyhow::Error>,
     summaries: Vec<JobSummary>,
+    progress: Option<ExecutionProgressCallback>,
 }
 
 enum SchedulerEvent {
@@ -55,6 +58,7 @@ impl<'a> ExecutionCoordinator<'a> {
         plan: Arc<ExecutionPlan>,
         ui: Option<Arc<UiBridge>>,
         commands: Option<&'a mut mpsc::UnboundedReceiver<UiCommand>>,
+        progress: Option<ExecutionProgressCallback>,
     ) -> Self {
         let manual_input_available = commands.is_some();
         let total = plan.ordered.len();
@@ -92,6 +96,7 @@ impl<'a> ExecutionCoordinator<'a> {
             halt_kind: HaltKind::None,
             halt_error: None,
             summaries: Vec::new(),
+            progress,
         }
     }
 
@@ -273,10 +278,14 @@ impl<'a> ExecutionCoordinator<'a> {
 
     async fn start_job(&mut self, planned: ExecutableJob) -> Result<()> {
         let name = planned.instance.job.name.clone();
+        let stage = planned.instance.stage_name.clone();
         *self.attempts.entry(name.clone()).or_insert(0) += 1;
 
         let run_info = self.exec.log_job_start(&planned, self.ui.as_deref())?;
-        self.running.insert(name);
+        self.running.insert(name.clone());
+        if let Some(progress) = self.progress.as_ref() {
+            progress(ExecutionProgressEvent::JobStarted { name, stage });
+        }
         pipeline::spawn_job(
             self.exec.clone(),
             self.plan.clone(),
@@ -395,6 +404,13 @@ impl<'a> ExecutionCoordinator<'a> {
     }
 
     async fn handle_success(&mut self, planned: &ExecutableJob, event: JobEvent) {
+        if let Some(progress) = self.progress.as_ref() {
+            progress(ExecutionProgressEvent::JobFinished {
+                name: event.name.clone(),
+                stage: event.stage_name.clone(),
+                status: ProgressJobStatus::Success,
+            });
+        }
         self.exec
             .record_completed_job(&event.name, ArtifactSourceOutcome::Success);
         self.resource_groups.release(planned).await;
@@ -411,6 +427,13 @@ impl<'a> ExecutionCoordinator<'a> {
     }
 
     async fn handle_cancelled(&mut self, planned: &ExecutableJob, event: JobEvent) {
+        if let Some(progress) = self.progress.as_ref() {
+            progress(ExecutionProgressEvent::JobFinished {
+                name: event.name.clone(),
+                stage: event.stage_name.clone(),
+                status: ProgressJobStatus::Skipped,
+            });
+        }
         self.exec
             .record_completed_job(&event.name, ArtifactSourceOutcome::Skipped);
         self.resource_groups.release(planned).await;
@@ -445,6 +468,13 @@ impl<'a> ExecutionCoordinator<'a> {
             return;
         }
 
+        if let Some(progress) = self.progress.as_ref() {
+            progress(ExecutionProgressEvent::JobFinished {
+                name: event.name.clone(),
+                stage: event.stage_name.clone(),
+                status: ProgressJobStatus::Failed,
+            });
+        }
         self.exec
             .record_completed_job(&event.name, ArtifactSourceOutcome::Failed);
         self.resource_groups.release(planned).await;
@@ -479,6 +509,13 @@ impl<'a> ExecutionCoordinator<'a> {
         reason: String,
         log_path: Option<std::path::PathBuf>,
     ) {
+        if let Some(progress) = self.progress.as_ref() {
+            progress(ExecutionProgressEvent::JobFinished {
+                name: planned.instance.job.name.clone(),
+                stage: planned.instance.stage_name.clone(),
+                status: ProgressJobStatus::Skipped,
+            });
+        }
         if let Some(ui_ref) = self.ui.as_deref() {
             ui_ref.job_finished(
                 &planned.instance.job.name,

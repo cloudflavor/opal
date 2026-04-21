@@ -4,7 +4,10 @@ mod resource_groups;
 mod retry;
 
 use self::coordinator::ExecutionCoordinator;
-use super::{core::ExecutorCore, job_runner};
+use super::{
+    core::{ExecutionProgressCallback, ExecutorCore},
+    job_runner,
+};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::model::ArtifactSourceOutcome;
 use crate::pipeline::{JobEvent, JobStatus, JobSummary};
@@ -35,8 +38,9 @@ pub(crate) async fn execute_plan(
     plan: Arc<ExecutionPlan>,
     ui: Option<Arc<UiBridge>>,
     commands: Option<&mut mpsc::UnboundedReceiver<UiCommand>>,
+    progress: Option<ExecutionProgressCallback>,
 ) -> (Vec<JobSummary>, Result<()>) {
-    ExecutionCoordinator::new(exec, plan, ui, commands)
+    ExecutionCoordinator::new(exec, plan, ui, commands, progress)
         .run()
         .await
 }

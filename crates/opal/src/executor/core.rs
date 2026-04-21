@@ -52,6 +52,32 @@ pub struct ExecutionOutcome {
     pub result: Result<()>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressJobStatus {
+    Success,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecutionProgressEvent {
+    PlanPrepared {
+        run_id: String,
+        total_jobs: usize,
+    },
+    JobStarted {
+        name: String,
+        stage: String,
+    },
+    JobFinished {
+        name: String,
+        stage: String,
+        status: ProgressJobStatus,
+    },
+}
+
+pub type ExecutionProgressCallback = Arc<dyn Fn(ExecutionProgressEvent) + Send + Sync + 'static>;
+
 #[derive(Debug, Clone)]
 pub struct ExecutorCore {
     pub config: ExecutorConfig,
@@ -177,6 +203,13 @@ impl ExecutorCore {
     }
 
     pub async fn run(&self) -> ExecutionOutcome {
+        self.run_with_progress(None).await
+    }
+
+    pub async fn run_with_progress(
+        &self,
+        progress: Option<ExecutionProgressCallback>,
+    ) -> ExecutionOutcome {
         let plan = match self.plan_jobs() {
             Ok(plan) => Arc::new(plan),
             Err(err) => {
@@ -186,6 +219,12 @@ impl ExecutorCore {
                 };
             }
         };
+        if let Some(progress) = progress.as_ref() {
+            progress(ExecutionProgressEvent::PlanPrepared {
+                run_id: self.run_id.clone(),
+                total_jobs: plan.ordered.len(),
+            });
+        }
         let resource_map = self.collect_job_resources(&plan);
         let display = self.display();
         let plan_text = collect_pipeline_plan(&display, &plan).join("\n");
@@ -258,8 +297,14 @@ impl ExecutorCore {
         let command_rx = ui_command_rx.as_mut().or(owned_command_rx.as_mut());
         let ui_bridge = ui_handle.as_ref().map(|handle| Arc::new(handle.bridge()));
 
-        let (mut summaries, result) =
-            orchestrator::execute_plan(self, plan.clone(), ui_bridge.clone(), command_rx).await;
+        let (mut summaries, result) = orchestrator::execute_plan(
+            self,
+            plan.clone(),
+            ui_bridge.clone(),
+            command_rx,
+            progress.clone(),
+        )
+        .await;
 
         if let Some(handle) = &ui_handle {
             handle.pipeline_finished();

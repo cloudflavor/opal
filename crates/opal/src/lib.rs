@@ -59,6 +59,8 @@ pub enum Commands {
     Plan(PlanArgs),
     /// Open the history and log browser for previous runs.
     View(ViewArgs),
+    /// List active and recent background operations.
+    Operations(OperationsArgs),
     /// Print a shell completion script to stdout.
     Completions(CompletionArgs),
     /// Start the MCP server over stdio.
@@ -72,7 +74,7 @@ pub struct McpArgs {}
 
 #[cfg(test)]
 mod cli_tests {
-    use super::{Cli, Commands, CompletionShell, McpArgs};
+    use super::{Cli, Commands, CompletionShell, McpArgs, OperationStatusFilter};
     use structopt::StructOpt;
 
     #[test]
@@ -98,6 +100,30 @@ mod cli_tests {
         match cli.commands {
             Commands::Completions(args) => assert_eq!(args.shell, CompletionShell::Fish),
             _ => panic!("expected completions subcommand"),
+        }
+    }
+
+    #[test]
+    fn operations_subcommand_parses_filters() {
+        let cli = Cli::from_iter_safe([
+            "opal",
+            "operations",
+            "--all",
+            "--status",
+            "failed",
+            "--limit",
+            "5",
+            "--json",
+        ])
+        .expect("parse cli");
+        match cli.commands {
+            Commands::Operations(args) => {
+                assert!(args.all);
+                assert_eq!(args.status, Some(OperationStatusFilter::Failed));
+                assert_eq!(args.limit, 5);
+                assert!(args.json);
+            }
+            _ => panic!("expected operations subcommand"),
         }
     }
 }
@@ -255,6 +281,59 @@ pub struct PlanArgs {
     /// Emit the execution plan as JSON.
     #[structopt(long = "json")]
     pub json: bool,
+}
+
+/// List active and recent background operations.
+#[derive(StructOpt)]
+pub struct OperationsArgs {
+    /// Include completed and failed operations, not only running ones.
+    #[structopt(long)]
+    pub all: bool,
+
+    /// Filter operations by status.
+    #[structopt(long, possible_values = OperationStatusFilter::VARIANTS)]
+    pub status: Option<OperationStatusFilter>,
+
+    /// Maximum number of operations to return.
+    #[structopt(long, default_value = "20")]
+    pub limit: usize,
+
+    /// Print operation data as JSON.
+    #[structopt(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationStatusFilter {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl OperationStatusFilter {
+    pub const VARIANTS: &'static [&'static str] = &["running", "succeeded", "failed"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for OperationStatusFilter {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unsupported operation status '{other}'")),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

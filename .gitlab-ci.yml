@@ -12,7 +12,7 @@ default:
     - rustc --version
     - cargo --version
     - rustup component add rustfmt clippy
-    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_PIPELINE_ID:-local}/${CI_JOB_NAME_SLUG:-job}"
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
@@ -76,6 +76,7 @@ opal-install-smoke:
       artifacts: false
   script:
     - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
+    - rm -rf "$CARGO_TARGET_DIR"
     - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
     - $CI_PROJECT_DIR/.opal-installed/bin/opal --version
 

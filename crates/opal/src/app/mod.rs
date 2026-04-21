@@ -1,5 +1,6 @@
 pub(crate) mod completions;
 pub(crate) mod context;
+pub(crate) mod operations;
 pub(crate) mod plan;
 pub(crate) mod run;
 pub(crate) mod view;
@@ -30,6 +31,7 @@ impl OpalApp {
             Commands::Run(args) => run::execute(self, args).await,
             Commands::Plan(args) => plan::execute(self, args).await,
             Commands::View(args) => view::execute(self, args).await,
+            Commands::Operations(args) => operations::execute(self, args).await,
             Commands::Completions(args) => completions::execute(args),
             Commands::Mcp(_) => crate::mcp::serve_stdio().await,
         }

@@ -10,3 +10,4 @@ releases/
 opal-plan
 *.cast
 worktrees
+.parley
