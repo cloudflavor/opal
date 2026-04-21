@@ -381,6 +381,7 @@ fn format_gitlab_variant_values(labels: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::test_support::init_repo_with_commit_and_tag;
     use crate::gitlab::rules::JobRule;
     use crate::model::{
         ArtifactSpec, PipelineDefaultsSpec, PipelineFilterSpec, PipelineSpec, RetryPolicySpec,
@@ -458,8 +459,9 @@ mod tests {
     fn compile_pipeline_resolves_matrix_needs_to_variant_dependencies() {
         let pipeline = PipelineSpec::from_path(&fixture_path("needs-and-artifacts.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
@@ -540,7 +542,7 @@ mod tests {
         assert!(!branch_compiled.jobs.contains_key("tag-only"));
 
         let tag_ctx = RuleContext::from_env(
-            Path::new("."),
+            temp.path(),
             HashMap::from([
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
                 ("CI_COMMIT_TAG".into(), "v1.2.0".into()),
@@ -584,8 +586,9 @@ mod tests {
     fn compile_pipeline_preserves_job_level_manual_when_from_fixture() {
         let pipeline = PipelineSpec::from_path(&fixture_path("environments.gitlab-ci.yml"))
             .expect("pipeline loads");
+        let repo = init_repo_with_commit_and_tag("v0.0.0").expect("git repo");
         let ctx = RuleContext::from_env(
-            Path::new("."),
+            repo.path(),
             HashMap::from([
                 ("CI_PIPELINE_SOURCE".into(), "push".into()),
                 ("CI_COMMIT_BRANCH".into(), "main".into()),
