@@ -11,3 +11,4 @@ opal-plan
 *.cast
 worktrees
 .parley
+.DS_Store
