@@ -250,7 +250,7 @@ Prompt preview exists specifically so you can verify this rendered context befor
 When `save_analysis = true`, Opal stores the final analysis under:
 
 ```text
-$OPAL_HOME/<run-id>/<job-slug>/analysis/
+$XDG_DATA_HOME/opal/<run-id>/<job-slug>/analysis/
 ```
 
 For the Ollama backend, the first saved filename is:

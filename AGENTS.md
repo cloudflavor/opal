@@ -12,6 +12,24 @@
 - Choose branch names that describe the scope clearly (for example, `feature/opal-root-config-env`).
 - Do not continue implementation work until the branch switch is complete.
 
+## Scripting Policy
+
+- Use Bash only for repository scripting changes.
+- Do not add Python scripts, Python one-liners, or Python-based helpers in this repository.
+
+## CI Engine Contract (Do Not Deviate)
+
+- The normal pipeline runs in containers with no explicit engine forcing in job scripts or `.gitlab-ci.yml`.
+- Engine resolution for `auto` must be platform-native:
+  - macOS: Apple `container` CLI
+  - Linux: `podman`
+- Only `extended-tests` and `e2e-tests` are intended to run as sandbox jobs.
+- Inside those sandbox jobs, nested `opal` runs must still execute jobs in containers unless a specific test explicitly requests a concrete engine.
+- Test scenarios that do not specify an engine must use `auto`.
+- These suites are expected to exercise multiple engines; scenarios that explicitly set an engine must use that engine.
+- If an engine runtime is unavailable because it is not started, treat that as environment/runtime state, not a reason to hardcode alternate engines.
+- Sandbox permissions for those jobs must allow required access for Docker, Podman, Orbstack, and Apple container CLI connectivity/operation so nested container execution can proceed.
+
 ## Critical: GitLab Parity Discipline
 
 - Treat current GitLab CI/CD documentation as the upstream source of truth for `.gitlab-ci.yml` behavior.

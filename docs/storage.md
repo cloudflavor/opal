@@ -2,15 +2,14 @@
 
 This page documents where Opal stores local state, how per-job workspaces are prepared, how cache and artifacts are laid out on disk, and how project-level `.opal` content interacts with global configuration.
 
-## `OPAL_HOME`
+## Data root
 
-Opal stores runtime state under `OPAL_HOME`.
+Opal stores runtime state under your XDG data root at `$XDG_DATA_HOME/opal`.
 
 Resolution rules:
 
-- If `OPAL_HOME` is set and absolute, Opal uses it directly.
-- If `OPAL_HOME` is set and relative, Opal resolves it relative to the current working directory.
-- If `OPAL_HOME` is unset, Opal defaults to your XDG data directory:
+- If `XDG_DATA_HOME` is set, Opal uses `$XDG_DATA_HOME/opal`.
+- If `XDG_DATA_HOME` is unset, Opal defaults to:
 
 ```text
 ~/.local/share/opal
@@ -18,10 +17,10 @@ Resolution rules:
 
 ## Directory layout
 
-Under `OPAL_HOME`, Opal stores:
+Under the data root, Opal stores:
 
 ```text
-$OPAL_HOME/
+$XDG_DATA_HOME/opal/
 ├─ <run-id>/
 │  ├─ logs/
 │  ├─ scripts/
@@ -32,28 +31,27 @@ $OPAL_HOME/
 │     └─ runtime/
 ├─ cache/
 ├─ resource-groups/
-├─ history.json
-└─ config.toml
+└─ history.json
 ```
 
 Important paths:
 
 - per-run session root:
-  - `$OPAL_HOME/<run-id>/`
+  - `$XDG_DATA_HOME/opal/<run-id>/`
 - logs for a run:
-  - `$OPAL_HOME/<run-id>/logs/`
+  - `$XDG_DATA_HOME/opal/<run-id>/logs/`
 - generated shell scripts for a run:
-  - `$OPAL_HOME/<run-id>/scripts/`
+  - `$XDG_DATA_HOME/opal/<run-id>/scripts/`
 - copied per-job workspaces:
-  - `$OPAL_HOME/<run-id>/workspaces/<job-slug>/`
+  - `$XDG_DATA_HOME/opal/<run-id>/workspaces/<job-slug>/`
 - per-job runtime inspection summaries:
-  - `$OPAL_HOME/<run-id>/<job-slug>/runtime/inspect.txt`
+  - `$XDG_DATA_HOME/opal/<run-id>/<job-slug>/runtime/inspect.txt`
 - persistent local cache root:
-  - `$OPAL_HOME/cache/`
+  - `$XDG_DATA_HOME/opal/cache/`
 - cross-run local resource-group locks:
-  - `$OPAL_HOME/resource-groups/`
+  - `$XDG_DATA_HOME/opal/resource-groups/`
 - pipeline history database:
-  - `$OPAL_HOME/history.json`
+  - `$XDG_DATA_HOME/opal/history.json`
 
 ## Workspace preparation
 
@@ -64,6 +62,8 @@ What this means:
 - Opal does not force a fresh Git clone/fetch/clean cycle for each local job.
 - Dirty tracked edits in your current repo are included.
 - The repository `.git` directory is copied too, so Git-aware local behavior still works.
+- For linked worktree checkouts where `.git` is a gitdir pointer file, Opal skips copying that pointer.
+- Opal does not create synthetic Git commits while preparing job workspaces.
 
 What gets filtered out:
 
@@ -89,7 +89,7 @@ Artifacts are stored per job under the current run session.
 Layout:
 
 ```text
-$OPAL_HOME/<run-id>/<job-slug>/artifacts/
+$XDG_DATA_HOME/opal/<run-id>/<job-slug>/artifacts/
 ```
 
 Behavior:
@@ -105,7 +105,7 @@ Dependency staging:
 - Opal stages dependency artifacts under:
 
 ```text
-$OPAL_HOME/<run-id>/<job-slug>/dependencies/
+$XDG_DATA_HOME/opal/<run-id>/<job-slug>/dependencies/
 ```
 
 and mounts or stages only the subset needed by the consumer job.
@@ -115,7 +115,7 @@ and mounts or stages only the subset needed by the consumer job.
 Persistent cache data lives under:
 
 ```text
-$OPAL_HOME/cache/
+$XDG_DATA_HOME/opal/cache/
 ```
 
 Behavior:
@@ -137,7 +137,7 @@ Policy behavior:
 Per-job staging also uses:
 
 ```text
-$OPAL_HOME/<run-id>/cache-staging/
+$XDG_DATA_HOME/opal/<run-id>/cache-staging/
 ```
 
 for staged pull-only cache copies.
@@ -174,7 +174,7 @@ Recommended pattern for Rust images:
 Opal records completed runs in:
 
 ```text
-$OPAL_HOME/history.json
+$XDG_DATA_HOME/opal/history.json
 ```
 
 Each history entry records:
@@ -209,7 +209,7 @@ save_analysis = true
 Opal stores saved AI output under:
 
 ```text
-$OPAL_HOME/<run-id>/<job-slug>/analysis/
+$XDG_DATA_HOME/opal/<run-id>/<job-slug>/analysis/
 ```
 
 Current backend-specific filenames include:
@@ -240,7 +240,7 @@ When enabled, Opal keeps those runtime objects for post-run inspection and recor
 Opal also writes a normalized runtime summary file per job at:
 
 ```text
-$OPAL_HOME/<run-id>/<job-slug>/runtime/inspect.txt
+$XDG_DATA_HOME/opal/<run-id>/<job-slug>/runtime/inspect.txt
 ```
 
 That file is intended to be the easiest single place to inspect the recorded runtime/container details from `opal view`.
@@ -250,7 +250,7 @@ That file is intended to be the easiest single place to inspect the recorded run
 Local `resource_group` locking is stored under:
 
 ```text
-$OPAL_HOME/resource-groups/
+$XDG_DATA_HOME/opal/resource-groups/
 ```
 
 This is how Opal serializes matching jobs across separate local runs on the same machine.
@@ -277,16 +277,13 @@ Legacy compatibility:
 
 Opal loads and merges configuration from these paths in order:
 
-1. `<workdir>/.opal/config.toml`
-2. `$XDG_CONFIG_HOME/opal/config.toml`
-3. `$OPAL_HOME/config.toml` (legacy/custom override when `OPAL_HOME` is explicitly set)
-
-Earlier entries override later ones.
+1. `$XDG_CONFIG_HOME/opal/config.toml`
+2. `<workdir>/.opal/config.toml`
+Later entries override earlier ones.
 
 That means:
 
-- project-level `.opal/config.toml` overrides your global/user defaults
 - `$XDG_CONFIG_HOME/opal/config.toml` is the broad user default layer
-- `$OPAL_HOME/config.toml` can still be used as a legacy/custom override when desired
+- project-level `.opal/config.toml` establishes repo defaults and can override global defaults
 
-This is the mechanism that lets you keep global defaults while still overriding them per project.
+This is the mechanism that lets tests or local runners inject dynamic global config without editing project config files.

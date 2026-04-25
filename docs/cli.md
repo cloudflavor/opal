@@ -73,12 +73,15 @@ opal run -E CI_* -E 'AWS_ACCESS_KEY_ID' -E 'APP_??'
   - `podman`
   - `nerdctl`
   - `orbstack`
+  - `sandbox`
 
 Notes:
 
 - On macOS, `auto` uses Apple `container`.
 - On Linux, `auto` uses `podman`.
 - On macOS, `nerdctl` is treated as Linux-oriented rather than as a first-class host engine.
+- `sandbox` maps to Anthropic's `srt` CLI and runs scripts in a sandboxed local process model rather than container-image flags.
+- Use `.opal/config.toml` `[sandbox]` / `[[jobs]].sandbox_*` settings to control `srt --settings`, debug mode, and generated network/filesystem/policy settings.
 - You can override the `auto` default in config with `[engine].default`.
 
 ##### `--no-tui`
@@ -198,7 +201,7 @@ Starts the MCP server over stdio.
 
 This command is intended for MCP clients that launch Opal as a subprocess and speak JSON-RPC over stdin/stdout.
 
-The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_run_status`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, `opal_run_diff`, `opal_logs_search`, `opal_job_rerun`, `opal_plan_explain`, and `opal_engine_status`. `opal_run`, `opal_job_rerun`, and `opal_logs_search` start background operations; `opal_view` also uses the same background path when `include_log` or `include_runtime_summary` is requested. Poll these operations with `opal_run_status`. `opal_history_list` supports status, job, branch, pipeline-file, and RFC3339 date-range filters. MCP history, latest-run lookup, and resources are scoped to the current checkout instead of showing unrelated runs from the same `OPAL_HOME`.
+The current MCP tool surface includes `opal_plan`, `opal_run`, `opal_run_status`, `opal_view`, `opal_history_list`, `opal_failed_jobs`, `opal_run_diff`, `opal_logs_search`, `opal_job_rerun`, `opal_plan_explain`, and `opal_engine_status`. `opal_run`, `opal_job_rerun`, and `opal_logs_search` start background operations; `opal_view` also uses the same background path when `include_log` or `include_runtime_summary` is requested. Poll these operations with `opal_run_status`. `opal_history_list` supports status, job, branch, pipeline-file, and RFC3339 date-range filters. MCP history, latest-run lookup, and resources are scoped to the current checkout instead of showing unrelated runs from the same `$XDG_DATA_HOME/opal` tree.
 
 Example:
 
@@ -214,8 +217,10 @@ These are not command-line flags, but they change CLI/runtime behavior and are w
   - fallback for `--gitlab-base-url`
 - `OPAL_GITLAB_TOKEN`
   - fallback for `--gitlab-token`
-- `OPAL_HOME`
-  - changes where Opal stores runs, logs, artifacts, cache, and history
+- `XDG_DATA_HOME`
+  - sets the data root as `$XDG_DATA_HOME/opal` for runs, logs, artifacts, cache, and history
+- `XDG_CONFIG_HOME`
+  - sets the global config path as `$XDG_CONFIG_HOME/opal/config.toml`
 - `OPAL_RUN_MANUAL=1`
   - makes manual jobs auto-run in contexts that respect manual-run toggling
 - `OPAL_DEBUG=1`

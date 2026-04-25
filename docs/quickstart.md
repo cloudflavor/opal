@@ -8,7 +8,7 @@ cargo install --path crates/opal
 
 This installs the executable as `opal`.
 
-Opal requires Docker, Podman, Apple `container`, or OrbStack for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
+Opal requires Docker, Podman, Apple `container`, OrbStack, or Anthropic `srt` for the supported local engine set. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable.
 
 Opal wraps those local engine CLIs; it does not bundle its own container runtime. Make sure the engine you want to use is already installed and available on your `PATH`.
 
@@ -36,8 +36,8 @@ cargo install --path crates/opal
 opal run --pipeline .gitlab-ci.yml --workdir .
 ```
 
-Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, or `orbstack`.
-On macOS, the RC-supported local engine set is `container`, `docker`, `orbstack`, and `podman`.
+Use `--engine auto` (default) to let Opal detect which container runtime is available, or pass `--engine docker`, `podman`, `nerdctl`, `container`, `orbstack`, or `sandbox`.
+On macOS, the RC-supported local engine set is `container`, `docker`, `orbstack`, `podman`, and `sandbox`.
 Add `--job <name>` (repeatable) when you want to run only selected jobs plus their required upstream dependencies.
 
 Default engine selection:
@@ -79,7 +79,7 @@ opal plan --pipeline .gitlab-ci.yml --workdir .
 ## Inspect Results
 
 - Highlight a job and press `o` to open its log in your pager (`$PAGER`, default `less -R`).
-- Artifacts are stored in `$OPAL_HOME/<run-id>/<job>/artifacts/` (default `~/.local/share/opal/<run-id>/<job>/artifacts/`).
+- Artifacts are stored in `$XDG_DATA_HOME/opal/<run-id>/<job>/artifacts/` (default `~/.local/share/opal/<run-id>/<job>/artifacts/`).
 
 ## Tips
 

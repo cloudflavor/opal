@@ -192,10 +192,17 @@ These features exist in Opal, but they do not match GitLab completely.
   Opal does not yet support other non-local include sources.
 - `default` is subset-only.
   Unknown default keys are ignored.
+- `.opal/config.toml` job engine overrides are Opal-only behavior.
+  Opal supports `[[jobs]].engine` in local config to override the executor engine per job without changing `.gitlab-ci.yml`.
+  This is intentionally outside GitLab YAML semantics and is treated as a local-runner override path, not GitLab parity.
+  Opal also supports local sandbox runtime controls (`[sandbox]`, `[[jobs]].sandbox_*`) that map to Anthropic `srt` CLI network/filesystem/policy settings, which are likewise Opal-only and outside GitLab YAML semantics.
+  Services remain attached to the run/global engine unless Opal adds explicit per-job service-engine configuration later.
 - workspace/source preparation is intentionally local-first.
   GitLab Runner normally prepares job sources through Git operations (`clone` / `fetch` / checkout / clean) and can remove untracked and ignored files depending on runner settings such as `GIT_STRATEGY`, `GIT_CHECKOUT`, and `GIT_CLEAN_FLAGS`.
   Opal intentionally does not force that remote-runner source lifecycle for local development. Instead it snapshots the current working tree so dirty tracked edits and in-progress local source changes are available to jobs.
   Opal currently copies `.git` into that local snapshot so Git-aware local behavior still works inside jobs and during local ref/tag evaluation.
+  For linked worktree checkouts where `.git` is a gitdir pointer file, Opal skips copying that pointer.
+  Opal does not create synthetic Git commits while preparing job workspaces.
   Opal still applies Git-aware filtering to avoid copying obvious local junk into the job workspace, including ignored/generated directories such as `target/`, `tests-temp/`, `.opal/`, `node_modules/`, and `.svelte-kit/`.
   This is a deliberate local-development divergence rather than a claim of exact GitLab Runner parity.
 - Opal root config env injection is runner-augmentation-only.
@@ -283,13 +290,14 @@ These features exist in Opal, but they do not match GitLab completely.
   Unsupported service syntax in Opal today is any service subkey outside the list above.
   GitLab documents services as sidecar containers attached by the runner to a job network, with alias-based access and service-only variables. Opal mirrors the common local shape by starting sibling containers on a local engine network, normalizing aliases, honoring `entrypoint`, `command`, and `variables`, and injecting link-style connection env for some engines. It does not emulate the full range of runner-specific networking modes, service isolation rules, or executor-specific behavior from GitLab Runner.
   Opal now also performs a readiness gate after service start by inspecting container state/health and waiting up to a bounded timeout before running the job script. For engines without healthchecks, Opal requires a brief stable-running confirmation before treating the service as ready. This still does not reproduce all GitLab Runner wait-probe semantics. If service inspection is unavailable, Opal logs a warning and continues without the readiness gate.
-  For the macOS `container` engine, Opal also injects service alias host entries into the job container so service aliases remain reachable during runtime even though the engine does not expose GitLab Runner-style network aliasing directly.
+  On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal injects resolved service aliases at container start via runtime host-mapping flags instead of mutating `/etc/hosts` from inside the job script. This keeps service resolution compatible with non-root job users.
+  For the macOS `container` engine, Opal still injects service alias host entries from the job script so aliases remain reachable because that runtime does not currently expose GitLab Runner-style aliasing or a direct host-mapping flag.
   For services without healthchecks but with discoverable TCP ports, Opal now waits for actual port reachability instead of treating process liveness alone as readiness.
 - `interruptible` is partially modeled.
   Opal now applies `interruptible` during local pipeline abort flows by cancelling running jobs marked `interruptible: true` while allowing running non-interruptible jobs to finish.
   This is a local approximation of GitLab's auto-cancel behavior, not a full implementation of GitLab's redundant-pipeline and `workflow:auto_cancel` semantics.
 - `resource_group` is local-only.
-  Opal now serializes matching jobs across separate local Opal runs on the same machine by using a filesystem-backed lock under `OPAL_HOME`.
+  Opal now serializes matching jobs across separate local Opal runs on the same machine by using a filesystem-backed lock under `$XDG_DATA_HOME/opal`.
   This is still a local approximation rather than GitLab's distributed coordination across runners and pipelines.
 - `needs:project` is partial runtime support.
   Parsing and artifact mounting are implemented, but cross-project artifact download requires explicit GitLab credentials/configuration (`--gitlab-token`, optionally `--gitlab-base-url`) and network access to the GitLab API. Opal models artifact download only; it does not reproduce GitLab's server-side orchestration model.
@@ -328,6 +336,7 @@ These features exist in Opal, but they do not match GitLab completely.
   On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `image:docker:platform` to the engine's `--platform` selection.
   On the Apple `container` engine, `image:docker:platform` is translated into the corresponding `container run --arch` selection for common `amd64` / `arm64` Linux platform values.
   `image:entrypoint` and `image:docker:user` are forwarded to the local engine's entrypoint/user flags where supported.
+  As an Opal-only local runtime behavior, Opal defaults unset `image:docker:user` to host-mapped `${OPAL_HOST_UID}:${OPAL_HOST_GID}` unless `[engine].map_host_user = false` is configured.
   Unsupported image behavior in Opal today includes:
   - `image:kubernetes`
   - documented executor-specific image options outside `docker:platform` / `docker:user`
@@ -336,6 +345,7 @@ These features exist in Opal, but they do not match GitLab completely.
   Mapping-form services now require the documented GitLab `name` key for the image and reject the non-standard `image` key even when `name` is present.
   On `docker`, `podman`, `nerdctl`, and `orbstack`, Opal forwards `services:docker:platform` and `services:docker:user` to the local engine's service container flags.
   On the Apple `container` engine, `services:docker:platform` is translated into `container run --arch`, `services:docker:user` is forwarded to `container run --user`, and Opal now fails fast when the engine's per-job network creation stalls instead of hanging indefinitely.
+  As an Opal-only local runtime behavior, Opal defaults unset `services:docker:user` to host-mapped `${OPAL_HOST_UID}:${OPAL_HOST_GID}` unless `[engine].map_host_user = false` is configured.
   Unsupported service behavior in Opal today includes:
   - `services:kubernetes`
   - executor-specific service options outside `docker:platform` / `docker:user`

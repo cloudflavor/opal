@@ -115,7 +115,7 @@ Opal also exposes history and run resources that are ideal for browsing prior st
 - `opal://runs/<run_id>/jobs/<job>/log`
 - `opal://runs/<run_id>/jobs/<job>/runtime-summary`
 
-These resources are scoped to the current checkout, so agents do not accidentally inspect runs from other repositories that share the same `OPAL_HOME`.
+These resources are scoped to the current checkout, so agents do not accidentally inspect runs from other repositories that share the same `$XDG_DATA_HOME/opal` tree.
 
 These resources are especially valuable for agents because they support discovery and inspection without guessing run IDs or job names.
 

@@ -56,5 +56,5 @@ Mouse events are optional but supported:
 
 - If the UI freezes, ensure your terminal supports alternate-screen mode and 256 colors.
 - Press `Ctrl+C` to exit immediately; Opal will attempt to stop running jobs.
-- Logs live under `$OPAL_HOME/<run-id>/logs/` (default `~/.local/share/opal/<run-id>/logs/`) if you need to inspect them outside the UI.
-- Saved AI analysis lives under `$OPAL_HOME/<run-id>/<job-slug>/analysis/` when AI analysis saving is enabled.
+- Logs live under `$XDG_DATA_HOME/opal/<run-id>/logs/` (default `~/.local/share/opal/<run-id>/logs/`) if you need to inspect them outside the UI.
+- Saved AI analysis lives under `$XDG_DATA_HOME/opal/<run-id>/<job-slug>/analysis/` when AI analysis saving is enabled.

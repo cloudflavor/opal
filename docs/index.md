@@ -5,8 +5,8 @@ Opal executes GitLab-style CI pipelines locally so you can iterate without pushi
 ## Core ideas
 
 - **Deterministic pipelines** – Opal parses `.gitlab-ci.yml`, resolves `include:` files, and constructs the same DAG GitLab would run. Jobs inherit defaults (`before_script`, `after_script`, variables, and images) so the local run behaves like production.
-- **Multiple execution engines** – Use Docker, Podman, Apple `container`, or OrbStack for supported local execution. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable. On macOS, Apple `container` is a particularly good fit for Opal because it runs each container in its own lightweight VM instead of routing everything through one shared Linux VM. The executor normalizes container names (`opal-<pipeline>-<run>-<stage>-<job>`) and manages artifact mounts automatically.
-- **Artifact discipline** – Each run gets a session directory under `$OPAL_HOME/<run-id>/` (default `~/.local/share/opal/<run-id>/`). Job artifacts are stored under `$OPAL_HOME/<run-id>/<job>/artifacts/` and shared read-only with downstream jobs that declare `needs: { artifacts: true }`. Host `target/` is never touched by job artifacts; the workspace stays clean.
+- **Multiple execution engines** – Use Docker, Podman, Apple `container`, OrbStack, or `sandbox` (Anthropic `srt`) for supported local execution. `nerdctl` remains available as a Linux-oriented option when the underlying environment is directly usable. On macOS, Apple `container` is a particularly good fit for Opal because it runs each container in its own lightweight VM instead of routing everything through one shared Linux VM. The executor normalizes container names (`opal-<pipeline>-<run>-<stage>-<job>`) and manages artifact mounts automatically.
+- **Artifact discipline** – Each run gets a session directory under `$XDG_DATA_HOME/opal/<run-id>/` (default `~/.local/share/opal/<run-id>/`). Job artifacts are stored under `$XDG_DATA_HOME/opal/<run-id>/<job>/artifacts/` and shared read-only with downstream jobs that declare `needs: { artifacts: true }`. Host `target/` is never touched by job artifacts; the workspace stays clean.
 - **Friendly TUI** – The Ratatui interface shows job tabs, panes for run history and live logs, plus a contextual help overlay. Every action is bound to a key so you can drive the UI without a mouse, and the bundled docs can be opened directly with `?`.
 
 The markdown files in `docs/` are embedded into the Opal binary at build time. Inside the TUI, press `?` to open the help and documentation viewer.
@@ -18,7 +18,7 @@ opal/
 ├─ crates/        # Rust workspace members, currently `opal`
 ├─ docs/          # Packaged documentation displayed inside the TUI help window
 ├─ notes/         # Local developer notes (ignored from version control)
-└─ .opal/         # Optional repo-scoped config/secrets (runtime data lives in $OPAL_HOME/<run-id>/…)
+└─ .opal/         # Optional repo-scoped config/secrets (runtime data lives in $XDG_DATA_HOME/opal/<run-id>/…)
 ```
 
 Keep contributor-facing documentation under `docs/`. The help viewer bundles everything in this directory when the binary is built, so end users always have up-to-date references even if they do not clone the repository.
