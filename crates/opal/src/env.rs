@@ -247,10 +247,12 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
         })
     {
         inferred.push(("CI_COMMIT_TAG".into(), tag.clone()));
-    } else if let Ok(tag) = git::current_tag(workdir)
-        && !tag.is_empty()
-    {
-        inferred.push(("CI_COMMIT_TAG".into(), tag));
+    } else if host_env.contains_key("CI_COMMIT_TAG") {
+        if let Ok(tag) = git::current_tag(workdir)
+            && !tag.is_empty()
+        {
+            inferred.push(("CI_COMMIT_TAG".into(), tag));
+        }
     }
     insert_inferred_env(
         &mut inferred,
@@ -571,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn infers_tagged_ref_vars_for_job_environment() -> Result<()> {
+    fn does_not_infer_tagged_ref_vars_when_tag_context_is_missing() -> Result<()> {
         let dir = init_repo_with_commit_and_tag("v1.2.3")?;
 
         let job = JobSpec {
@@ -621,10 +623,10 @@ mod tests {
             &HashMap::new(),
         );
         let map: HashMap<_, _> = env.into_iter().collect();
-        assert_eq!(map.get("CI_COMMIT_TAG").map(String::as_str), Some("v1.2.3"));
+        assert!(!map.contains_key("CI_COMMIT_TAG"));
         assert_eq!(
             map.get("CI_COMMIT_REF_NAME").map(String::as_str),
-            Some("v1.2.3")
+            map.get("CI_COMMIT_BRANCH").map(String::as_str)
         );
         Ok(())
     }
