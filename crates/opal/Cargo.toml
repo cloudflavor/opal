@@ -12,6 +12,10 @@ authors = ["Victor Palade <victor@cloudflavor.io>"]
 keywords = ["gitlab", "ci", "tui", "pipeline", "devops"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "opal"
+path = "src/lib.rs"
+
 [[bin]]
 name = "opal"
 path = "src/bin/opal.rs"
