@@ -13,6 +13,17 @@ const explicitReleaseTag = process.env.CI_COMMIT_TAG || process.env.GIT_COMMIT_T
 
 const preferredOrder = ['index', 'install', 'quickstart', 'pipeline', 'plan', 'config', 'ai-config', 'ai', 'gitlab-parity', 'ui'];
 
+async function writeFileIfChanged(filePath, content) {
+  try {
+    const existing = await fs.readFile(filePath, 'utf8');
+    if (existing === content) return false;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  await fs.writeFile(filePath, content);
+  return true;
+}
+
 async function readCrateReleaseMetadata() {
   const cargoToml = await fs.readFile(crateManifestFile, 'utf8');
   const version = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
@@ -250,8 +261,14 @@ for (const filename of entries) {
 }
 
 await fs.mkdir(outputDir, { recursive: true });
-await fs.writeFile(outputFile, JSON.stringify(docs, null, 2));
+const docsPayload = JSON.stringify(docs, null, 2);
+const docsUpdated = await writeFileIfChanged(outputFile, docsPayload);
 if (shouldWriteReleaseMeta) {
-  await fs.writeFile(releaseFile, JSON.stringify(releaseMeta, null, 2));
+  const releasePayload = JSON.stringify(releaseMeta, null, 2);
+  await writeFileIfChanged(releaseFile, releasePayload);
 }
-console.log(`generated ${docs.length} docs into ${path.relative(process.cwd(), outputFile)}`);
+if (docsUpdated) {
+  console.log(`generated ${docs.length} docs into ${path.relative(process.cwd(), outputFile)}`);
+} else {
+  console.log(`docs unchanged (${docs.length} entries)`);
+}
