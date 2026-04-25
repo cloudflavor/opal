@@ -91,7 +91,7 @@ if [[ "${SUITE_NAME}" == "e2e-tests" ]]; then
   cargo test --workspace --tests --locked
 fi
 
-cargo build -p opal --bin opal --locked
+cargo build -p opal-cli --bin opal --locked
 
 export OPAL_BIN="${CARGO_TARGET_DIR}/debug/opal"
 export OPAL_TEST_SUITE="${SUITE_NAME}"

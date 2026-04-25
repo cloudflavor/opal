@@ -226,7 +226,7 @@ resolve_opal_bin() {
   for candidate in "${candidates[@]}"; do
     echo "!!   - ${candidate}" >&2
   done
-  echo "!! run 'cargo build -p opal --bin opal --locked' first, or set OPAL_BIN to a compiled binary path" >&2
+  echo "!! run 'cargo build -p opal-cli --bin opal --locked' first, or set OPAL_BIN to a compiled binary path" >&2
   return 1
 }
 
