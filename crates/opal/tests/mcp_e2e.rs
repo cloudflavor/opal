@@ -15,13 +15,14 @@ fn opal_mcp_subcommand_supports_initialize_and_tools() {
         "stages:\n  - test\n\nhello:\n  stage: test\n  script:\n    - echo hello\n",
     )
     .expect("write pipeline");
-    let opal_home = temp.join("opal-home");
-    fs::create_dir_all(&opal_home).expect("opal home");
+    let xdg_data_home = temp.join("xdg-data-home");
+    let opal_data_root = xdg_data_home.join("opal");
+    fs::create_dir_all(&opal_data_root).expect("opal data root");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_opal"))
         .arg("mcp")
         .current_dir(&temp)
-        .env("OPAL_HOME", &opal_home)
+        .env("XDG_DATA_HOME", &xdg_data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -108,13 +109,14 @@ fn opal_mcp_subcommand_supports_resources_and_background_run_status() {
         "stages:\n  - test\n\nhello:\n  stage: test\n  script:\n    - echo hello\n",
     )
     .expect("write pipeline");
-    let opal_home = temp.join("opal-home");
-    fs::create_dir_all(&opal_home).expect("opal home");
+    let xdg_data_home = temp.join("xdg-data-home");
+    let opal_data_root = xdg_data_home.join("opal");
+    fs::create_dir_all(&opal_data_root).expect("opal data root");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_opal"))
         .arg("mcp")
         .current_dir(&temp)
-        .env("OPAL_HOME", &opal_home)
+        .env("XDG_DATA_HOME", &xdg_data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -277,10 +279,11 @@ fn opal_mcp_subcommand_scopes_history_to_current_checkout() {
         "stages:\n  - test\n\nhello:\n  stage: test\n  script:\n    - echo hello\n",
     )
     .expect("write pipeline");
-    let opal_home = temp.join("opal-home");
-    fs::create_dir_all(&opal_home).expect("opal home");
+    let xdg_data_home = temp.join("xdg-data-home");
+    let opal_data_root = xdg_data_home.join("opal");
+    fs::create_dir_all(&opal_data_root).expect("opal data root");
     fs::write(
-        opal_home.join("history.json"),
+        opal_data_root.join("history.json"),
         serde_json::to_string_pretty(&json!([
             {
                 "run_id": "run-local",
@@ -308,7 +311,7 @@ fn opal_mcp_subcommand_scopes_history_to_current_checkout() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_opal"))
         .arg("mcp")
         .current_dir(&temp)
-        .env("OPAL_HOME", &opal_home)
+        .env("XDG_DATA_HOME", &xdg_data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -412,12 +415,13 @@ fn opal_mcp_subcommand_supports_background_log_search() {
         "stages:\n  - test\n\nhello:\n  stage: test\n  script:\n    - echo hello\n",
     )
     .expect("write pipeline");
-    let opal_home = temp.join("opal-home");
-    fs::create_dir_all(&opal_home).expect("opal home");
-    let log_path = opal_home.join("docs.log");
+    let xdg_data_home = temp.join("xdg-data-home");
+    let opal_data_root = xdg_data_home.join("opal");
+    fs::create_dir_all(&opal_data_root).expect("opal data root");
+    let log_path = opal_data_root.join("docs.log");
     fs::write(&log_path, "fatal: dependency missing\nall done\n").expect("write log");
     fs::write(
-        opal_home.join("history.json"),
+        opal_data_root.join("history.json"),
         serde_json::to_string_pretty(&json!([
             {
                 "run_id": "run-local",
@@ -452,7 +456,7 @@ fn opal_mcp_subcommand_supports_background_log_search() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_opal"))
         .arg("mcp")
         .current_dir(&temp)
-        .env("OPAL_HOME", &opal_home)
+        .env("XDG_DATA_HOME", &xdg_data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -578,12 +582,13 @@ fn opal_mcp_subcommand_supports_background_view_with_log_reads() {
         "stages:\n  - test\n\nhello:\n  stage: test\n  script:\n    - echo hello\n",
     )
     .expect("write pipeline");
-    let opal_home = temp.join("opal-home");
-    fs::create_dir_all(&opal_home).expect("opal home");
-    let log_path = opal_home.join("job.log");
+    let xdg_data_home = temp.join("xdg-data-home");
+    let opal_data_root = xdg_data_home.join("opal");
+    fs::create_dir_all(&opal_data_root).expect("opal data root");
+    let log_path = opal_data_root.join("job.log");
     fs::write(&log_path, "hello log\n").expect("write log");
     fs::write(
-        opal_home.join("history.json"),
+        opal_data_root.join("history.json"),
         serde_json::to_string_pretty(&json!([
             {
                 "run_id": "run-local",
@@ -618,7 +623,7 @@ fn opal_mcp_subcommand_supports_background_view_with_log_reads() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_opal"))
         .arg("mcp")
         .current_dir(&temp)
-        .env("OPAL_HOME", &opal_home)
+        .env("XDG_DATA_HOME", &xdg_data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

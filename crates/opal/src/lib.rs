@@ -178,7 +178,7 @@ pub struct RunArgs {
         long = "engine",
         default_value = "auto",
         possible_values = EngineChoice::VARIANTS,
-        help = "Container runtime to use (auto, container, docker, podman, nerdctl, orbstack). nerdctl is Linux-specific in Opal."
+        help = "Container/runtime engine to use (auto, container, docker, podman, nerdctl, orbstack, sandbox). nerdctl is Linux-specific in Opal."
     )]
     pub engine: EngineChoice,
 
@@ -386,6 +386,7 @@ pub enum EngineChoice {
     Podman,
     Nerdctl,
     Orbstack,
+    Sandbox,
 }
 
 impl EngineChoice {
@@ -396,6 +397,7 @@ impl EngineChoice {
         "podman",
         "nerdctl",
         "orbstack",
+        "sandbox",
     ];
 }
 
@@ -410,18 +412,20 @@ impl FromStr for EngineChoice {
             "podman" => Ok(Self::Podman),
             "nerdctl" => Ok(Self::Nerdctl),
             "orbstack" => Ok(Self::Orbstack),
+            "sandbox" => Ok(Self::Sandbox),
             other => Err(format!("unknown engine '{other}'")),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineKind {
     ContainerCli,
     Docker,
     Podman,
     Nerdctl,
     Orbstack,
+    Sandbox,
 }
 
 #[derive(Debug, Clone)]

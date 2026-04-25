@@ -3,8 +3,13 @@ use crate::EngineKind;
 use std::process::{Command, Stdio};
 use tracing::warn;
 
-pub(super) fn kill_container(exec: &ExecutorCore, job_name: &str, container_name: &str) {
-    let mut command = force_remove_container_command(exec.config.engine, container_name);
+pub(super) fn kill_container(
+    _exec: &ExecutorCore,
+    engine: EngineKind,
+    job_name: &str,
+    container_name: &str,
+) {
+    let mut command = force_remove_container_command(engine, container_name);
     if let Err(err) = command.status() {
         warn!(
             job = job_name,
@@ -15,8 +20,12 @@ pub(super) fn kill_container(exec: &ExecutorCore, job_name: &str, container_name
     }
 }
 
-pub(super) fn cleanup_finished_container(exec: &ExecutorCore, container_name: &str) {
-    let mut command = force_remove_container_command(exec.config.engine, container_name);
+pub(super) fn cleanup_finished_container(
+    _exec: &ExecutorCore,
+    engine: EngineKind,
+    container_name: &str,
+) {
+    let mut command = force_remove_container_command(engine, container_name);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let _ = command.status();
 }
@@ -34,15 +43,18 @@ fn container_binary(engine: EngineKind) -> &'static str {
         EngineKind::Docker | EngineKind::Orbstack => "docker",
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
+        EngineKind::Sandbox => "srt",
     }
 }
 
 fn force_remove_args(engine: EngineKind) -> [&'static str; 2] {
     match engine {
         EngineKind::ContainerCli => ["rm", "--force"],
-        EngineKind::Docker | EngineKind::Orbstack | EngineKind::Podman | EngineKind::Nerdctl => {
-            ["rm", "-f"]
-        }
+        EngineKind::Docker
+        | EngineKind::Orbstack
+        | EngineKind::Podman
+        | EngineKind::Nerdctl
+        | EngineKind::Sandbox => ["rm", "-f"],
     }
 }
 
@@ -61,6 +73,7 @@ mod tests {
         assert_eq!(force_remove_args(EngineKind::Orbstack), ["rm", "-f"]);
         assert_eq!(force_remove_args(EngineKind::Podman), ["rm", "-f"]);
         assert_eq!(force_remove_args(EngineKind::Nerdctl), ["rm", "-f"]);
+        assert_eq!(force_remove_args(EngineKind::Sandbox), ["rm", "-f"]);
     }
 
     #[test]
@@ -70,5 +83,6 @@ mod tests {
         assert_eq!(container_binary(EngineKind::Orbstack), "docker");
         assert_eq!(container_binary(EngineKind::Podman), "podman");
         assert_eq!(container_binary(EngineKind::Nerdctl), "nerdctl");
+        assert_eq!(container_binary(EngineKind::Sandbox), "srt");
     }
 }

@@ -132,6 +132,62 @@ main-job:
 }
 
 #[test]
+fn includes_local_fragment_ignores_unrelated_ci_project_dir() -> Result<()> {
+    let dir = tempdir()?;
+    let fragment_path = dir.path().join("fragment.yml");
+    fs::write(
+        &fragment_path,
+        r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+    )?;
+
+    let main_path = dir.path().join("main.yml");
+    fs::write(
+        &main_path,
+        r#"
+stages:
+  - build
+include:
+  - local: fragment.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+    )?;
+
+    let unrelated_dir = tempdir()?;
+    let pipeline = PipelineGraph::from_path_with_env(
+        &main_path,
+        HashMap::from([(
+            "CI_PROJECT_DIR".to_string(),
+            unrelated_dir.path().display().to_string(),
+        )]),
+        None,
+    )?;
+    assert_eq!(pipeline.stages.len(), 1);
+    assert_eq!(pipeline.stages[0].jobs.len(), 2);
+    assert!(
+        pipeline
+            .graph
+            .node_weights()
+            .any(|job| job.name == "fragment-job")
+    );
+    assert!(
+        pipeline
+            .graph
+            .node_weights()
+            .any(|job| job.name == "main-job")
+    );
+    Ok(())
+}
+
+#[test]
 fn includes_local_paths_from_repo_root() -> Result<()> {
     let dir = tempdir()?;
     git2::Repository::init(dir.path())?;
@@ -338,6 +394,63 @@ main-job:
     let pipeline = PipelineGraph::from_path(&main_path)?;
     assert!(pipeline.graph.node_weights().any(|job| job.name == "job-a"));
     assert!(pipeline.graph.node_weights().any(|job| job.name == "job-b"));
+    assert!(
+        pipeline
+            .graph
+            .node_weights()
+            .any(|job| job.name == "main-job")
+    );
+    Ok(())
+}
+
+#[test]
+fn includes_local_paths_from_ci_project_dir_when_no_git_repo() -> Result<()> {
+    let dir = tempdir()?;
+    let parts_dir = dir.path().join("parts");
+    fs::create_dir_all(&parts_dir)?;
+    fs::write(
+        parts_dir.join("fragment.yml"),
+        r#"
+fragment-job:
+  stage: build
+  script:
+    - echo fragment
+"#,
+    )?;
+
+    let pipelines_dir = dir.path().join("pipelines");
+    fs::create_dir_all(&pipelines_dir)?;
+    let main_path = pipelines_dir.join("main.yml");
+    fs::write(
+        &main_path,
+        r#"
+stages:
+  - build
+include:
+  - local: /parts/fragment.yml
+
+main-job:
+  stage: build
+  script:
+    - echo main
+"#,
+    )?;
+
+    let pipeline = PipelineGraph::from_path_with_env(
+        &main_path,
+        HashMap::from([(
+            "CI_PROJECT_DIR".to_string(),
+            dir.path().display().to_string(),
+        )]),
+        None,
+    )?;
+
+    assert!(
+        pipeline
+            .graph
+            .node_weights()
+            .any(|job| job.name == "fragment-job")
+    );
     assert!(
         pipeline
             .graph

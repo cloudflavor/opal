@@ -20,3 +20,6 @@ pub use orbstack::OrbstackExecutor;
 
 pub mod nerdctl;
 pub use nerdctl::NerdctlExecutor;
+
+pub mod sandbox;
+pub use sandbox::SandboxExecutor;

@@ -28,16 +28,21 @@ impl PodmanExecutor {
     }
 
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
-        PodmanCommandBuilder::new(ctx)
+        PodmanCommandBuilder::new(ctx, nested_podman_run())
             .with_workspace_volume()
             .with_volumes()
             .with_network()
             .with_platform()
             .with_image_options()
             .with_privileges()
+            .with_host_aliases()
             .with_env()
             .build()
     }
+}
+
+fn nested_podman_run() -> bool {
+    std::env::var("OPAL_IN_OPAL").is_ok_and(|value| value == "1")
 }
 
 struct PodmanCommandBuilder<'a> {
@@ -47,7 +52,7 @@ struct PodmanCommandBuilder<'a> {
 }
 
 impl<'a> PodmanCommandBuilder<'a> {
-    fn new(ctx: &'a EngineCommandContext<'a>) -> Self {
+    fn new(ctx: &'a EngineCommandContext<'a>, disable_cgroups: bool) -> Self {
         let workspace_mount = format!("{}:{}", ctx.workdir.display(), ctx.container_root.display());
         let mut command = Command::new("podman");
         command
@@ -58,6 +63,9 @@ impl<'a> PodmanCommandBuilder<'a> {
             .arg(ctx.container_name)
             .arg("--workdir")
             .arg(ctx.container_root);
+        if disable_cgroups {
+            command.arg("--cgroups=disabled");
+        }
         Self {
             ctx,
             command,
@@ -116,6 +124,13 @@ impl<'a> PodmanCommandBuilder<'a> {
         self
     }
 
+    fn with_host_aliases(mut self) -> Self {
+        for (host, ip) in self.ctx.host_aliases {
+            self.command.arg("--add-host").arg(format!("{host}:{ip}"));
+        }
+        self
+    }
+
     fn with_env(mut self) -> Self {
         for (key, value) in self.ctx.env_vars {
             self.command.arg("--env").arg(format!("{key}={value}"));
@@ -134,7 +149,7 @@ impl<'a> PodmanCommandBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::PodmanExecutor;
+    use super::{PodmanCommandBuilder, PodmanExecutor};
     use crate::engine::EngineCommandContext;
     use std::path::Path;
 
@@ -151,6 +166,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,
@@ -171,5 +187,47 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--platform", "linux/arm64/v8"])
         );
+    }
+
+    #[test]
+    fn build_command_disables_cgroups_for_nested_runs() {
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
+            mounts: &[],
+            env_vars: &[],
+            host_aliases: &[],
+            network: None,
+            preserve_runtime_objects: false,
+            arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = PodmanCommandBuilder::new(&ctx, true)
+            .with_workspace_volume()
+            .with_volumes()
+            .with_network()
+            .with_platform()
+            .with_image_options()
+            .with_privileges()
+            .with_host_aliases()
+            .with_env()
+            .build()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.iter().any(|arg| arg == "--cgroups=disabled"));
     }
 }

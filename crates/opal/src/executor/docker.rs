@@ -35,6 +35,7 @@ impl DockerExecutor {
             .with_platform()
             .with_image_options()
             .with_privileges()
+            .with_host_aliases()
             .with_env()
             .build()
     }
@@ -116,6 +117,13 @@ impl<'a> DockerCommandBuilder<'a> {
         self
     }
 
+    fn with_host_aliases(mut self) -> Self {
+        for (host, ip) in self.ctx.host_aliases {
+            self.command.arg("--add-host").arg(format!("{host}:{ip}"));
+        }
+        self
+    }
+
     fn with_env(mut self) -> Self {
         for (key, value) in self.ctx.env_vars {
             self.command.arg("--env").arg(format!("{key}={value}"));
@@ -157,6 +165,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &mounts,
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,
@@ -199,6 +208,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,
@@ -236,6 +246,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,
@@ -274,6 +285,7 @@ mod tests {
             image_entrypoint: &entrypoint,
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,
@@ -294,6 +306,43 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--entrypoint", "/bin/sh -lc"])
+        );
+    }
+
+    #[test]
+    fn build_command_includes_service_host_aliases() {
+        let host_aliases = vec![("dbserver".to_string(), "10.89.3.2".to_string())];
+        let ctx = EngineCommandContext {
+            workdir: Path::new("/workspace"),
+            container_root: Path::new("/builds/workspace"),
+            container_script: Path::new("/opal/script.sh"),
+            container_name: "opal-job",
+            image: "alpine:3.19",
+            image_platform: None,
+            image_user: None,
+            image_entrypoint: &[],
+            mounts: &[],
+            env_vars: &[],
+            host_aliases: &host_aliases,
+            network: None,
+            preserve_runtime_objects: false,
+            arch: None,
+            privileged: false,
+            cap_add: &[],
+            cap_drop: &[],
+            cpus: None,
+            memory: None,
+            dns: None,
+        };
+
+        let args: Vec<String> = DockerExecutor::build_command(&ctx)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--add-host", "dbserver:10.89.3.2"])
         );
     }
 }

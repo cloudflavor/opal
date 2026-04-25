@@ -1,3 +1,4 @@
+use crate::EngineKind;
 use crate::model::ArtifactSourceOutcome;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -5,10 +6,16 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Default)]
 pub(super) struct RuntimeState {
     job_attempts: Arc<Mutex<HashMap<String, usize>>>,
-    running_containers: Arc<Mutex<HashMap<String, String>>>,
+    running_containers: Arc<Mutex<HashMap<String, RunningContainer>>>,
     runtime_objects: Arc<Mutex<HashMap<String, RuntimeObjects>>>,
     cancelled_jobs: Arc<Mutex<HashSet<String>>>,
     completed_jobs: Arc<Mutex<HashMap<String, ArtifactSourceOutcome>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RunningContainer {
+    pub container_name: String,
+    pub engine: EngineKind,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -30,9 +37,20 @@ impl RuntimeState {
         *entry
     }
 
-    pub(super) fn track_running_container(&self, job_name: &str, container: &str) {
+    pub(super) fn track_running_container(
+        &self,
+        job_name: &str,
+        container: &str,
+        engine: EngineKind,
+    ) {
         if let Ok(mut map) = self.running_containers.lock() {
-            map.insert(job_name.to_string(), container.to_string());
+            map.insert(
+                job_name.to_string(),
+                RunningContainer {
+                    container_name: container.to_string(),
+                    engine,
+                },
+            );
         }
     }
 
@@ -42,7 +60,7 @@ impl RuntimeState {
         }
     }
 
-    pub(super) fn running_container(&self, job_name: &str) -> Option<String> {
+    pub(super) fn running_container(&self, job_name: &str) -> Option<RunningContainer> {
         let map = self.running_containers.lock().ok()?;
         map.get(job_name).cloned()
     }
@@ -104,6 +122,7 @@ impl RuntimeState {
 #[cfg(test)]
 mod tests {
     use super::RuntimeState;
+    use crate::EngineKind;
     use crate::model::ArtifactSourceOutcome;
 
     #[test]
@@ -113,9 +132,12 @@ mod tests {
         assert_eq!(state.next_attempt("build"), 1);
         assert_eq!(state.next_attempt("build"), 2);
 
-        state.track_running_container("build", "opal-build-01");
+        state.track_running_container("build", "opal-build-01", EngineKind::Docker);
         assert_eq!(
-            state.running_container("build").as_deref(),
+            state
+                .running_container("build")
+                .as_ref()
+                .map(|container| container.container_name.as_str()),
             Some("opal-build-01")
         );
 

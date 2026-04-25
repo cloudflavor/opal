@@ -1,5 +1,6 @@
 use crate::{EngineChoice, EngineKind, runtime};
 use anyhow::{Context, Result, anyhow};
+use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::env;
@@ -14,6 +15,7 @@ pub struct OpalConfig {
     #[serde(alias = "runner_bootstrap")]
     pub bootstrap: RunnerBootstrapConfig,
     pub container: Option<ContainerEngineConfig>,
+    pub sandbox: Option<SandboxEngineConfig>,
     pub env: BTreeMap<String, String>,
     pub jobs: Vec<JobOverrideConfig>,
     #[serde(alias = "engine")]
@@ -22,12 +24,50 @@ pub struct OpalConfig {
     pub registries: Vec<RegistryAuth>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone)]
 pub struct EngineSettings {
     pub default: Option<EngineChoice>,
     pub container: Option<ContainerEngineConfig>,
     pub preserve_runtime_objects: bool,
+    pub map_host_user: bool,
+    pub(crate) map_host_user_set: bool,
+}
+
+impl Default for EngineSettings {
+    fn default() -> Self {
+        Self {
+            default: None,
+            container: None,
+            preserve_runtime_objects: false,
+            map_host_user: true,
+            map_host_user_set: false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EngineSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct RawEngineSettings {
+            default: Option<EngineChoice>,
+            container: Option<ContainerEngineConfig>,
+            preserve_runtime_objects: bool,
+            map_host_user: Option<bool>,
+        }
+
+        let raw = RawEngineSettings::deserialize(deserializer)?;
+        Ok(Self {
+            default: raw.default,
+            container: raw.container,
+            preserve_runtime_objects: raw.preserve_runtime_objects,
+            map_host_user: raw.map_host_user.unwrap_or(true),
+            map_host_user_set: raw.map_host_user.is_some(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -199,8 +239,42 @@ pub struct ContainerEngineConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
+pub struct SandboxEngineConfig {
+    pub settings: Option<String>,
+    pub debug: Option<bool>,
+    pub allowed_domains: Vec<String>,
+    pub denied_domains: Vec<String>,
+    pub allow_unix_sockets: Vec<String>,
+    pub allow_all_unix_sockets: Option<bool>,
+    pub allow_local_binding: Option<bool>,
+    pub deny_read: Vec<String>,
+    pub allow_read: Vec<String>,
+    pub allow_write: Vec<String>,
+    pub deny_write: Vec<String>,
+    pub ignore_violations: BTreeMap<String, Vec<String>>,
+    pub enable_weaker_nested_sandbox: Option<bool>,
+    pub mandatory_deny_search_depth: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct JobOverrideConfig {
     pub name: String,
+    pub engine: Option<EngineChoice>,
+    pub sandbox_settings: Option<String>,
+    pub sandbox_debug: Option<bool>,
+    pub sandbox_allowed_domains: Vec<String>,
+    pub sandbox_denied_domains: Vec<String>,
+    pub sandbox_allow_unix_sockets: Vec<String>,
+    pub sandbox_allow_all_unix_sockets: Option<bool>,
+    pub sandbox_allow_local_binding: Option<bool>,
+    pub sandbox_deny_read: Vec<String>,
+    pub sandbox_allow_read: Vec<String>,
+    pub sandbox_allow_write: Vec<String>,
+    pub sandbox_deny_write: Vec<String>,
+    pub sandbox_ignore_violations: BTreeMap<String, Vec<String>>,
+    pub sandbox_enable_weaker_nested_sandbox: Option<bool>,
+    pub sandbox_mandatory_deny_search_depth: Option<u64>,
     pub arch: Option<String>,
     pub privileged: Option<bool>,
     pub cap_add: Vec<String>,
@@ -209,6 +283,21 @@ pub struct JobOverrideConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedJobOverride {
+    pub engine: Option<EngineChoice>,
+    pub sandbox_settings: Option<String>,
+    pub sandbox_debug: Option<bool>,
+    pub sandbox_allowed_domains: Vec<String>,
+    pub sandbox_denied_domains: Vec<String>,
+    pub sandbox_allow_unix_sockets: Vec<String>,
+    pub sandbox_allow_all_unix_sockets: Option<bool>,
+    pub sandbox_allow_local_binding: Option<bool>,
+    pub sandbox_deny_read: Vec<String>,
+    pub sandbox_allow_read: Vec<String>,
+    pub sandbox_allow_write: Vec<String>,
+    pub sandbox_deny_write: Vec<String>,
+    pub sandbox_ignore_violations: BTreeMap<String, Vec<String>>,
+    pub sandbox_enable_weaker_nested_sandbox: Option<bool>,
+    pub sandbox_mandatory_deny_search_depth: Option<u64>,
     pub arch: Option<String>,
     pub privileged: Option<bool>,
     pub cap_add: Vec<String>,
@@ -237,6 +326,7 @@ pub struct ResolvedRegistryAuth {
 impl OpalConfig {
     pub fn load(workdir: &Path) -> Result<Self> {
         let mut merged = OpalConfig::default();
+        let project_config_path = workdir.join(".opal").join("config.toml");
         for path in runtime::config_dirs(workdir) {
             if path.exists() {
                 let contents = fs::read_to_string(&path)
@@ -244,7 +334,7 @@ impl OpalConfig {
                 let mut parsed: OpalConfig = toml::from_str(&contents)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
                 parsed.resolve_relative_paths(&path);
-                merged.merge(parsed);
+                merged.merge_from_source(parsed, path == project_config_path);
             }
         }
         Ok(merged)
@@ -252,6 +342,7 @@ impl OpalConfig {
 
     pub async fn load_async(workdir: &Path) -> Result<Self> {
         let mut merged = OpalConfig::default();
+        let project_config_path = workdir.join(".opal").join("config.toml");
         for path in runtime::config_dirs(workdir) {
             let contents = match tokio::fs::read_to_string(&path).await {
                 Ok(contents) => contents,
@@ -263,7 +354,7 @@ impl OpalConfig {
             let mut parsed: OpalConfig = toml::from_str(&contents)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             parsed.resolve_relative_paths(&path);
-            merged.merge(parsed);
+            merged.merge_from_source(parsed, path == project_config_path);
         }
         Ok(merged)
     }
@@ -279,8 +370,16 @@ impl OpalConfig {
         self.engines.default
     }
 
+    pub fn sandbox_settings(&self) -> Option<&SandboxEngineConfig> {
+        self.sandbox.as_ref()
+    }
+
     pub fn preserve_runtime_objects(&self) -> bool {
         self.engines.preserve_runtime_objects
+    }
+
+    pub fn map_host_user(&self) -> bool {
+        self.engines.map_host_user
     }
 
     pub fn ai_settings(&self) -> &AiSettingsConfig {
@@ -321,6 +420,51 @@ impl OpalConfig {
             if let Some(value) = &entry.arch {
                 resolved.arch = Some(value.clone());
             }
+            if let Some(value) = entry.engine {
+                resolved.engine = Some(value);
+            }
+            if let Some(value) = &entry.sandbox_settings {
+                resolved.sandbox_settings = Some(value.clone());
+            }
+            if let Some(value) = entry.sandbox_debug {
+                resolved.sandbox_debug = Some(value);
+            }
+            if !entry.sandbox_allowed_domains.is_empty() {
+                resolved.sandbox_allowed_domains = entry.sandbox_allowed_domains.clone();
+            }
+            if !entry.sandbox_denied_domains.is_empty() {
+                resolved.sandbox_denied_domains = entry.sandbox_denied_domains.clone();
+            }
+            if !entry.sandbox_allow_unix_sockets.is_empty() {
+                resolved.sandbox_allow_unix_sockets = entry.sandbox_allow_unix_sockets.clone();
+            }
+            if let Some(value) = entry.sandbox_allow_all_unix_sockets {
+                resolved.sandbox_allow_all_unix_sockets = Some(value);
+            }
+            if let Some(value) = entry.sandbox_allow_local_binding {
+                resolved.sandbox_allow_local_binding = Some(value);
+            }
+            if !entry.sandbox_deny_read.is_empty() {
+                resolved.sandbox_deny_read = entry.sandbox_deny_read.clone();
+            }
+            if !entry.sandbox_allow_read.is_empty() {
+                resolved.sandbox_allow_read = entry.sandbox_allow_read.clone();
+            }
+            if !entry.sandbox_allow_write.is_empty() {
+                resolved.sandbox_allow_write = entry.sandbox_allow_write.clone();
+            }
+            if !entry.sandbox_deny_write.is_empty() {
+                resolved.sandbox_deny_write = entry.sandbox_deny_write.clone();
+            }
+            if !entry.sandbox_ignore_violations.is_empty() {
+                resolved.sandbox_ignore_violations = entry.sandbox_ignore_violations.clone();
+            }
+            if let Some(value) = entry.sandbox_enable_weaker_nested_sandbox {
+                resolved.sandbox_enable_weaker_nested_sandbox = Some(value);
+            }
+            if let Some(value) = entry.sandbox_mandatory_deny_search_depth {
+                resolved.sandbox_mandatory_deny_search_depth = Some(value);
+            }
             if let Some(value) = entry.privileged {
                 resolved.privileged = Some(value);
             }
@@ -343,15 +487,34 @@ impl OpalConfig {
                 slot @ None => *slot = Some(new_container),
             }
         }
+        if let Some(new_sandbox) = other.sandbox.take() {
+            match &mut self.sandbox {
+                Some(existing) => existing.merge(new_sandbox),
+                slot @ None => *slot = Some(new_sandbox),
+            }
+        }
         self.env.extend(other.env);
         self.engines.merge(other.engines);
         self.jobs.extend(other.jobs);
         self.registries.extend(other.registries);
     }
 
+    fn merge_from_source(&mut self, other: OpalConfig, replace_job_overrides: bool) {
+        if replace_job_overrides {
+            self.jobs.clear();
+        }
+        self.merge(other);
+    }
+
     fn resolve_relative_paths(&mut self, config_path: &Path) {
         self.ai.prompts.resolve_relative_paths(config_path);
         self.bootstrap.resolve_relative_paths(config_path);
+        if let Some(sandbox) = &mut self.sandbox {
+            sandbox.resolve_relative_paths(config_path);
+        }
+        for job in &mut self.jobs {
+            job.resolve_relative_paths(config_path);
+        }
     }
 }
 
@@ -461,11 +624,46 @@ impl AiPromptConfig {
 }
 
 fn resolve_path_string(base_dir: &Path, value: &str) -> String {
+    if let Some(expanded) = expand_home_prefix(value) {
+        return expanded.display().to_string();
+    }
     let path = PathBuf::from(value);
     if path.is_absolute() {
         path.display().to_string()
     } else {
         base_dir.join(path).display().to_string()
+    }
+}
+
+fn current_home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(home_dir)
+}
+
+fn expand_home_prefix(value: &str) -> Option<PathBuf> {
+    let home = current_home_dir()?;
+    if value == "~" {
+        return Some(home);
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return Some(home.join(rest));
+    }
+    None
+}
+
+fn expand_home_entries(values: &mut Vec<String>) {
+    for entry in values {
+        if let Some(expanded) = expand_home_prefix(entry) {
+            *entry = expanded.display().to_string();
+        }
+    }
+}
+
+fn expand_home_ignore_violations(map: &mut BTreeMap<String, Vec<String>>) {
+    for paths in map.values_mut() {
+        expand_home_entries(paths);
     }
 }
 
@@ -490,6 +688,10 @@ impl EngineSettings {
         }
         self.preserve_runtime_objects =
             self.preserve_runtime_objects || other.preserve_runtime_objects;
+        if other.map_host_user_set {
+            self.map_host_user = other.map_host_user;
+            self.map_host_user_set = true;
+        }
         if let Some(new_container) = other.container {
             match &mut self.container {
                 Some(existing) => existing.merge(new_container),
@@ -519,6 +721,83 @@ impl ContainerEngineConfig {
         if let Some(value) = dns {
             self.dns = Some(value);
         }
+    }
+}
+
+impl SandboxEngineConfig {
+    fn merge(&mut self, other: SandboxEngineConfig) {
+        if let Some(value) = other.settings {
+            self.settings = Some(value);
+        }
+        if let Some(value) = other.debug {
+            self.debug = Some(value);
+        }
+        if !other.allowed_domains.is_empty() {
+            self.allowed_domains = other.allowed_domains;
+        }
+        if !other.denied_domains.is_empty() {
+            self.denied_domains = other.denied_domains;
+        }
+        if !other.allow_unix_sockets.is_empty() {
+            self.allow_unix_sockets = other.allow_unix_sockets;
+        }
+        if let Some(value) = other.allow_all_unix_sockets {
+            self.allow_all_unix_sockets = Some(value);
+        }
+        if let Some(value) = other.allow_local_binding {
+            self.allow_local_binding = Some(value);
+        }
+        if !other.deny_read.is_empty() {
+            self.deny_read = other.deny_read;
+        }
+        if !other.allow_read.is_empty() {
+            self.allow_read = other.allow_read;
+        }
+        if !other.allow_write.is_empty() {
+            self.allow_write = other.allow_write;
+        }
+        if !other.deny_write.is_empty() {
+            self.deny_write = other.deny_write;
+        }
+        if !other.ignore_violations.is_empty() {
+            self.ignore_violations = other.ignore_violations;
+        }
+        if let Some(value) = other.enable_weaker_nested_sandbox {
+            self.enable_weaker_nested_sandbox = Some(value);
+        }
+        if let Some(value) = other.mandatory_deny_search_depth {
+            self.mandatory_deny_search_depth = Some(value);
+        }
+    }
+
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        if let Some(path) = &self.settings
+            && let Some(base_dir) = config_path.parent()
+        {
+            self.settings = Some(resolve_path_string(base_dir, path));
+        }
+        expand_home_entries(&mut self.allow_unix_sockets);
+        expand_home_entries(&mut self.deny_read);
+        expand_home_entries(&mut self.allow_read);
+        expand_home_entries(&mut self.allow_write);
+        expand_home_entries(&mut self.deny_write);
+        expand_home_ignore_violations(&mut self.ignore_violations);
+    }
+}
+
+impl JobOverrideConfig {
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        if let Some(path) = &self.sandbox_settings
+            && let Some(base_dir) = config_path.parent()
+        {
+            self.sandbox_settings = Some(resolve_path_string(base_dir, path));
+        }
+        expand_home_entries(&mut self.sandbox_allow_unix_sockets);
+        expand_home_entries(&mut self.sandbox_deny_read);
+        expand_home_entries(&mut self.sandbox_allow_read);
+        expand_home_entries(&mut self.sandbox_allow_write);
+        expand_home_entries(&mut self.sandbox_deny_write);
+        expand_home_ignore_violations(&mut self.sandbox_ignore_violations);
     }
 }
 
@@ -565,6 +844,7 @@ fn engine_name(engine: EngineKind) -> &'static str {
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
         EngineKind::Orbstack => "orbstack",
+        EngineKind::Sandbox => "sandbox",
     }
 }
 
@@ -613,6 +893,21 @@ mod tests {
             jobs: vec![
                 JobOverrideConfig {
                     name: "deploy".into(),
+                    engine: Some(crate::EngineChoice::Docker),
+                    sandbox_settings: None,
+                    sandbox_debug: None,
+                    sandbox_allowed_domains: Vec::new(),
+                    sandbox_denied_domains: Vec::new(),
+                    sandbox_allow_unix_sockets: Vec::new(),
+                    sandbox_allow_all_unix_sockets: None,
+                    sandbox_allow_local_binding: None,
+                    sandbox_deny_read: Vec::new(),
+                    sandbox_allow_read: Vec::new(),
+                    sandbox_allow_write: Vec::new(),
+                    sandbox_deny_write: Vec::new(),
+                    sandbox_ignore_violations: BTreeMap::new(),
+                    sandbox_enable_weaker_nested_sandbox: None,
+                    sandbox_mandatory_deny_search_depth: None,
                     arch: Some("arm64".into()),
                     privileged: Some(false),
                     cap_add: Vec::new(),
@@ -620,6 +915,21 @@ mod tests {
                 },
                 JobOverrideConfig {
                     name: "deploy".into(),
+                    engine: Some(crate::EngineChoice::Sandbox),
+                    sandbox_settings: None,
+                    sandbox_debug: None,
+                    sandbox_allowed_domains: Vec::new(),
+                    sandbox_denied_domains: Vec::new(),
+                    sandbox_allow_unix_sockets: Vec::new(),
+                    sandbox_allow_all_unix_sockets: None,
+                    sandbox_allow_local_binding: None,
+                    sandbox_deny_read: Vec::new(),
+                    sandbox_allow_read: Vec::new(),
+                    sandbox_allow_write: Vec::new(),
+                    sandbox_deny_write: Vec::new(),
+                    sandbox_ignore_violations: BTreeMap::new(),
+                    sandbox_enable_weaker_nested_sandbox: None,
+                    sandbox_mandatory_deny_search_depth: None,
                     arch: None,
                     privileged: Some(true),
                     cap_add: vec!["NET_ADMIN".into()],
@@ -630,6 +940,7 @@ mod tests {
         };
 
         let resolved = config.job_override_for("deploy").expect("override present");
+        assert_eq!(resolved.engine, Some(crate::EngineChoice::Sandbox));
         assert_eq!(resolved.arch.as_deref(), Some("arm64"));
         assert_eq!(resolved.privileged, Some(true));
         assert_eq!(resolved.cap_add, vec!["NET_ADMIN"]);
@@ -650,7 +961,7 @@ default = "docker"
     }
 
     #[test]
-    fn project_level_engine_default_overrides_global() {
+    fn project_engine_default_overrides_global() {
         let mut base = OpalConfig::default();
         base.merge(
             toml::from_str(
@@ -672,6 +983,55 @@ default = "container"
         );
 
         assert_eq!(base.default_engine(), Some(crate::EngineChoice::Container));
+    }
+
+    #[test]
+    fn project_jobs_replace_global_job_overrides() {
+        let mut base = OpalConfig::default();
+        base.merge_from_source(
+            toml::from_str(
+                r#"
+[[jobs]]
+name = "e2e-services"
+engine = "sandbox"
+"#,
+            )
+            .expect("parse global config"),
+            false,
+        );
+        assert_eq!(
+            base.job_override_for("e2e-services")
+                .and_then(|override_cfg| override_cfg.engine),
+            Some(crate::EngineChoice::Sandbox)
+        );
+
+        base.merge_from_source(
+            toml::from_str(
+                r#"
+[[jobs]]
+name = "extended-tests"
+engine = "sandbox"
+
+[[jobs]]
+name = "e2e-tests"
+engine = "sandbox"
+"#,
+            )
+            .expect("parse project config"),
+            true,
+        );
+
+        assert!(base.job_override_for("e2e-services").is_none());
+        assert_eq!(
+            base.job_override_for("extended-tests")
+                .and_then(|override_cfg| override_cfg.engine),
+            Some(crate::EngineChoice::Sandbox)
+        );
+        assert_eq!(
+            base.job_override_for("e2e-tests")
+                .and_then(|override_cfg| override_cfg.engine),
+            Some(crate::EngineChoice::Sandbox)
+        );
     }
 
     #[test]
@@ -702,7 +1062,7 @@ INIT_SCRIPT = "/opal/bootstrap/init.sh"
     }
 
     #[test]
-    fn project_level_env_overrides_global_values() {
+    fn project_env_overrides_global_values() {
         let mut base = OpalConfig {
             env: BTreeMap::from([
                 ("RUNNER_BOOTSTRAP".into(), "global".into()),
@@ -842,6 +1202,62 @@ preserve_runtime_objects = true
     }
 
     #[test]
+    fn parses_map_host_user_from_engine_table() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[engine]
+map_host_user = true
+"#,
+        )
+        .expect("parse config");
+
+        assert!(parsed.map_host_user());
+    }
+
+    #[test]
+    fn map_host_user_defaults_to_true() {
+        assert!(OpalConfig::default().map_host_user());
+    }
+
+    #[test]
+    fn parses_map_host_user_false_from_engine_table() {
+        let parsed: OpalConfig = toml::from_str(
+            r#"
+[engine]
+map_host_user = false
+"#,
+        )
+        .expect("parse config");
+
+        assert!(!parsed.map_host_user());
+    }
+
+    #[test]
+    fn project_map_host_user_setting_overrides_global() {
+        let mut base = OpalConfig::default();
+        base.merge(
+            toml::from_str(
+                r#"
+[engine]
+map_host_user = true
+"#,
+            )
+            .expect("parse global config"),
+        );
+        base.merge(
+            toml::from_str(
+                r#"
+[engine]
+map_host_user = false
+"#,
+            )
+            .expect("parse project config"),
+        );
+
+        assert!(!base.map_host_user());
+    }
+
+    #[test]
     fn ai_settings_default_to_ollama_friendly_values() {
         let settings = OpalConfig::default();
         assert_eq!(settings.ai.tail_lines, 200);
@@ -875,6 +1291,101 @@ job_analysis_file = "prompts/ai/job-analysis.md"
             parsed.ai.prompts.job_analysis_file.as_deref(),
             Some("/tmp/project/.opal/prompts/ai/job-analysis.md")
         );
+    }
+
+    #[test]
+    fn sandbox_paths_expand_home_prefixes() {
+        let prior_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", "/tmp/opal-home");
+        }
+
+        let mut parsed: OpalConfig = toml::from_str(
+            r#"
+[sandbox]
+allow_all_unix_sockets = true
+allow_unix_sockets = ["~/.docker/run/docker.sock"]
+deny_read = ["~/.ssh"]
+allow_read = ["~/.ssh/known_hosts"]
+allow_write = ["~/.local/share/opal"]
+deny_write = ["~/.env"]
+ignore_violations = { "*" = ["~/.cache/opal"] }
+
+[[jobs]]
+name = "extended-tests"
+sandbox_allow_all_unix_sockets = false
+sandbox_allow_unix_sockets = ["~/.containerd-rootless/grpc.sock"]
+sandbox_deny_read = ["~/.gitconfig"]
+sandbox_allow_read = ["~/.ssh/known_hosts"]
+sandbox_allow_write = ["~/.local/share/opal"]
+sandbox_deny_write = ["~/.env"]
+sandbox_ignore_violations = { "*" = ["~/.cache/opal"] }
+"#,
+        )
+        .expect("parse config");
+
+        parsed.resolve_relative_paths(Path::new("/tmp/project/.opal/config.toml"));
+
+        let sandbox = parsed.sandbox_settings().expect("sandbox settings");
+        assert_eq!(
+            sandbox.allow_unix_sockets,
+            vec!["/tmp/opal-home/.docker/run/docker.sock"]
+        );
+        assert_eq!(sandbox.allow_all_unix_sockets, Some(true));
+        assert_eq!(sandbox.deny_read, vec!["/tmp/opal-home/.ssh"]);
+        assert_eq!(sandbox.allow_read, vec!["/tmp/opal-home/.ssh/known_hosts"]);
+        assert_eq!(
+            sandbox.allow_write,
+            vec!["/tmp/opal-home/.local/share/opal"]
+        );
+        assert_eq!(sandbox.deny_write, vec!["/tmp/opal-home/.env"]);
+        assert_eq!(
+            sandbox
+                .ignore_violations
+                .get("*")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["/tmp/opal-home/.cache/opal"]
+        );
+
+        let override_cfg = parsed
+            .job_override_for("extended-tests")
+            .expect("job override present");
+        assert_eq!(
+            override_cfg.sandbox_allow_unix_sockets,
+            vec!["/tmp/opal-home/.containerd-rootless/grpc.sock"]
+        );
+        assert_eq!(override_cfg.sandbox_allow_all_unix_sockets, Some(false));
+        assert_eq!(
+            override_cfg.sandbox_deny_read,
+            vec!["/tmp/opal-home/.gitconfig"]
+        );
+        assert_eq!(
+            override_cfg.sandbox_allow_read,
+            vec!["/tmp/opal-home/.ssh/known_hosts"]
+        );
+        assert_eq!(
+            override_cfg.sandbox_allow_write,
+            vec!["/tmp/opal-home/.local/share/opal"]
+        );
+        assert_eq!(override_cfg.sandbox_deny_write, vec!["/tmp/opal-home/.env"]);
+        assert_eq!(
+            override_cfg
+                .sandbox_ignore_violations
+                .get("*")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["/tmp/opal-home/.cache/opal"]
+        );
+
+        match prior_home {
+            Some(value) => unsafe {
+                env::set_var("HOME", value);
+            },
+            None => unsafe {
+                env::remove_var("HOME");
+            },
+        }
     }
 
     #[test]

@@ -4,24 +4,25 @@ use crate::display;
 use crate::engine::EngineCommandContext;
 use crate::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
+    SandboxExecutor,
 };
 use crate::logging::{self, LogFormatter, sanitize_fragments};
 use crate::runner::ExecuteContext;
-use crate::terminal::stream_lines;
 use crate::ui::UiBridge;
 use anyhow::{Context, Result, anyhow};
 use owo_colors::OwoColorize;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
-use std::process::Child;
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Child;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
 
-pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()> {
+pub(super) async fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()> {
     let ExecuteContext {
         host_workdir,
         script_path,
@@ -32,15 +33,19 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         image_user,
         image_entrypoint,
         container_name,
+        engine,
         job,
         ui,
         env_vars,
+        host_aliases,
         network,
         preserve_runtime_objects,
         arch,
         privileged,
         cap_add,
         cap_drop,
+        sandbox_settings,
+        sandbox_debug,
     } = ctx;
     if exec.live_console_output_enabled() {
         let display = exec.display();
@@ -50,7 +55,11 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         display::print_line(format!("{} {}", log_label, log_path.display()));
     }
 
-    let container_script = exec.container_path_rel(script_path)?;
+    let container_script = if matches!(engine, EngineKind::Sandbox) {
+        script_path.to_path_buf()
+    } else {
+        exec.container_path_rel(script_path)?
+    };
     if exec.verbose_scripts && exec.live_console_output_enabled() {
         let display = exec.display();
         let script_label = display.bold_yellow("    script file:");
@@ -69,6 +78,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         image_entrypoint,
         mounts,
         env_vars,
+        host_aliases,
         network,
         preserve_runtime_objects,
         privileged,
@@ -80,7 +90,7 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         dns: container_cfg.and_then(|cfg| cfg.dns.as_deref()),
     };
 
-    if let Err(err) = validate_engine_security_options(exec.config.engine, &command_ctx) {
+    if let Err(err) = validate_engine_security_options(engine, &command_ctx) {
         let _ = exec.append_job_diagnostics(
             log_path,
             [format!(
@@ -90,7 +100,14 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         return Err(err);
     }
 
-    let mut proc = spawn_container_process(exec, &command_ctx, log_path)?;
+    let mut proc = spawn_container_process(
+        exec,
+        engine,
+        &command_ctx,
+        sandbox_settings,
+        sandbox_debug,
+        log_path,
+    )?;
     let output_line_count = capture_output(
         proc.stdout
             .take()
@@ -103,9 +120,10 @@ pub(super) fn execute(exec: &ExecutorCore, ctx: ExecuteContext<'_>) -> Result<()
         ui,
         exec.live_console_output_enabled(),
         &LogFormatter::new(exec.use_color).with_secrets(&exec.secrets),
-    )?;
+    )
+    .await?;
 
-    let status = proc.wait()?;
+    let status = proc.wait().await?;
     if !status.success() {
         if output_line_count == 0 {
             let _ = exec.append_job_diagnostics(
@@ -144,29 +162,41 @@ fn validate_engine_security_options(
             "the Apple 'container' engine does not support privileged mode or capability flags"
         ));
     }
+    if matches!(engine, EngineKind::Sandbox)
+        && (ctx.privileged || !ctx.cap_add.is_empty() || !ctx.cap_drop.is_empty())
+    {
+        return Err(anyhow!(
+            "the sandbox engine does not support privileged mode or capability flags"
+        ));
+    }
     Ok(())
 }
 
 fn spawn_container_process(
     exec: &ExecutorCore,
+    engine: EngineKind,
     ctx: &EngineCommandContext<'_>,
+    sandbox_settings: Option<&Path>,
+    sandbox_debug: bool,
     log_path: &Path,
 ) -> Result<Child> {
-    let mut command = match exec.config.engine {
+    let command = match engine {
         EngineKind::ContainerCli => ContainerExecutor::build_command(ctx),
         EngineKind::Docker => DockerExecutor::build_command(ctx),
         EngineKind::Podman => PodmanExecutor::build_command(ctx),
         EngineKind::Nerdctl => NerdctlExecutor::build_command(ctx),
         EngineKind::Orbstack => OrbstackExecutor::build_command(ctx),
+        EngineKind::Sandbox => SandboxExecutor::build_command(ctx, sandbox_settings, sandbox_debug),
     };
     let command_line = describe_command(&command);
     debug!(
-        engine = ?exec.config.engine,
+        engine = ?engine,
         command = %command_line,
         "running job container command"
     );
+    let mut tokio_command: tokio::process::Command = command.into();
 
-    match command.spawn() {
+    match tokio_command.spawn() {
         Ok(child) => Ok(child),
         Err(err) => {
             let _ = exec.append_job_diagnostics(
@@ -176,12 +206,8 @@ fn spawn_container_process(
                     format!("failed to start job container: {err}"),
                 ],
             );
-            Err(err).with_context(|| {
-                format!(
-                    "failed to run {:?} command: {}",
-                    exec.config.engine, command_line
-                )
-            })
+            Err(err)
+                .with_context(|| format!("failed to run {:?} command: {}", engine, command_line))
         }
     }
 }
@@ -199,9 +225,9 @@ fn describe_command(command: &std::process::Command) -> String {
     }
 }
 
-fn capture_output(
-    stdout: impl Read + Send + 'static,
-    stderr: impl Read + Send + 'static,
+async fn capture_output(
+    stdout: impl AsyncRead + Unpin + Send + 'static,
+    stderr: impl AsyncRead + Unpin + Send + 'static,
     job_name: &str,
     log_path: &Path,
     ui: Option<&UiBridge>,
@@ -214,7 +240,13 @@ fn capture_output(
     let mut display_line_no = 1usize;
     let mut emitted = 0usize;
 
-    stream_lines(stdout, stderr, |line| {
+    let (tx, mut rx) = mpsc::unbounded_channel::<std::result::Result<String, std::io::Error>>();
+    tokio::spawn(read_stream_lines(stdout, tx.clone()));
+    tokio::spawn(read_stream_lines(stderr, tx.clone()));
+    drop(tx);
+
+    while let Some(line) = rx.recv().await {
+        let line = line?;
         let timestamp = OffsetDateTime::now_utc()
             .format(TIMESTAMP_FORMAT)
             .unwrap_or_else(|_| "??????????".to_string());
@@ -236,10 +268,70 @@ fn capture_output(
             display_line_no += 1;
             emitted += 1;
         }
-        Ok(())
-    })?;
+    }
 
     Ok(emitted)
+}
+
+async fn read_stream_lines<R>(
+    mut reader: R,
+    tx: mpsc::UnboundedSender<std::result::Result<String, std::io::Error>>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let mut chunk = [0u8; 4096];
+    let mut buf = Vec::new();
+    let mut skip_lf = false;
+
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => {
+                let _ = emit_fragment(&tx, &mut buf);
+                break;
+            }
+            Ok(read) => {
+                for &byte in &chunk[..read] {
+                    if skip_lf {
+                        skip_lf = false;
+                        if byte == b'\n' {
+                            continue;
+                        }
+                    }
+
+                    match byte {
+                        b'\r' => {
+                            if !emit_fragment(&tx, &mut buf) {
+                                return;
+                            }
+                            skip_lf = true;
+                        }
+                        b'\n' => {
+                            if !emit_fragment(&tx, &mut buf) {
+                                return;
+                            }
+                        }
+                        _ => buf.push(byte),
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = tx.send(Err(err));
+                break;
+            }
+        }
+    }
+}
+
+fn emit_fragment(
+    tx: &mpsc::UnboundedSender<std::result::Result<String, std::io::Error>>,
+    buf: &mut Vec<u8>,
+) -> bool {
+    if buf.is_empty() {
+        return true;
+    }
+    let line = String::from_utf8_lossy(buf).into_owned();
+    buf.clear();
+    tx.send(Ok(line)).is_ok()
 }
 
 fn format_console_stream_line(
@@ -275,6 +367,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::runtime::Builder;
 
     #[test]
     fn capture_output_masks_secret_values_in_log_file() {
@@ -286,16 +379,21 @@ mod tests {
         let formatter = LogFormatter::new(false).with_secrets(&secrets);
         let log_path = temp_root.join("job.log");
 
-        let emitted = capture_output(
-            Cursor::new(b"stdout hello\n".to_vec()),
-            Cursor::new(b"token=super-secret\n".to_vec()),
-            "job",
-            &log_path,
-            None,
-            true,
-            &formatter,
-        )
-        .expect("capture output");
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let emitted = runtime
+            .block_on(capture_output(
+                Cursor::new(b"stdout hello\n".to_vec()),
+                Cursor::new(b"token=super-secret\n".to_vec()),
+                "job",
+                &log_path,
+                None,
+                true,
+                &formatter,
+            ))
+            .expect("capture output");
         assert_eq!(emitted, 2);
 
         let contents = fs::read_to_string(&log_path).expect("read log");
@@ -313,16 +411,21 @@ mod tests {
         let formatter = LogFormatter::new(false);
         let log_path = temp_root.join("job.log");
 
-        let emitted = capture_output(
-            Cursor::new(Vec::<u8>::new()),
-            Cursor::new(Vec::<u8>::new()),
-            "job",
-            &log_path,
-            None,
-            true,
-            &formatter,
-        )
-        .expect("capture output");
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let emitted = runtime
+            .block_on(capture_output(
+                Cursor::new(Vec::<u8>::new()),
+                Cursor::new(Vec::<u8>::new()),
+                "job",
+                &log_path,
+                None,
+                true,
+                &formatter,
+            ))
+            .expect("capture output");
         assert_eq!(emitted, 0);
 
         let _ = fs::remove_dir_all(temp_root);
@@ -350,6 +453,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,

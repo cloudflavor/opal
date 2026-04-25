@@ -35,6 +35,7 @@ impl NerdctlExecutor {
             .with_platform()
             .with_image_options()
             .with_privileges()
+            .with_host_aliases()
             .with_env()
             .build()
     }
@@ -116,6 +117,13 @@ impl<'a> NerdctlCommandBuilder<'a> {
         self
     }
 
+    fn with_host_aliases(mut self) -> Self {
+        for (host, ip) in self.ctx.host_aliases {
+            self.command.arg("--add-host").arg(format!("{host}:{ip}"));
+        }
+        self
+    }
+
     fn with_env(mut self) -> Self {
         for (key, value) in self.ctx.env_vars {
             self.command.arg("--env").arg(format!("{key}={value}"));
@@ -151,6 +159,7 @@ mod tests {
             image_entrypoint: &[],
             mounts: &[],
             env_vars: &[],
+            host_aliases: &[],
             network: None,
             preserve_runtime_objects: false,
             arch: None,

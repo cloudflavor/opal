@@ -1,3 +1,4 @@
+use crate::EngineKind;
 use crate::model::JobSpec;
 use crate::pipeline::VolumeMount;
 use crate::ui::UiBridge;
@@ -13,13 +14,17 @@ pub struct ExecuteContext<'a> {
     pub image_user: Option<&'a str>,
     pub image_entrypoint: &'a [String],
     pub container_name: &'a str,
+    pub engine: EngineKind,
     pub job: &'a JobSpec,
     pub ui: Option<&'a UiBridge>,
     pub env_vars: &'a [(String, String)],
+    pub host_aliases: &'a [(String, String)],
     pub network: Option<&'a str>,
     pub preserve_runtime_objects: bool,
     pub arch: Option<&'a str>,
     pub privileged: bool,
     pub cap_add: &'a [String],
     pub cap_drop: &'a [String],
+    pub sandbox_settings: Option<&'a Path>,
+    pub sandbox_debug: bool,
 }

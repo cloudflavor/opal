@@ -7,6 +7,7 @@ use super::view::{find_history_entry_for_workdir, find_job, latest_history_entry
 use crate::config::OpalConfig;
 use crate::executor::{
     ContainerExecutor, DockerExecutor, NerdctlExecutor, OrbstackExecutor, PodmanExecutor,
+    SandboxExecutor,
     core::{ExecutionOutcome, ExecutionProgressCallback},
 };
 use crate::history::HistoryEntry;
@@ -207,6 +208,20 @@ async fn execute_with_config(
                 }
             }
         }
+        EngineKind::Sandbox => {
+            let executor = SandboxExecutor::new(config.clone())
+                .await
+                .with_context(|| "failed create sandbox executor");
+            match executor {
+                Ok(executor) => executor.run().await,
+                Err(err) => {
+                    return ExecutionOutcome {
+                        history_entry: None,
+                        result: Err(err),
+                    };
+                }
+            }
+        }
     };
 
     ExecutionOutcome {
@@ -264,7 +279,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-rerun-latest");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let app = OpalApp::from_current_dir().expect("app");
         save(
@@ -304,7 +319,7 @@ mod tests {
 
         assert_eq!(prepared.jobs, vec!["rust-checks"]);
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 

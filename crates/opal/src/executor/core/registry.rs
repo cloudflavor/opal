@@ -6,6 +6,9 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub(super) fn ensure_registry_logins(exec: &ExecutorCore) -> Result<()> {
+    if matches!(exec.config.engine, EngineKind::Sandbox) {
+        return Ok(());
+    }
     let auths = exec.config.settings.registry_auth_for(exec.config.engine)?;
     for auth in &auths {
         match exec.config.engine {
@@ -13,6 +16,7 @@ pub(super) fn ensure_registry_logins(exec: &ExecutorCore) -> Result<()> {
             EngineKind::Docker | EngineKind::Orbstack => standard_registry_login("docker", auth)?,
             EngineKind::Podman => standard_registry_login("podman", auth)?,
             EngineKind::Nerdctl => standard_registry_login("nerdctl", auth)?,
+            EngineKind::Sandbox => {}
         }
     }
     Ok(())

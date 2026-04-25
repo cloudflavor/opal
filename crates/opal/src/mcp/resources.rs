@@ -154,7 +154,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-test-list");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let app = OpalApp::from_current_dir().expect("app");
         save(
@@ -197,7 +197,7 @@ mod tests {
                 .any(|entry| entry["uri"] == "opal://runs/run-1")
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-test-read");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(&runtime::history_path(), &[]).expect("save history");
 
@@ -219,7 +219,7 @@ mod tests {
             .expect("read history");
         assert_eq!(resource["contents"][0]["mimeType"], "application/json");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 }

@@ -104,14 +104,14 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         }
     };
     let container_name = run_info.container_name.clone();
-    let exec_result = exec.execute(execute_context(
+    let exec_result = runtime_handle.block_on(exec.execute(execute_context(
         &prepared,
         job,
         &container_name,
         log_path,
         ui,
         exec.config.settings.preserve_runtime_objects(),
-    ));
+    )));
 
     record_runtime_objects(exec, job, &container_name, &prepared)?;
     cleanup_runtime(exec, runtime_handle, &container_name, &mut prepared);
@@ -144,9 +144,15 @@ fn execute_context<'a>(
         image_user: prepared.job_image.docker_user.as_deref(),
         image_entrypoint: &prepared.job_image.entrypoint,
         container_name,
+        engine: prepared.job_engine,
         job,
         ui,
         env_vars: &prepared.env_vars,
+        host_aliases: prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.host_aliases())
+            .unwrap_or(&[]),
         network: prepared
             .service_runtime
             .as_ref()
@@ -156,6 +162,8 @@ fn execute_context<'a>(
         privileged: prepared.privileged,
         cap_add: &prepared.cap_add,
         cap_drop: &prepared.cap_drop,
+        sandbox_settings: prepared.sandbox_settings_path.as_deref(),
+        sandbox_debug: prepared.sandbox_debug,
     }
 }
 
@@ -175,12 +183,18 @@ fn record_runtime_objects(
             .as_ref()
             .map(|runtime| runtime.container_names()),
     );
-    let runtime_summary_path = exec.write_runtime_summary(
-        &job.name,
-        container_name,
-        runtime_data.service_network.as_deref(),
-        &runtime_data.service_containers,
-    )?;
+    let runtime_summary_path = if matches!(prepared.job_engine, crate::EngineKind::Sandbox) {
+        None
+    } else {
+        exec.write_runtime_summary(
+            &job.name,
+            container_name,
+            prepared.job_engine,
+            exec.config.engine,
+            runtime_data.service_network.as_deref(),
+            &runtime_data.service_containers,
+        )?
+    };
     exec.record_runtime_objects(
         &job.name,
         container_name.to_string(),
@@ -207,8 +221,10 @@ fn cleanup_runtime(
     container_name: &str,
     prepared: &mut crate::executor::core::PreparedJobRun,
 ) {
-    if !exec.config.settings.preserve_runtime_objects() {
-        exec.cleanup_finished_container(container_name);
+    if !exec.config.settings.preserve_runtime_objects()
+        && !matches!(prepared.job_engine, crate::EngineKind::Sandbox)
+    {
+        exec.cleanup_finished_container(prepared.job_engine, container_name);
     }
     if let Some(mut runtime) = prepared.service_runtime.take()
         && !exec.config.settings.preserve_runtime_objects()
@@ -633,6 +649,9 @@ mod tests {
         let prepared = crate::executor::core::PreparedJobRun {
             host_workdir,
             env_vars,
+            job_engine: crate::EngineKind::Sandbox,
+            sandbox_settings_path: Some(PathBuf::from("/tmp/srt-settings.json")),
+            sandbox_debug: true,
             service_runtime: None,
             mounts,
             job_image,
@@ -654,6 +673,7 @@ mod tests {
         assert_eq!(ctx.image_user, Some("1000:1000"));
         assert_eq!(ctx.image_entrypoint, ["/bin/sh".to_string()]);
         assert_eq!(ctx.container_name, "opal-job-01");
+        assert_eq!(ctx.engine, crate::EngineKind::Sandbox);
         assert_eq!(ctx.job.name, "test");
         assert_eq!(ctx.env_vars, [("KEY".to_string(), "VALUE".to_string())]);
         assert_eq!(ctx.network, None);
@@ -662,6 +682,11 @@ mod tests {
         assert!(ctx.privileged);
         assert_eq!(ctx.cap_add, ["NET_ADMIN".to_string()]);
         assert_eq!(ctx.cap_drop, ["MKNOD".to_string()]);
+        assert_eq!(
+            ctx.sandbox_settings,
+            Some(PathBuf::from("/tmp/srt-settings.json").as_path())
+        );
+        assert!(ctx.sandbox_debug);
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub fn expand_env_list(env: &mut [(String, String)], host_env: &HashMap<String, 
         lookup.insert(key.clone(), value.clone());
     }
     for (key, value) in env.iter() {
-        lookup.entry(key.clone()).or_insert_with(|| value.clone());
+        lookup.insert(key.clone(), value.clone());
     }
     for (key, value) in env.iter_mut() {
         let expanded = expand_value(value, &lookup);
@@ -405,6 +405,64 @@ mod tests {
         assert_eq!(
             map.get("CARGO_HOME").map(String::as_str),
             Some("/workspace/.cargo")
+        );
+    }
+
+    #[test]
+    fn job_env_ci_project_dir_overrides_host_env_during_expansion() {
+        let job = JobSpec {
+            name: "lint".into(),
+            stage: "test".into(),
+            commands: Vec::new(),
+            needs: Vec::new(),
+            explicit_needs: false,
+            dependencies: Vec::new(),
+            before_script: None,
+            after_script: None,
+            inherit_default_before_script: true,
+            inherit_default_after_script: true,
+            inherit_default_image: true,
+            inherit_default_cache: true,
+            inherit_default_services: true,
+            inherit_default_timeout: true,
+            inherit_default_retry: true,
+            inherit_default_interruptible: true,
+            when: None,
+            rules: Vec::new(),
+            only: Vec::new(),
+            except: Vec::new(),
+            artifacts: ArtifactSpec::default(),
+            cache: Vec::new(),
+            image: None,
+            variables: HashMap::from([("CARGO_HOME".into(), "$CI_PROJECT_DIR/.cargo".into())]),
+            services: Vec::new(),
+            timeout: None,
+            retry: RetryPolicySpec::default(),
+            interruptible: false,
+            resource_group: None,
+            parallel: None,
+            tags: Vec::new(),
+            environment: None,
+        };
+        let env = build_job_env(
+            &[],
+            &HashMap::new(),
+            &job,
+            &SecretsStore::default(),
+            Path::new("/workspace"),
+            Path::new("/builds/current-project"),
+            Path::new("/builds"),
+            "1",
+            &HashMap::from([("CI_PROJECT_DIR".into(), "/builds/outer-project".into())]),
+        );
+        let map: HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("CI_PROJECT_DIR").map(String::as_str),
+            Some("/builds/current-project")
+        );
+        assert_eq!(
+            map.get("CARGO_HOME").map(String::as_str),
+            Some("/builds/current-project/.cargo")
         );
     }
 

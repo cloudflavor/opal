@@ -3,13 +3,11 @@ use crate::model::JobSpec;
 use crate::naming::job_name_slug;
 use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result};
-use git2::{IndexAddOption, Repository, RepositoryInitOptions, Signature, StatusOptions};
+use git2::Repository;
 use std::fs;
 #[cfg(unix)]
-use std::os::unix::fs as unix_fs;
+use std::os::unix::fs::{self as unix_fs, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use tracing::warn;
 
 pub(super) struct PreparedWorkspace {
     pub host_workdir: PathBuf,
@@ -30,146 +28,18 @@ pub(super) fn prepare_job_workspace(
     }
     fs::create_dir_all(&host_workdir)
         .with_context(|| format!("failed to create {}", host_workdir.display()))?;
+    fs::set_permissions(
+        &host_workdir,
+        ensure_writable_permissions(&host_workdir, fs::metadata(&host_workdir)?.permissions()),
+    )
+    .with_context(|| format!("failed to set permissions on {}", host_workdir.display()))?;
 
     copy_workspace_contents(&exec.config.workdir, &host_workdir)?;
-    refresh_git_snapshot_state(&host_workdir)?;
 
     Ok(PreparedWorkspace {
         host_workdir,
         mounts: Vec::new(),
     })
-}
-
-fn refresh_git_snapshot_state(workdir: &Path) -> Result<()> {
-    let Some(repo) = open_or_reinitialize_repository(workdir)? else {
-        return Ok(());
-    };
-
-    let mut status_options = StatusOptions::new();
-    status_options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repo
-        .statuses(Some(&mut status_options))
-        .context("failed to inspect git status for workspace snapshot")?;
-    if statuses.is_empty() {
-        return Ok(());
-    }
-
-    let mut index = repo
-        .index()
-        .context("failed to open git index for workspace snapshot")?;
-    index
-        .add_all(["*"], IndexAddOption::DEFAULT, None)
-        .context("failed to refresh git index for workspace snapshot")?;
-    index
-        .write()
-        .context("failed to write refreshed git index for workspace snapshot")?;
-
-    let tree_id = index
-        .write_tree()
-        .context("failed to write tree for workspace snapshot")?;
-    let tree = repo
-        .find_tree(tree_id)
-        .context("failed to find written tree for workspace snapshot")?;
-    let signature = Signature::now("Opal", "opal@local.invalid")
-        .context("failed to create snapshot git signature")?;
-
-    if let Ok(parent) = repo.head().and_then(|head| head.peel_to_commit()) {
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "opal workspace snapshot",
-            &tree,
-            &[&parent],
-        )
-        .context("failed to commit workspace snapshot state")?;
-    } else {
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "opal workspace snapshot",
-            &tree,
-            &[],
-        )
-        .context("failed to create initial workspace snapshot commit")?;
-    }
-
-    Ok(())
-}
-
-fn open_or_reinitialize_repository(workdir: &Path) -> Result<Option<Repository>> {
-    match Repository::open(workdir) {
-        Ok(repo) => Ok(Some(repo)),
-        Err(err) => {
-            let git_path = workdir.join(".git");
-            if !git_path.exists() {
-                return Ok(None);
-            }
-            warn!(
-                workspace = %workdir.display(),
-                error = %err,
-                "workspace git metadata is not portable; reinitializing snapshot repository"
-            );
-            Ok(Some(reinitialize_snapshot_repository(workdir, &git_path)?))
-        }
-    }
-}
-
-fn reinitialize_snapshot_repository(workdir: &Path, git_path: &Path) -> Result<Repository> {
-    if git_path.exists() {
-        let metadata = fs::symlink_metadata(git_path)
-            .with_context(|| format!("failed to inspect {}", git_path.display()))?;
-        if metadata.is_dir() {
-            fs::remove_dir_all(git_path)
-                .with_context(|| format!("failed to remove {}", git_path.display()))?;
-        } else {
-            fs::remove_file(git_path)
-                .with_context(|| format!("failed to remove {}", git_path.display()))?;
-        }
-    }
-
-    let mut init = RepositoryInitOptions::new();
-    init.initial_head("main");
-    let repo = Repository::init_opts(workdir, &init).with_context(|| {
-        format!(
-            "failed to initialize git repository in {}",
-            workdir.display()
-        )
-    })?;
-    let mut index = repo
-        .index()
-        .context("failed to open git index for workspace snapshot")?;
-    index
-        .add_all(["*"], IndexAddOption::DEFAULT, None)
-        .context("failed to refresh git index for workspace snapshot")?;
-    index
-        .write()
-        .context("failed to write refreshed git index for workspace snapshot")?;
-
-    let tree_id = index
-        .write_tree()
-        .context("failed to write tree for workspace snapshot")?;
-    let tree = repo
-        .find_tree(tree_id)
-        .context("failed to find written tree for workspace snapshot")?;
-    let signature = Signature::now("Opal", "opal@local.invalid")
-        .context("failed to create snapshot git signature")?;
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "opal workspace snapshot",
-        &tree,
-        &[],
-    )
-    .context("failed to create initial workspace snapshot commit")?;
-    drop(tree);
-    Ok(repo)
 }
 
 fn copy_workspace_contents(src: &Path, dest: &Path) -> Result<()> {
@@ -208,6 +78,13 @@ fn should_exclude(workspace_root: &Path, rel: &Path, repo: Option<&Repository>) 
     if hardcoded {
         return true;
     }
+    if rel == Path::new(".git")
+        && fs::symlink_metadata(workspace_root.join(rel))
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
+    {
+        return true;
+    }
     if rel.starts_with(".git") {
         return false;
     }
@@ -218,20 +95,7 @@ fn should_exclude(workspace_root: &Path, rel: &Path, repo: Option<&Repository>) 
     let Ok(path) = candidate.strip_prefix(workspace_root) else {
         return false;
     };
-    is_git_ignored(workspace_root, path)
-        .unwrap_or_else(|| repo.status_should_ignore(path).unwrap_or(false))
-}
-
-fn is_git_ignored(workspace_root: &Path, rel: &Path) -> Option<bool> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .arg("check-ignore")
-        .arg("-q")
-        .arg(rel)
-        .status()
-        .ok()?;
-    Some(status.success())
+    repo.status_should_ignore(path).unwrap_or(false)
 }
 
 fn copy_entry(
@@ -249,6 +113,11 @@ fn copy_entry(
         copy_symlink(src, dest)
     } else if file_type.is_dir() {
         fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        fs::set_permissions(
+            dest,
+            ensure_writable_permissions(dest, metadata.permissions()),
+        )
+        .with_context(|| format!("failed to set permissions on {}", dest.display()))?;
         for entry in
             fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
         {
@@ -270,10 +139,27 @@ fn copy_entry(
         }
         fs::copy(src, dest)
             .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
-        fs::set_permissions(dest, metadata.permissions())
-            .with_context(|| format!("failed to set permissions on {}", dest.display()))?;
+        fs::set_permissions(
+            dest,
+            ensure_writable_permissions(dest, metadata.permissions()),
+        )
+        .with_context(|| format!("failed to set permissions on {}", dest.display()))?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn ensure_writable_permissions(_path: &Path, mut permissions: fs::Permissions) -> fs::Permissions {
+    let mode = permissions.mode() | 0o222;
+    permissions.set_mode(mode);
+    permissions
+}
+
+#[cfg(not(unix))]
+fn ensure_writable_permissions(path: &Path, mut permissions: fs::Permissions) -> fs::Permissions {
+    let _ = path;
+    permissions.set_readonly(false);
+    permissions
 }
 
 #[cfg(unix)]
@@ -321,6 +207,8 @@ mod tests {
     use crate::{EngineKind, ExecutorConfig};
     use std::collections::HashMap;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -356,6 +244,31 @@ mod tests {
         let _ = fs::remove_dir_all(dest);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn copy_workspace_contents_makes_files_writable_for_any_uid() -> anyhow::Result<()> {
+        let src = temp_path("workspace-src-perms");
+        let dest = temp_path("workspace-dest-perms");
+        git2::Repository::init(&src)?;
+        fs::create_dir_all(src.join("nested"))?;
+        fs::write(src.join("nested").join("main.rs"), "fn main() {}")?;
+
+        fs::create_dir_all(&dest)?;
+        copy_workspace_contents(&src, &dest)?;
+
+        let file_mode = fs::metadata(dest.join("nested").join("main.rs"))?
+            .permissions()
+            .mode();
+        let dir_mode = fs::metadata(dest.join("nested"))?.permissions().mode();
+
+        assert_eq!(file_mode & 0o222, 0o222);
+        assert_eq!(dir_mode & 0o222, 0o222);
+
+        let _ = fs::remove_dir_all(src);
+        let _ = fs::remove_dir_all(dest);
+        Ok(())
+    }
+
     #[test]
     fn copy_workspace_contents_respects_nested_gitignore_entries() {
         let src = temp_path("workspace-src-nested-ignore");
@@ -380,6 +293,24 @@ mod tests {
 
         assert!(dest.join("ui-docs").join("package.json").exists());
         assert!(!dest.join("ui-docs").join("node_modules").exists());
+
+        let _ = fs::remove_dir_all(src);
+        let _ = fs::remove_dir_all(dest);
+    }
+
+    #[test]
+    fn copy_workspace_contents_excludes_root_gitdir_pointer_file() {
+        let src = temp_path("workspace-src-gitfile");
+        let dest = temp_path("workspace-dest-gitfile");
+        fs::create_dir_all(&src).expect("create src");
+        fs::create_dir_all(&dest).expect("create dest");
+        fs::write(src.join(".git"), "gitdir: /tmp/external/gitdir\n").expect("write git pointer");
+        fs::write(src.join("README.md"), "snapshot\n").expect("write regular file");
+
+        copy_workspace_contents(&src, &dest).expect("copy workspace");
+
+        assert!(dest.join("README.md").exists());
+        assert!(!dest.join(".git").exists());
 
         let _ = fs::remove_dir_all(src);
         let _ = fs::remove_dir_all(dest);
@@ -438,29 +369,6 @@ mod tests {
         assert!(prepared.host_workdir.join("Cargo.toml").exists());
         assert!(prepared.host_workdir.join(".git").join("HEAD").exists());
         assert!(prepared.mounts.is_empty());
-
-        let _ = fs::remove_dir_all(workdir);
-        let _ = fs::remove_dir_all(session_dir);
-    }
-
-    #[test]
-    fn prepare_job_workspace_reinitializes_broken_worktree_git_pointer() {
-        let workdir = temp_path("workspace-worktree-pointer");
-        fs::create_dir_all(&workdir).expect("create workdir");
-        fs::write(
-            workdir.join(".git"),
-            "gitdir: /tmp/nonexistent-root/.git/worktrees/opal-worktree2\n",
-        )
-        .expect("write worktree gitdir pointer");
-        fs::write(workdir.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
-
-        let session_dir = temp_path("workspace-session-worktree-pointer");
-        fs::create_dir_all(&session_dir).expect("create session");
-        let exec = test_core(workdir.clone(), session_dir.clone());
-        let prepared = prepare_job_workspace(&exec, &job("build")).expect("prepare workspace");
-
-        assert!(prepared.host_workdir.join(".git").is_dir());
-        git2::Repository::open(&prepared.host_workdir).expect("snapshot repo is valid");
 
         let _ = fs::remove_dir_all(workdir);
         let _ = fs::remove_dir_all(session_dir);
