@@ -1,6 +1,6 @@
 [package]
 name = "opal"
-version = "0.1.0-rc8"
+version = "0.1.0"
 edition = "2024"
 description = "Terminal-first GitLab pipeline runner with TUI, history browser, embedded docs, and MCP support."
 license = "Apache-2.0"
