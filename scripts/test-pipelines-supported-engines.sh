@@ -17,7 +17,7 @@ engine_available() {
       podman info >/dev/null 2>&1
       ;;
     container)
-      container system status >/dev/null 2>&1
+      container system status >/dev/null 2>&1 || command -v container >/dev/null 2>&1
       ;;
     *)
       return 1

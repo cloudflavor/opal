@@ -128,7 +128,10 @@ pub fn changed_files(
     base: Option<&str>,
     head: Option<&str>,
 ) -> Result<HashSet<String>> {
-    let repo = open_repository(workdir)?;
+    let repo = match open_repository(workdir) {
+        Ok(repo) => repo,
+        Err(_) => return Ok(HashSet::new()),
+    };
     let mut opts = DiffOptions::new();
 
     let diff = match (base, head) {

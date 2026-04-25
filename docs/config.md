@@ -1,12 +1,11 @@
 # Opal Configuration
 
-Opal reads a layered `config.toml` to customize runtime behavior and automatically handle container registry authentication. Three locations are checked (earlier entries override later ones):
+Opal reads a layered `config.toml` to customize runtime behavior and automatically handle container registry authentication. Two locations are checked (later entries override earlier ones):
 
-1. `$REPO/.opal/config.toml` – project-specific settings committed alongside your pipeline.
-2. `$XDG_CONFIG_HOME/opal/config.toml` (or the platform-default XDG config directory) – user-wide defaults.
-3. `$OPAL_HOME/config.toml` – legacy override for a custom `$OPAL_HOME` path.
+1. `$XDG_CONFIG_HOME/opal/config.toml` (or the platform-default XDG config directory) – user-wide defaults.
+2. `$REPO/.opal/config.toml` – project-specific settings committed alongside your pipeline.
 
-This means project-level `.opal/config.toml` overrides global defaults.
+This means project-level `.opal/config.toml` overrides global/user config.
 
 ## Example
 
@@ -14,6 +13,7 @@ This means project-level `.opal/config.toml` overrides global defaults.
 [engine]
 default = "docker"   # override --engine auto for this project or machine
 preserve_runtime_objects = true
+map_host_user = true  # map image/services user to host uid:gid when docker:user is unset
 
 [env]
 RUNNER_BOOTSTRAP = "enabled"
@@ -51,12 +51,23 @@ cpus = "6"          # defaults to 4 if omitted
 memory = "2g"       # defaults to 1.6 GB (1638m) if omitted
 dns = "8.8.8.8"     # optional; leave unset to use the engine default
 
+[sandbox]
+debug = true
+allowed_domains = ["github.com", "*.github.com", "api.github.com"]
+allow_write = [".", "/tmp"]
+ignore_violations = { "*" = [".cargo/registry/src"] }
+enable_weaker_nested_sandbox = false
+mandatory_deny_search_depth = 3
+# settings = "/absolute/or/relative/path/to/srt-settings.json"
+
 [[jobs]]
 name = "deploy"
-arch = "arm64"
-privileged = true
-cap_add = ["NET_ADMIN"]
-cap_drop = ["MKNOD"]
+engine = "sandbox"
+sandbox_debug = false
+sandbox_allowed_domains = ["registry.npmjs.org", "*.npmjs.org"]
+sandbox_ignore_violations = { "*" = [".cargo/registry/src"] }
+sandbox_enable_weaker_nested_sandbox = true
+sandbox_mandatory_deny_search_depth = 6
 
 [[registry]]
 server = "registry.gitlab.com"
@@ -79,12 +90,18 @@ Accepted values:
 - `podman`
 - `nerdctl`
 - `orbstack`
+- `sandbox`
 
 Additional engine-level controls:
 
 - `preserve_runtime_objects`
   - default: `false`
   - when `true`, Opal keeps job/service runtime objects for inspection instead of cleaning them up automatically after successful job completion
+- `map_host_user`
+  - default: `true`
+  - when `true`, Opal injects `OPAL_HOST_UID` and `OPAL_HOST_GID` into the runtime env and defaults `image:docker:user` / `services:docker:user` to `${OPAL_HOST_UID}:${OPAL_HOST_GID}` when those keys are unset
+  - set `map_host_user = false` to opt out when a pipeline needs the engine's default container user behavior
+  - explicit `image:docker:user` and `services:docker:user` values still win over this fallback
 
 CLI behavior still wins over config:
 
@@ -109,6 +126,7 @@ Job-specific runtime overrides:
 - Use `[[jobs]]` entries to target exact job names.
 - Supported keys today:
   - `name`: exact job name to match
+  - `engine`: override only this job's execution engine (`container`, `docker`, `podman`, `nerdctl`, `orbstack`, or `sandbox`)
   - `arch`: override job architecture/platform selection
   - `privileged`: request privileged containers on engines that support it
   - `cap_add`: add Linux capabilities on engines that support it
@@ -116,6 +134,12 @@ Job-specific runtime overrides:
 - Engine behavior:
   - `docker`, `podman`, `nerdctl`, `orbstack`: support `privileged`, `cap_add`, and `cap_drop`
   - Apple `container`: supports `arch`, but fails explicitly if `privileged` or capability flags are requested
+  - `sandbox`: runs commands through the local Anthropic `srt` CLI, does not use container `image` flags directly, and fails explicitly if `privileged` or capability flags are requested
+  - when the global run engine is `sandbox`, Opal skips pre-run registry login because the sandbox path does not pull container images directly
+- Service behavior:
+  - Job services continue to use the run/global engine.
+  - Per-job `engine` overrides do not currently re-home services to that per-job engine.
+  - A job configured with `engine = "sandbox"` fails fast when services are present, because that combination is not wired yet.
 - Planning/execution interaction:
   - `opal plan --job <name>` and `opal run --job <name>` filter the execution plan first.
   - Any matching `[[jobs]]` override still applies to the selected job instances.
@@ -170,6 +194,48 @@ Bootstrap behavior:
 - Mounted `container` paths must be absolute.
 - This is Opal runtime behavior only; `.gitlab-ci.yml` stays unchanged.
 
+### Sandbox settings
+
+Use `[sandbox]` to configure defaults for jobs that run with `engine = "sandbox"`:
+
+- `settings`: optional path to an `srt` JSON settings file.
+- `debug`: optional boolean; when `true`, Opal adds `--debug` to `srt`.
+- `allowed_domains`: optional list; emitted as `network.allowedDomains` when Opal generates per-job `srt` settings.
+  Pattern notes: wildcard entries such as `*.github.com` are supported by `srt`, but overly broad patterns (for example `*.com`) are rejected by `srt` validation.
+- `denied_domains`: optional list; emitted as `network.deniedDomains`.
+- `allow_unix_sockets`: optional list; emitted as `network.allowUnixSockets`.
+- `allow_all_unix_sockets`: optional boolean; emitted as `network.allowAllUnixSockets`.
+- `allow_local_binding`: optional boolean; emitted as `network.allowLocalBinding`.
+- `deny_read`: optional list; emitted as `filesystem.denyRead`.
+- `allow_write`: optional list; emitted as `filesystem.allowWrite`.
+- `deny_write`: optional list; emitted as `filesystem.denyWrite`.
+- `ignore_violations`: optional map; emitted as `ignoreViolations`.
+- `enable_weaker_nested_sandbox`: optional boolean; emitted as `enableWeakerNestedSandbox`.
+- `mandatory_deny_search_depth`: optional integer; emitted as `mandatoryDenySearchDepth`.
+
+Opal also auto-injects a sandbox ignore-violations path for each sandbox job’s workspace Cargo source registry (`<job-workspace>/.cargo/registry/src`) so Rust toolchains can unpack crates that include `.gitmodules`.
+
+Per-job overrides under `[[jobs]]`:
+
+- `sandbox_settings`
+- `sandbox_debug`
+- `sandbox_allowed_domains`
+- `sandbox_denied_domains`
+- `sandbox_allow_unix_sockets`
+- `sandbox_allow_all_unix_sockets`
+- `sandbox_allow_local_binding`
+- `sandbox_deny_read`
+- `sandbox_allow_write`
+- `sandbox_deny_write`
+- `sandbox_ignore_violations`
+- `sandbox_enable_weaker_nested_sandbox`
+- `sandbox_mandatory_deny_search_depth`
+
+Rules:
+
+- You cannot combine `sandbox_settings` with inline sandbox keys for the same resolved job (`sandbox_*` network/filesystem/policy fields).
+- If global run engine is `sandbox`, registry logins are skipped (sandbox does not pull images directly).
+
 ## AI settings
 
 AI troubleshooting configuration is documented separately in `docs/ai-config.md`.
@@ -193,7 +259,7 @@ Each `[[registry]]` entry describes how to log into a container registry **befor
 - `server`: registry host (e.g., `registry.gitlab.com`).
 - `username`: login name or token.
 - `password` / `password_env`: either supply a literal password or point to an environment variable that contains it. One must be present.
-- `engines`: optional list restricting the entry to specific engines (`container`, `docker`, `podman`, `nerdctl`, `orbstack`). Leave empty to apply everywhere.
+- `engines`: optional list restricting the entry to specific engines (`container`, `docker`, `podman`, `nerdctl`, `orbstack`, `sandbox`). Leave empty to apply everywhere.
 - `scheme`: optional for Apple’s `container registry login`.
 
 Opal pipes the resolved credentials into the correct CLI (`container registry login`, `docker login`, etc.), so you no longer have to run those manually on the host.

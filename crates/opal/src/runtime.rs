@@ -2,39 +2,34 @@ use dirs::home_dir;
 use std::env;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_STATE_DIR: &str = ".local/share/opal";
-const DEFAULT_CONFIG_DIR: &str = ".config/opal";
+const DEFAULT_DATA_HOME_REL: &str = ".local/share";
+const DEFAULT_CONFIG_HOME_REL: &str = ".config";
 const REPO_CONFIG_DIR: &str = ".opal";
 
-fn default_state_root() -> PathBuf {
-    home_dir()
+fn user_home_dir() -> PathBuf {
+    env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(DEFAULT_STATE_DIR)
 }
 
-fn default_config_root() -> PathBuf {
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(DEFAULT_CONFIG_DIR)
-}
-
-fn opal_home() -> PathBuf {
-    if let Some(path) = env::var_os("OPAL_HOME")
-        && !path.is_empty()
-    {
-        let path = PathBuf::from(path);
-        if path.is_absolute() {
-            return path;
-        }
-        return env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path);
+fn xdg_data_home() -> PathBuf {
+    if let Some(dir) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
     }
-    default_state_root()
+    user_home_dir().join(DEFAULT_DATA_HOME_REL)
+}
+
+fn xdg_config_home() -> PathBuf {
+    if let Some(dir) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    user_home_dir().join(DEFAULT_CONFIG_HOME_REL)
 }
 
 pub fn runs_root() -> PathBuf {
-    opal_home()
+    xdg_data_home().join("opal")
 }
 
 pub fn session_dir(run_id: &str) -> PathBuf {
@@ -46,32 +41,36 @@ pub fn logs_dir(run_id: &str) -> PathBuf {
 }
 
 pub fn cache_root() -> PathBuf {
-    opal_home().join("cache")
+    runs_root().join("cache")
 }
 
 pub fn history_path() -> PathBuf {
-    opal_home().join("history.json")
+    runs_root().join("history.json")
 }
 
 pub fn resource_group_root() -> PathBuf {
-    opal_home().join("resource-groups")
+    runs_root().join("resource-groups")
 }
 
 pub fn config_dirs(workdir: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    paths.push(workdir.join(REPO_CONFIG_DIR).join("config.toml"));
-    paths.push(default_config_root().join("config.toml"));
-    if let Some(opal_home_dir) = env::var_os("OPAL_HOME").filter(|p| !p.is_empty()) {
-        let path = PathBuf::from(opal_home_dir);
-        let config_path = if path.is_absolute() {
-            path.join("config.toml")
-        } else {
-            env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(path)
-                .join("config.toml")
-        };
-        paths.push(config_path);
+    vec![
+        xdg_config_home().join("opal").join("config.toml"),
+        workdir.join(REPO_CONFIG_DIR).join("config.toml"),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_dirs;
+    use std::path::Path;
+
+    #[test]
+    fn config_dirs_loads_global_then_project() {
+        let workdir = Path::new("/tmp/workspace");
+        let dirs = config_dirs(workdir);
+
+        assert!(dirs[0].ends_with("opal/config.toml"));
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[1], workdir.join(".opal").join("config.toml"));
     }
-    paths
 }

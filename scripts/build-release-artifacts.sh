@@ -14,10 +14,18 @@ CONTAINER_MEMORY="${CONTAINER_MEMORY:-2g}"
 CONTAINER_DNS="${CONTAINER_DNS:-1.1.1.1}"
 HOST_CARGO_HOME="${HOST_CARGO_HOME:-${REPO_ROOT}/target/.container-cache/cargo-home}"
 HOST_RUSTUP_HOME="${HOST_RUSTUP_HOME:-${REPO_ROOT}/target/.container-cache/rustup-home}"
-mkdir -p "${HOST_CARGO_HOME}" "${HOST_RUSTUP_HOME}" "${REPO_ROOT}/target" "${REPO_ROOT}/releases"
+TARGET_DIR_SLUG="${CI_JOB_NAME_SLUG:-release-artifacts}"
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  if [[ "${HOST_OS}" == "Darwin" ]]; then
+    CARGO_TARGET_DIR="${CONTAINER_HOST_TARGET_DIR:-${TMPDIR:-/tmp}/opal-release-target/${TARGET_DIR_SLUG}}"
+  else
+    CARGO_TARGET_DIR="${REPO_ROOT}/target/${TARGET_DIR_SLUG}"
+  fi
+fi
+mkdir -p "${HOST_CARGO_HOME}" "${HOST_RUSTUP_HOME}" "${CARGO_TARGET_DIR}" "${REPO_ROOT}/target" "${REPO_ROOT}/releases"
 HOST_CARGO_HOME="$(cd "${HOST_CARGO_HOME}" && pwd)"
 HOST_RUSTUP_HOME="$(cd "${HOST_RUSTUP_HOME}" && pwd)"
-export CARGO_TARGET_DIR="${REPO_ROOT}/target/${CI_JOB_NAME_SLUG:-release-artifacts}"
+export CARGO_TARGET_DIR
 
 TARGET_MATRIX=(
   "aarch64-apple-darwin:local:aarch64-apple-silicon"
@@ -160,11 +168,13 @@ run_container_build() {
         "${dns_args[@]}" \
         --env "CARGO_HOME=/cargo-home" \
         --env "RUSTUP_HOME=/rustup-home" \
-        --env "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
+        --env "CARGO_TARGET_DIR=/target" \
+        --env "CARGO_TARGET_DIR=/target" \
         --env "TARGET_TRIPLE=${target}" \
         --volume "${REPO_ROOT}:/work" \
         --volume "${HOST_CARGO_HOME}:/cargo-home" \
         --volume "${HOST_RUSTUP_HOME}:/rustup-home" \
+        --volume "${CARGO_TARGET_DIR}:/target" \
         "${RUST_IMAGE}" \
         bash "${helper_in_container}"; then
         status=$?
@@ -185,11 +195,12 @@ run_container_build() {
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
-        -e "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
+        -e "CARGO_TARGET_DIR=/target" \
         -e "TARGET_TRIPLE=${target}" \
         -v "${REPO_ROOT}:/work" \
         -v "${HOST_CARGO_HOME}:/cargo-home" \
         -v "${HOST_RUSTUP_HOME}:/rustup-home" \
+        -v "${CARGO_TARGET_DIR}:/target" \
         "${RUST_IMAGE}" \
         bash "${helper_in_container}"
       ;;
@@ -200,11 +211,12 @@ run_container_build() {
         -w /work \
         -e "CARGO_HOME=/cargo-home" \
         -e "RUSTUP_HOME=/rustup-home" \
-        -e "CARGO_TARGET_DIR=/work/target/${CI_JOB_NAME_SLUG:-release-artifacts}" \
+        -e "CARGO_TARGET_DIR=/target" \
         -e "TARGET_TRIPLE=${target}" \
         -v "${REPO_ROOT}:/work" \
         -v "${HOST_CARGO_HOME}:/cargo-home" \
         -v "${HOST_RUSTUP_HOME}:/rustup-home" \
+        -v "${CARGO_TARGET_DIR}:/target" \
         "${RUST_IMAGE}" \
         bash "${helper_in_container}"
       ;;

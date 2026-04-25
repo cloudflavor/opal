@@ -9,7 +9,7 @@ use crate::{GitLabRemoteConfig, env, git};
 use anyhow::{Context, Result};
 use serde_yaml::Mapping;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
 use super::graph::PipelineGraph;
@@ -58,8 +58,15 @@ impl PipelineGraph {
         let canonical = tokio::fs::canonicalize(path)
             .await
             .with_context(|| format!("failed to resolve {:?}", path))?;
-        let include_root = git::repository_root(&canonical)
-            .unwrap_or_else(|_| canonical.parent().unwrap_or(Path::new(".")).to_path_buf());
+        let include_root = if let Ok(repo_root) = git::repository_root(&canonical) {
+            repo_root
+        } else if let Some(ci_project_dir) =
+            include_root_from_ci_project_dir(&host_env).filter(|root| canonical.starts_with(root))
+        {
+            ci_project_dir
+        } else {
+            canonical.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
         let include_env = env::build_include_lookup(&canonical, &host_env);
         let root = IncludeResolver::new(&include_root, &include_env, gitlab)
             .load(&canonical)
@@ -73,6 +80,23 @@ impl PipelineGraph {
         let root = normalization::normalize_root(root)?;
         jobs::build_pipeline(root)
     }
+}
+
+fn include_root_from_ci_project_dir(host_env: &HashMap<String, String>) -> Option<PathBuf> {
+    let raw = host_env.get("CI_PROJECT_DIR")?;
+    if raw.is_empty() {
+        return None;
+    }
+
+    let candidate = PathBuf::from(raw);
+    if candidate.is_absolute() {
+        return std::fs::canonicalize(&candidate).ok().or(Some(candidate));
+    }
+
+    let joined = std::env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join(candidate))?;
+    Some(std::fs::canonicalize(&joined).ok().unwrap_or(joined))
 }
 
 impl std::str::FromStr for PipelineGraph {

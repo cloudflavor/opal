@@ -1,17 +1,36 @@
 use super::ExecutorCore;
+use crate::EngineKind;
+use crate::app::context::{resolve_engine, validate_engine_choice};
+use crate::config::ResolvedJobOverride;
+use crate::env::expand_value;
 use crate::execution_plan::ExecutionPlan;
+use crate::executor::sandbox::{
+    ResolvedSandboxRuntime, prepare_job_env, resolve_runtime as resolve_sandbox_runtime,
+};
+use crate::executor::script::write_job_script;
+use crate::executor::services::ServiceRuntime;
+use crate::model::ArtifactSourceOutcome;
 use crate::model::DependencySourceSpec;
 use crate::model::{ImageSpec, JobSpec, PipelineDefaultsSpec, ServiceSpec};
 use crate::pipeline::{VolumeMount, mounts};
-use crate::secrets::SecretsStore;
-use anyhow::Result;
+use crate::secrets::{SecretsStore, load_dotenv_env_pairs};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
-use std::path::PathBuf;
+#[cfg(not(unix))]
+use std::fs as std_fs;
+use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+use std::path::{Path, PathBuf};
+use tokio::fs as tokio_fs;
 
 pub(crate) struct PreparedJobRun {
     pub host_workdir: PathBuf,
     pub env_vars: Vec<(String, String)>,
-    pub service_runtime: Option<crate::executor::services::ServiceRuntime>,
+    pub job_engine: EngineKind,
+    pub sandbox_settings_path: Option<PathBuf>,
+    pub sandbox_debug: bool,
+    pub service_runtime: Option<ServiceRuntime>,
     pub mounts: Vec<VolumeMount>,
     pub job_image: ImageSpec,
     pub arch: Option<String>,
@@ -29,9 +48,31 @@ pub(super) async fn prepare_job_run(
     exec.artifacts.prepare_targets(job)?;
     let workspace = super::workspace::prepare_job_workspace(exec, job)?;
     let mut env_vars = exec.job_env(job);
+    let job_override = exec.config.settings.job_override_for(&job.name);
+    let job_engine = resolved_job_engine(exec.config.engine, job_override.as_ref())?;
+    if matches!(job_engine, EngineKind::Sandbox) {
+        prepare_job_env(
+            &exec.container_workdir,
+            exec.shared_env.get("CI_PROJECT_DIR").map(String::as_str),
+            &workspace.host_workdir,
+            &mut env_vars,
+        )
+        .await?;
+    }
     let cache_env: HashMap<String, String> = env_vars.iter().cloned().collect();
-    let service_configs = selected_services(&exec.pipeline.defaults, job, &cache_env);
-    let service_runtime = crate::executor::services::ServiceRuntime::start(
+    let service_configs = selected_services(
+        &exec.pipeline.defaults,
+        job,
+        &cache_env,
+        exec.config.settings.map_host_user(),
+    );
+    if matches!(job_engine, EngineKind::Sandbox) && !service_configs.is_empty() {
+        return Err(anyhow!(
+            "job '{}' uses the sandbox engine with services, but services run on the global engine and are not supported with sandbox job execution yet",
+            job.name
+        ));
+    }
+    let service_runtime = ServiceRuntime::start(
         exec.config.engine,
         &exec.run_id,
         &job.name,
@@ -44,6 +85,17 @@ pub(super) async fn prepare_job_run(
     if let Some(runtime) = service_runtime.as_ref() {
         env_vars.extend(runtime.link_env().iter().cloned());
     }
+    let sandbox_runtime = if matches!(job_engine, EngineKind::Sandbox) {
+        resolve_sandbox_runtime(
+            &exec.session_dir,
+            exec.config.settings.sandbox_settings(),
+            job,
+            job_override.as_ref(),
+        )
+        .await?
+    } else {
+        ResolvedSandboxRuntime::default()
+    };
 
     let completed_jobs = exec.completed_jobs();
     let mut mounts = mounts::collect_volume_mounts(mounts::VolumeMountContext {
@@ -67,21 +119,31 @@ pub(super) async fn prepare_job_run(
     );
     mounts.extend(exec.bootstrap_mounts.clone());
     mounts.extend(workspace.mounts.clone());
+    if matches!(job_engine, EngineKind::Sandbox) {
+        materialize_sandbox_mounts(&workspace.host_workdir, &exec.container_workdir, &mounts)
+            .await?;
+        rewrite_env_mount_prefixes(&mut env_vars, &mounts);
+    }
     merge_dotenv_env(
         &mut env_vars,
         collect_dotenv_env(exec, plan, job, &completed_jobs)?,
     );
 
-    let job_override = exec.config.settings.job_override_for(&job.name);
-
     let job_image = exec.resolve_job_image_with_env(job, Some(&cache_env))?;
     let mut script_commands = expanded_commands(&exec.pipeline.defaults, job);
-    if let Some(runtime) = service_runtime.as_ref() {
+    if let Some(runtime) = service_runtime.as_ref()
+        && matches!(job_engine, EngineKind::ContainerCli)
+    {
         prepend_service_hosts(&mut script_commands, runtime.host_aliases());
     }
-    let script_path = crate::executor::script::write_job_script(
+    let script_workdir = if matches!(job_engine, EngineKind::Sandbox) {
+        workspace.host_workdir.as_path()
+    } else {
+        exec.container_workdir.as_path()
+    };
+    let script_path = write_job_script(
         &exec.scripts_dir,
-        &exec.container_workdir,
+        script_workdir,
         job,
         &script_commands,
         exec.verbose_scripts,
@@ -90,6 +152,9 @@ pub(super) async fn prepare_job_run(
     Ok(PreparedJobRun {
         host_workdir: workspace.host_workdir,
         env_vars,
+        job_engine,
+        sandbox_settings_path: sandbox_runtime.settings_path,
+        sandbox_debug: sandbox_runtime.debug,
         service_runtime,
         mounts,
         job_image,
@@ -110,11 +175,22 @@ pub(super) async fn prepare_job_run(
     })
 }
 
+fn resolved_job_engine(
+    default_engine: EngineKind,
+    override_cfg: Option<&ResolvedJobOverride>,
+) -> Result<EngineKind> {
+    let Some(choice) = override_cfg.and_then(|cfg| cfg.engine) else {
+        return Ok(default_engine);
+    };
+    validate_engine_choice(choice)?;
+    Ok(resolve_engine(choice))
+}
+
 fn collect_dotenv_env(
     exec: &ExecutorCore,
     plan: &ExecutionPlan,
     job: &JobSpec,
-    completed_jobs: &HashMap<String, crate::model::ArtifactSourceOutcome>,
+    completed_jobs: &HashMap<String, ArtifactSourceOutcome>,
 ) -> Result<Vec<(String, String)>> {
     let mut vars = Vec::new();
 
@@ -143,7 +219,7 @@ fn collect_dotenv_env(
                     }
                     if let Some(report) = &dep_job.artifacts.report_dotenv {
                         let path = exec.artifacts.job_artifact_host_path(&variant, report);
-                        merge_dotenv_env(&mut vars, crate::secrets::load_dotenv_env_pairs(&path)?);
+                        merge_dotenv_env(&mut vars, load_dotenv_env_pairs(&path)?);
                     }
                 }
             }
@@ -169,7 +245,7 @@ fn collect_dotenv_env(
         }
         if let Some(report) = &dep_job.artifacts.report_dotenv {
             let path = exec.artifacts.job_artifact_host_path(&dep_job.name, report);
-            merge_dotenv_env(&mut vars, crate::secrets::load_dotenv_env_pairs(&path)?);
+            merge_dotenv_env(&mut vars, load_dotenv_env_pairs(&path)?);
         }
     }
 
@@ -185,6 +261,18 @@ fn merge_dotenv_env(env: &mut Vec<(String, String)>, extra: Vec<(String, String)
             *existing = value;
         } else {
             env.push((key, value));
+        }
+    }
+}
+
+fn rewrite_env_prefix(env: &mut [(String, String)], from: &str, to: &str) {
+    for (_, value) in env.iter_mut() {
+        if value == from {
+            *value = to.to_string();
+            continue;
+        }
+        if let Some(suffix) = value.strip_prefix(from) {
+            *value = format!("{to}{suffix}");
         }
     }
 }
@@ -226,27 +314,53 @@ fn selected_services(
     defaults: &PipelineDefaultsSpec,
     job: &JobSpec,
     env_lookup: &HashMap<String, String>,
+    map_host_user: bool,
 ) -> Vec<ServiceSpec> {
     if job.services.is_empty() {
         if !job.inherit_default_services {
             return Vec::new();
         }
-        expand_service_images(defaults.services.clone(), env_lookup)
+        expand_service_images(defaults.services.clone(), env_lookup, map_host_user)
     } else {
-        expand_service_images(job.services.clone(), env_lookup)
+        expand_service_images(job.services.clone(), env_lookup, map_host_user)
     }
 }
 
 fn expand_service_images(
     mut services: Vec<ServiceSpec>,
     env_lookup: &HashMap<String, String>,
+    map_host_user: bool,
 ) -> Vec<ServiceSpec> {
+    let mapped_user = map_host_user
+        .then(|| host_user_from_lookup(env_lookup))
+        .flatten();
     for service in &mut services {
         if service.image.contains('$') {
-            service.image = crate::env::expand_value(&service.image, env_lookup);
+            service.image = expand_value(&service.image, env_lookup);
+        }
+        if let Some(user) = service
+            .docker_user
+            .as_ref()
+            .filter(|value| value.contains('$'))
+        {
+            service.docker_user = Some(expand_value(user, env_lookup));
+        }
+        if service.docker_user.is_none()
+            && let Some(user) = mapped_user.as_ref()
+        {
+            service.docker_user = Some(user.clone());
         }
     }
     services
+}
+
+fn host_user_from_lookup(lookup: &HashMap<String, String>) -> Option<String> {
+    let uid = lookup.get("OPAL_HOST_UID").map(String::as_str)?.trim();
+    let gid = lookup.get("OPAL_HOST_GID").map(String::as_str)?.trim();
+    if uid.is_empty() || gid.is_empty() {
+        return None;
+    }
+    Some(format!("{uid}:{gid}"))
 }
 
 fn append_runtime_mounts(
@@ -267,6 +381,102 @@ fn append_runtime_mounts(
             read_only: true,
         });
     }
+}
+
+fn rewrite_env_mount_prefixes(env: &mut [(String, String)], mounts: &[VolumeMount]) {
+    for mount in mounts {
+        rewrite_env_prefix(
+            env,
+            &mount.container.display().to_string(),
+            &mount.host.display().to_string(),
+        );
+    }
+}
+
+async fn materialize_sandbox_mounts(
+    workspace_root: &Path,
+    container_root: &Path,
+    mounts: &[VolumeMount],
+) -> Result<()> {
+    for mount in mounts {
+        let Ok(relative) = mount.container.strip_prefix(container_root) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if !tokio_fs::try_exists(&mount.host).await.unwrap_or(false) {
+            continue;
+        }
+        let target = workspace_root.join(relative);
+        if let Some(parent) = target.parent() {
+            tokio_fs::create_dir_all(parent).await?;
+        }
+        remove_existing_target(&target).await?;
+        if mount.read_only {
+            copy_path_recursive(&mount.host, &target).await?;
+        } else {
+            link_mount_target(&mount.host, &target)?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_existing_target(target: &Path) -> Result<()> {
+    let metadata = match tokio_fs::symlink_metadata(target).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        tokio_fs::remove_file(target).await?;
+    } else {
+        tokio_fs::remove_dir_all(target).await?;
+    }
+    Ok(())
+}
+
+fn link_mount_target(source: &Path, target: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        unix_fs::symlink(source, target)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        if source.is_dir() {
+            return Err(anyhow!(
+                "sandbox writable mount materialization for directories requires symlink support"
+            ));
+        }
+        std_fs::copy(source, target)?;
+        Ok(())
+    }
+}
+
+async fn copy_path_recursive(src: &Path, dest: &Path) -> Result<()> {
+    let metadata = tokio_fs::symlink_metadata(src).await?;
+    if metadata.file_type().is_symlink() {
+        let target = tokio_fs::read_link(src).await?;
+        link_mount_target(&target, dest)?;
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        tokio_fs::create_dir_all(dest).await?;
+        let mut read_dir = tokio_fs::read_dir(src).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            let child_src = entry.path();
+            let child_dest = dest.join(entry.file_name());
+            Box::pin(copy_path_recursive(&child_src, &child_dest)).await?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        tokio_fs::create_dir_all(parent).await?;
+    }
+    tokio_fs::copy(src, dest).await?;
+    tokio_fs::set_permissions(dest, metadata.permissions()).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -353,8 +563,8 @@ mod tests {
             ..job("test")
         };
 
-        let inherited = selected_services(&defaults, &no_job_services, &HashMap::new());
-        let overridden = selected_services(&defaults, &with_job_services, &HashMap::new());
+        let inherited = selected_services(&defaults, &no_job_services, &HashMap::new(), false);
+        let overridden = selected_services(&defaults, &with_job_services, &HashMap::new(), false);
 
         assert_eq!(inherited[0].image, "redis:7");
         assert_eq!(overridden[0].image, "postgres:16");
@@ -372,9 +582,55 @@ mod tests {
             &defaults,
             &job,
             &HashMap::from([("REGISTRY_HOST".into(), "docker.io/library".into())]),
+            false,
         );
 
         assert_eq!(services[0].image, "docker.io/library/redis:7");
+    }
+
+    #[test]
+    fn selected_services_expands_docker_user_variables() {
+        let defaults = PipelineDefaultsSpec {
+            services: vec![ServiceSpec {
+                docker_user: Some("${OPAL_HOST_UID}:${OPAL_HOST_GID}".into()),
+                ..service("redis:7", Some("redis"))
+            }],
+            ..pipeline_defaults()
+        };
+        let job = job("build");
+
+        let services = selected_services(
+            &defaults,
+            &job,
+            &HashMap::from([
+                ("OPAL_HOST_UID".into(), "1000".into()),
+                ("OPAL_HOST_GID".into(), "1001".into()),
+            ]),
+            false,
+        );
+
+        assert_eq!(services[0].docker_user.as_deref(), Some("1000:1001"));
+    }
+
+    #[test]
+    fn selected_services_maps_host_user_when_enabled_and_unset() {
+        let defaults = PipelineDefaultsSpec {
+            services: vec![service("redis:7", Some("redis"))],
+            ..pipeline_defaults()
+        };
+        let job = job("build");
+
+        let services = selected_services(
+            &defaults,
+            &job,
+            &HashMap::from([
+                ("OPAL_HOST_UID".into(), "501".into()),
+                ("OPAL_HOST_GID".into(), "20".into()),
+            ]),
+            true,
+        );
+
+        assert_eq!(services[0].docker_user.as_deref(), Some("501:20"));
     }
 
     #[test]

@@ -88,12 +88,21 @@ pub async fn load_async(path: &Path) -> Result<Vec<HistoryEntry>> {
 pub fn save(path: &Path, entries: &[HistoryEntry]) -> Result<()> {
     let serialized =
         serde_json::to_string_pretty(entries).context("failed to serialize history")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create history dir {:?}", parent))?;
+    }
     fs::write(path, serialized).with_context(|| format!("failed to write {:?}", path))
 }
 
 pub async fn save_async(path: &Path, entries: &[HistoryEntry]) -> Result<()> {
     let serialized =
         serde_json::to_string_pretty(entries).context("failed to serialize history")?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create history dir {:?}", parent))?;
+    }
     tokio::fs::write(path, serialized)
         .await
         .with_context(|| format!("failed to write {:?}", path))

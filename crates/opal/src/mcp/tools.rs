@@ -899,6 +899,7 @@ async fn engine_status_tool(app: &OpalApp, arguments: Value) -> Result<Value> {
         EngineChoice::Podman,
         EngineChoice::Nerdctl,
         EngineChoice::Orbstack,
+        EngineChoice::Sandbox,
     ]
     .into_iter()
     .map(engine_status_entry)
@@ -2228,6 +2229,7 @@ impl EngineChoice {
             EngineChoice::Podman => "podman",
             EngineChoice::Nerdctl => "nerdctl",
             EngineChoice::Orbstack => "orbstack",
+            EngineChoice::Sandbox => "sandbox",
         }
     }
 }
@@ -2261,6 +2263,7 @@ fn resolved_engine_choice(choice: EngineChoice, settings: &OpalConfig) -> Engine
             EngineChoice::Podman => EngineKind::Podman,
             EngineChoice::Nerdctl => EngineKind::Nerdctl,
             EngineChoice::Orbstack => EngineKind::Orbstack,
+            EngineChoice::Sandbox => EngineKind::Sandbox,
         }
     }
 
@@ -2271,6 +2274,7 @@ fn resolved_engine_choice(choice: EngineChoice, settings: &OpalConfig) -> Engine
             EngineChoice::Docker => EngineKind::Docker,
             EngineChoice::Nerdctl => EngineKind::Nerdctl,
             EngineChoice::Orbstack | EngineChoice::Container => EngineKind::Docker,
+            EngineChoice::Sandbox => EngineKind::Sandbox,
         }
     }
 
@@ -2291,7 +2295,7 @@ fn engine_support(choice: EngineChoice) -> (bool, Option<String>) {
                 Some("Opal treats nerdctl as Linux-specific on macOS".to_string()),
             );
         }
-        (true, orbstack_or_container_note(choice))
+        (true, engine_choice_note(choice))
     }
 
     #[cfg(target_os = "linux")]
@@ -2305,7 +2309,7 @@ fn engine_support(choice: EngineChoice) -> (bool, Option<String>) {
                 true,
                 Some("Opal maps Orbstack to the docker runtime on Linux".to_string()),
             ),
-            _ => (true, orbstack_or_container_note(choice)),
+            _ => (true, engine_choice_note(choice)),
         }
     }
 
@@ -2317,7 +2321,7 @@ fn engine_support(choice: EngineChoice) -> (bool, Option<String>) {
     }
 }
 
-fn orbstack_or_container_note(choice: EngineChoice) -> Option<String> {
+fn engine_choice_note(choice: EngineChoice) -> Option<String> {
     match choice {
         EngineChoice::Orbstack => Some(
             "Orbstack uses the docker CLI; availability does not distinguish backend identity"
@@ -2325,6 +2329,9 @@ fn orbstack_or_container_note(choice: EngineChoice) -> Option<String> {
         ),
         EngineChoice::Container => {
             Some("Container runtime uses the Apple container CLI".to_string())
+        }
+        EngineChoice::Sandbox => {
+            Some("Sandbox runtime uses the Anthropic Sandbox Runtime CLI (`srt`)".to_string())
         }
         _ => None,
     }
@@ -2337,6 +2344,7 @@ fn engine_binary(choice: EngineChoice) -> &'static str {
         EngineChoice::Docker | EngineChoice::Orbstack => "docker",
         EngineChoice::Podman => "podman",
         EngineChoice::Nerdctl => "nerdctl",
+        EngineChoice::Sandbox => "srt",
     }
 }
 
@@ -2347,6 +2355,7 @@ fn engine_kind_name(kind: EngineKind) -> &'static str {
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
         EngineKind::Orbstack => "orbstack",
+        EngineKind::Sandbox => "sandbox",
     }
 }
 
@@ -2917,7 +2926,7 @@ mod tests {
             let opal_home = dir.path().join("opal-home-run-status");
             fs::create_dir_all(&opal_home).expect("opal home");
             unsafe {
-                env::set_var("OPAL_HOME", &opal_home);
+                env::set_var("XDG_DATA_HOME", &opal_home);
             }
             run_operations().clear();
             fs::write(
@@ -2970,7 +2979,7 @@ mod tests {
             }
 
             unsafe {
-                env::remove_var("OPAL_HOME");
+                env::remove_var("XDG_DATA_HOME");
             }
 
             let terminal = terminal.expect("terminal status");
@@ -2998,7 +3007,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-view-tool-metadata");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3047,7 +3056,7 @@ mod tests {
         assert_eq!(result["structuredContent"]["job"]["name"], "build");
         assert!(result["structuredContent"].get("job_log").is_none());
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3060,7 +3069,7 @@ mod tests {
         fs::create_dir_all(&workdir).expect("workdir");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3110,7 +3119,7 @@ mod tests {
         assert_eq!(result["structuredContent"]["run"]["run_id"], "run-explicit");
         assert_eq!(result["structuredContent"]["job"]["name"], "build");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3121,7 +3130,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-view-tool");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let log_path = opal_home.join("job.log");
         fs::write(&log_path, "hello log").expect("write log");
@@ -3187,7 +3196,7 @@ mod tests {
             "hello log"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3198,7 +3207,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-failed-jobs-latest");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3290,7 +3299,7 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0]["name"], "rust-checks");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3301,7 +3310,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-failed-jobs-run-id");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3374,7 +3383,7 @@ mod tests {
         assert_eq!(result["structuredContent"]["run"]["run_id"], "run-1");
         assert_eq!(result["structuredContent"]["failed_job_names"][0], "lint");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3385,7 +3394,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-history-list-status");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3445,7 +3454,7 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["run_id"], "run-3");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3458,7 +3467,7 @@ mod tests {
         fs::create_dir_all(&workdir).expect("workdir");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3494,7 +3503,7 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["run_id"], "run-explicit");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3505,7 +3514,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-history-list-job");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3582,7 +3591,7 @@ mod tests {
         assert_eq!(runs[0]["run_id"], "run-2");
         assert_eq!(result["structuredContent"]["filters"]["job"], "rust-checks");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3593,7 +3602,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-history-list-date");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3659,7 +3668,7 @@ mod tests {
             "2026-03-30T23:59:59Z"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3670,7 +3679,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-history-list-branch-pipeline");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3733,7 +3742,7 @@ mod tests {
             "pipelines/docs.yml"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3744,7 +3753,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-history-list-scope");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3791,7 +3800,7 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["run_id"], "run-local");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3802,7 +3811,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-run-diff-latest");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -3928,7 +3937,7 @@ mod tests {
         );
         assert_eq!(result["structuredContent"]["added_jobs"][0]["name"], "lint");
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -3939,7 +3948,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-run-diff-explicit");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -4041,7 +4050,7 @@ mod tests {
             .expect("changed jobs");
         assert!(changed.is_empty());
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4052,7 +4061,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-logs-search");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let build_log = opal_home.join("build.log");
         let docs_log = opal_home.join("docs.log");
@@ -4149,7 +4158,7 @@ mod tests {
             2
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4160,7 +4169,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-logs-search-filters");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let build_log = opal_home.join("build.log");
         let docs_log = opal_home.join("docs.log");
@@ -4242,7 +4251,7 @@ mod tests {
             "Fatal build issue"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4255,7 +4264,7 @@ mod tests {
         fs::create_dir_all(&workdir).expect("workdir");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         let log_path = opal_home.join("build.log");
         fs::write(&log_path, "fatal explicit workdir issue\n").expect("write log");
@@ -4313,7 +4322,7 @@ mod tests {
             "run-explicit"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4324,7 +4333,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-job-rerun-request");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -4371,7 +4380,7 @@ mod tests {
         assert_eq!(request.run_args.jobs, vec!["rust-checks"]);
         assert_eq!(request.run_args.engine, crate::EngineChoice::Docker);
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4384,7 +4393,7 @@ mod tests {
         fs::create_dir_all(&workdir).expect("workdir");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         save(
             &runtime::history_path(),
@@ -4431,7 +4440,7 @@ mod tests {
         assert_eq!(request.source_job.name, "rust-checks");
         assert_eq!(request.run_args.workdir, Some(workdir));
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4442,7 +4451,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-plan-explain-selected-closure");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
@@ -4483,7 +4492,7 @@ mod tests {
             false
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4494,7 +4503,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-plan-explain-blocked");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
@@ -4530,7 +4539,7 @@ mod tests {
         assert_eq!(result["structuredContent"]["job"]["status"], "blocked");
         assert_eq!(result["structuredContent"]["job"]["selected"], false);
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4541,7 +4550,7 @@ mod tests {
         let opal_home = dir.path().join("opal-home-plan-explain-skipped");
         fs::create_dir_all(&opal_home).expect("opal home");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
         }
         fs::write(
             dir.path().join(".gitlab-ci.yml"),
@@ -4577,7 +4586,7 @@ mod tests {
             "never-job"
         );
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 
@@ -4601,7 +4610,7 @@ mod tests {
 
         let original_path: Option<OsString> = env::var_os("PATH");
         unsafe {
-            env::set_var("OPAL_HOME", &opal_home);
+            env::set_var("XDG_DATA_HOME", &opal_home);
             env::set_var("PATH", &bin_dir);
         }
 
@@ -4645,7 +4654,7 @@ mod tests {
             }
         }
         unsafe {
-            env::remove_var("OPAL_HOME");
+            env::remove_var("XDG_DATA_HOME");
         }
     }
 }

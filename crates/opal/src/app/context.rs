@@ -73,6 +73,7 @@ pub(crate) fn resolve_engine(choice: EngineChoice) -> EngineKind {
         EngineChoice::Orbstack => EngineKind::Orbstack,
         EngineChoice::Podman => EngineKind::Podman,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
+        EngineChoice::Sandbox => EngineKind::Sandbox,
     }
 }
 
@@ -83,6 +84,7 @@ pub(crate) fn resolve_engine(choice: EngineChoice) -> EngineKind {
         EngineChoice::Docker => EngineKind::Docker,
         EngineChoice::Nerdctl => EngineKind::Nerdctl,
         EngineChoice::Orbstack => EngineKind::Docker,
+        EngineChoice::Sandbox => EngineKind::Sandbox,
         EngineChoice::Container => {
             eprintln!("'container' engine is unavailable on Linux; falling back to docker");
             EngineKind::Docker
@@ -122,8 +124,7 @@ mod tests {
         let settings = OpalConfig {
             engines: EngineSettings {
                 default: Some(EngineChoice::Docker),
-                container: None,
-                preserve_runtime_objects: false,
+                ..EngineSettings::default()
             },
             ..OpalConfig::default()
         };
@@ -139,8 +140,7 @@ mod tests {
         let settings = OpalConfig {
             engines: EngineSettings {
                 default: Some(EngineChoice::Docker),
-                container: None,
-                preserve_runtime_objects: false,
+                ..EngineSettings::default()
             },
             ..OpalConfig::default()
         };

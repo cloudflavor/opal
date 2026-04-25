@@ -12,6 +12,7 @@ pub struct EngineCommandContext<'a> {
     pub image_entrypoint: &'a [String],
     pub mounts: &'a [VolumeMount],
     pub env_vars: &'a [(String, String)],
+    pub host_aliases: &'a [(String, String)],
     pub network: Option<&'a str>,
     pub preserve_runtime_objects: bool,
     pub arch: Option<&'a str>,

@@ -17,7 +17,7 @@ use crate::ai::{
     self, AiContext, AiProviderKind, AiRequest, render_job_analysis_prompt,
     render_job_analysis_prompt_async,
 };
-use crate::app::context::history_scope_root;
+use crate::app::context::{history_scope_root, resolve_engine};
 use crate::compiler::compile_pipeline;
 use crate::display::{self, DisplayFormatter, collect_pipeline_plan, print_pipeline_summary};
 use crate::env::{build_job_env, expand_env_list};
@@ -41,6 +41,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
 use tokio::sync::mpsc;
@@ -532,6 +533,8 @@ impl ExecutorCore {
         &self,
         job_name: &str,
         container_name: &str,
+        job_engine: EngineKind,
+        service_engine: EngineKind,
         service_network: Option<&str>,
         service_containers: &[String],
     ) -> Result<Option<String>> {
@@ -539,6 +542,8 @@ impl ExecutorCore {
             self,
             job_name,
             container_name,
+            job_engine,
+            service_engine,
             service_network,
             service_containers,
         )
@@ -606,17 +611,17 @@ impl ExecutorCore {
 
     pub(crate) fn cancel_running_job(&self, job_name: &str) -> bool {
         let container = self.runtime_state.running_container(job_name);
-        if let Some(container_name) = container {
+        if let Some(container) = container {
             self.runtime_state.mark_job_cancelled(job_name);
-            self.kill_container(job_name, &container_name);
+            self.kill_container(job_name, container.engine, &container.container_name);
             true
         } else {
             false
         }
     }
 
-    pub(crate) fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
-        process::execute(self, ctx)
+    pub(crate) async fn execute(&self, ctx: ExecuteContext<'_>) -> Result<()> {
+        process::execute(self, ctx).await
     }
 
     pub(crate) fn print_job_completion(
@@ -649,12 +654,12 @@ impl ExecutorCore {
         logging::append_diagnostic_log_lines(log_path, &formatter, lines)
     }
 
-    pub(crate) fn kill_container(&self, job_name: &str, container_name: &str) {
-        lifecycle::kill_container(self, job_name, container_name);
+    pub(crate) fn kill_container(&self, job_name: &str, engine: EngineKind, container_name: &str) {
+        lifecycle::kill_container(self, engine, job_name, container_name);
     }
 
-    pub(crate) fn cleanup_finished_container(&self, container_name: &str) {
-        lifecycle::cleanup_finished_container(self, container_name);
+    pub(crate) fn cleanup_finished_container(&self, engine: EngineKind, container_name: &str) {
+        lifecycle::cleanup_finished_container(self, engine, container_name);
     }
 
     fn resolve_job_image_with_env(
@@ -1083,21 +1088,27 @@ impl ExecutorCore {
     }
 
     fn ui_runner_info_for_job(&self, job: &JobSpec) -> crate::ui::types::UiRunnerInfo {
-        let engine = match self.config.engine {
+        let job_override = self.config.settings.job_override_for(&job.name);
+        let effective_engine = job_override
+            .as_ref()
+            .and_then(|cfg| cfg.engine)
+            .map(resolve_engine)
+            .unwrap_or(self.config.engine);
+        let engine = match effective_engine {
             EngineKind::ContainerCli => "container",
             EngineKind::Docker => "docker",
             EngineKind::Podman => "podman",
             EngineKind::Nerdctl => "nerdctl",
             EngineKind::Orbstack => "orbstack",
+            EngineKind::Sandbox => "sandbox",
         }
         .to_string();
 
-        let job_override = self.config.settings.job_override_for(&job.name);
         let image_platform = job
             .image
             .as_ref()
             .and_then(|image| image.docker_platform.as_deref());
-        let arch = match self.config.engine {
+        let arch = match effective_engine {
             EngineKind::ContainerCli => job_override
                 .as_ref()
                 .and_then(|cfg| cfg.arch.clone())
@@ -1116,7 +1127,7 @@ impl ExecutorCore {
                 .or_else(|| normalize_container_arch(std::env::consts::ARCH)),
         };
 
-        let (cpus, memory) = match self.config.engine {
+        let (cpus, memory) = match effective_engine {
             EngineKind::ContainerCli => {
                 let settings = self.config.settings.container_settings();
                 (
@@ -1209,6 +1220,9 @@ fn build_executor_env(config: &ExecutorConfig) -> Result<ExecutorEnvState> {
     build_executor_env_from(config, use_color, env_verbose, shared_env)
 }
 
+const OPAL_HOST_UID_KEY: &str = "OPAL_HOST_UID";
+const OPAL_HOST_GID_KEY: &str = "OPAL_HOST_GID";
+
 fn build_executor_env_from(
     config: &ExecutorConfig,
     use_color: bool,
@@ -1246,6 +1260,9 @@ fn build_executor_env_from(
             shared_env.insert(key, value);
         }
     }
+    if config.settings.map_host_user() {
+        inject_host_user_mapping(&mut env_vars, &mut shared_env);
+    }
 
     Ok(ExecutorEnvState {
         use_color,
@@ -1253,6 +1270,78 @@ fn build_executor_env_from(
         env_vars,
         shared_env,
     })
+}
+
+fn inject_host_user_mapping(
+    env_vars: &mut Vec<(String, String)>,
+    shared_env: &mut HashMap<String, String>,
+) {
+    let Some(uid) = resolve_host_user_id(shared_env, OPAL_HOST_UID_KEY, "UID", "-u") else {
+        return;
+    };
+    let Some(gid) = resolve_host_user_id(shared_env, OPAL_HOST_GID_KEY, "GID", "-g") else {
+        return;
+    };
+    upsert_executor_env_var(env_vars, shared_env, OPAL_HOST_UID_KEY, uid);
+    upsert_executor_env_var(env_vars, shared_env, OPAL_HOST_GID_KEY, gid);
+}
+
+fn resolve_host_user_id(
+    shared_env: &HashMap<String, String>,
+    mapped_key: &str,
+    legacy_key: &str,
+    id_flag: &str,
+) -> Option<String> {
+    if let Some(value) = shared_env
+        .get(mapped_key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(value.to_string());
+    }
+    if let Some(value) = shared_env
+        .get(legacy_key)
+        .map(String::as_str)
+        .filter(|value| is_numeric_id(value))
+    {
+        return Some(value.to_string());
+    }
+    detect_unix_id(id_flag).filter(|value| is_numeric_id(value))
+}
+
+fn detect_unix_id(flag: &str) -> Option<String> {
+    let output = Command::new("id").arg(flag).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn is_numeric_id(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn upsert_executor_env_var(
+    env_vars: &mut Vec<(String, String)>,
+    shared_env: &mut HashMap<String, String>,
+    key: &str,
+    value: String,
+) {
+    if let Some((_, existing)) = env_vars
+        .iter_mut()
+        .find(|(existing_key, _)| existing_key == key)
+    {
+        *existing = value.clone();
+    } else {
+        env_vars.push((key.to_string(), value.clone()));
+    }
+    shared_env.insert(key.to_string(), value);
 }
 
 fn recorded_pipeline_file(workdir: &Path, pipeline: &Path) -> String {
@@ -1326,6 +1415,7 @@ mod tests {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
         config.trace_scripts = true;
+        config.settings.engines.map_host_user = false;
 
         let host_env = HashMap::from([
             ("APP_TOKEN".to_string(), "secret".to_string()),
@@ -1355,6 +1445,7 @@ mod tests {
     fn build_executor_env_expands_selected_values_in_place() -> Result<()> {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
+        config.settings.engines.map_host_user = false;
 
         let host_env = HashMap::from([
             ("APP_CONFIG".to_string(), "$HOME/.config".to_string()),
@@ -1414,10 +1505,12 @@ mod tests {
     fn build_executor_env_prefers_explicit_env_includes_over_config_env() -> Result<()> {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
+        config.settings.engines.map_host_user = false;
         config.settings = OpalConfig {
             env: BTreeMap::from([("APP_TOKEN".to_string(), "from-config".to_string())]),
             ..OpalConfig::default()
         };
+        config.settings.engines.map_host_user = false;
 
         let host_env = HashMap::from([
             ("APP_TOKEN".to_string(), "from-host".to_string()),
@@ -1436,6 +1529,88 @@ mod tests {
         assert_eq!(
             shared_env.get("APP_TOKEN").map(String::as_str),
             Some("from-host")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_executor_env_injects_host_uid_gid_when_enabled() -> Result<()> {
+        let mut config = test_config();
+        config.settings = toml::from_str(
+            r#"
+[engine]
+map_host_user = true
+"#,
+        )
+        .expect("parse config");
+
+        let host_env = HashMap::from([
+            ("UID".to_string(), "501".to_string()),
+            ("GID".to_string(), "20".to_string()),
+        ]);
+        let ExecutorEnvState {
+            env_vars,
+            shared_env,
+            ..
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert!(
+            env_vars.contains(&("OPAL_HOST_UID".to_string(), "501".to_string())),
+            "expected OPAL_HOST_UID to be injected"
+        );
+        assert!(
+            env_vars.contains(&("OPAL_HOST_GID".to_string(), "20".to_string())),
+            "expected OPAL_HOST_GID to be injected"
+        );
+        assert_eq!(
+            shared_env.get("OPAL_HOST_UID").map(String::as_str),
+            Some("501")
+        );
+        assert_eq!(
+            shared_env.get("OPAL_HOST_GID").map(String::as_str),
+            Some("20")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_executor_env_preserves_explicit_host_uid_gid_values() -> Result<()> {
+        let mut config = test_config();
+        config.settings = toml::from_str(
+            r#"
+[engine]
+map_host_user = true
+"#,
+        )
+        .expect("parse config");
+
+        let host_env = HashMap::from([
+            ("UID".to_string(), "501".to_string()),
+            ("GID".to_string(), "20".to_string()),
+            ("OPAL_HOST_UID".to_string(), "1000".to_string()),
+            ("OPAL_HOST_GID".to_string(), "1001".to_string()),
+        ]);
+        let ExecutorEnvState {
+            env_vars,
+            shared_env,
+            ..
+        } = build_executor_env_from(&config, false, false, host_env)?;
+
+        assert!(
+            env_vars.contains(&("OPAL_HOST_UID".to_string(), "1000".to_string())),
+            "expected explicit OPAL_HOST_UID value"
+        );
+        assert!(
+            env_vars.contains(&("OPAL_HOST_GID".to_string(), "1001".to_string())),
+            "expected explicit OPAL_HOST_GID value"
+        );
+        assert_eq!(
+            shared_env.get("OPAL_HOST_UID").map(String::as_str),
+            Some("1000")
+        );
+        assert_eq!(
+            shared_env.get("OPAL_HOST_GID").map(String::as_str),
+            Some("1001")
         );
         Ok(())
     }

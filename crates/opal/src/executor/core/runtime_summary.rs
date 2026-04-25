@@ -11,17 +11,22 @@ pub(super) fn write_runtime_summary(
     exec: &ExecutorCore,
     job_name: &str,
     container_name: &str,
+    job_engine: EngineKind,
+    service_engine: EngineKind,
     service_network: Option<&str>,
     service_containers: &[String],
 ) -> Result<Option<String>> {
     let mut lines = Vec::new();
     lines.push(format!("Job: {job_name}"));
-    lines.push(format!("Engine: {}", engine_name(exec.config.engine)));
+    lines.push(format!("Engine: {}", engine_name(job_engine)));
+    if !service_containers.is_empty() {
+        lines.push(format!("Service engine: {}", engine_name(service_engine)));
+    }
     lines.push(String::new());
 
     lines.push("Main container".to_string());
     lines.push(format_container_summary(
-        exec.config.engine,
+        job_engine,
         container_name,
         service_network,
     )?);
@@ -36,7 +41,7 @@ pub(super) fn write_runtime_summary(
         lines.push("Service containers".to_string());
         for name in service_containers {
             lines.push(format_container_summary(
-                exec.config.engine,
+                service_engine,
                 name,
                 service_network,
             )?);
@@ -60,9 +65,16 @@ fn format_container_summary(
     container_name: &str,
     service_network: Option<&str>,
 ) -> Result<String> {
-    let value = inspect_container(engine, container_name)?;
     let mut out = String::new();
     writeln!(&mut out, "- name: {container_name}")?;
+    let value = match inspect_container(engine, container_name) {
+        Ok(value) => value,
+        Err(err) => {
+            // Runtime metadata should not flip a job result to failed; keep best-effort diagnostics.
+            writeln!(&mut out, "  inspect_error: {err}")?;
+            return Ok(out.trim_end().to_string());
+        }
+    };
     if let Some(image) =
         extract_string(&value, &["Config", "Image"]).or_else(|| extract_string(&value, &["image"]))
     {
@@ -228,6 +240,7 @@ fn engine_binary(engine: EngineKind) -> &'static str {
         EngineKind::Docker | EngineKind::Orbstack => "docker",
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
+        EngineKind::Sandbox => "srt",
     }
 }
 
@@ -238,5 +251,28 @@ fn engine_name(engine: EngineKind) -> &'static str {
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
         EngineKind::Orbstack => "orbstack",
+        EngineKind::Sandbox => "sandbox",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_container_summary;
+    use crate::EngineKind;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn format_container_summary_is_best_effort_when_inspect_fails() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic enough for test")
+            .as_nanos();
+        let container_name = format!("opal-runtime-summary-missing-{nanos}");
+
+        let summary = format_container_summary(EngineKind::Docker, &container_name, None)
+            .expect("runtime summary formatting should not fail on inspect errors");
+
+        assert!(summary.contains(&format!("- name: {container_name}")));
+        assert!(summary.contains("inspect_error:"));
     }
 }

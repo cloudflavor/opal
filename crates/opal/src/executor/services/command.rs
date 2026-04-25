@@ -19,12 +19,24 @@ pub(super) fn engine_binary(engine: EngineKind) -> &'static str {
         EngineKind::Podman => "podman",
         EngineKind::Nerdctl => "nerdctl",
         EngineKind::ContainerCli => "container",
+        EngineKind::Sandbox => "srt",
     }
 }
 
 pub(super) fn service_command(engine: EngineKind, service: &ServiceSpec) -> Command {
+    service_command_with_nested_mode(engine, service, nested_podman_run())
+}
+
+fn service_command_with_nested_mode(
+    engine: EngineKind,
+    service: &ServiceSpec,
+    disable_cgroups: bool,
+) -> Command {
     let mut command = Command::new(engine_binary(engine));
     command.arg("run");
+    if matches!(engine, EngineKind::Podman) && disable_cgroups {
+        command.arg("--cgroups=disabled");
+    }
     if matches!(engine, EngineKind::ContainerCli) {
         if let Some(arch) = default_container_cli_arch(service.docker_platform.as_deref()) {
             command.arg("--arch").arg(arch);
@@ -33,6 +45,10 @@ pub(super) fn service_command(engine: EngineKind, service: &ServiceSpec) -> Comm
         command.arg("--platform").arg(platform);
     }
     command
+}
+
+fn nested_podman_run() -> bool {
+    env::var("OPAL_IN_OPAL").is_ok_and(|value| value == "1")
 }
 
 pub(super) fn force_remove_container_command(engine: EngineKind, container_name: &str) -> Command {
@@ -167,8 +183,50 @@ fn command_failed_detail(stdout: &[u8], stderr: &[u8]) -> String {
 fn force_remove_args(engine: EngineKind) -> [&'static str; 2] {
     match engine {
         EngineKind::ContainerCli => ["rm", "--force"],
-        EngineKind::Docker | EngineKind::Orbstack | EngineKind::Podman | EngineKind::Nerdctl => {
-            ["rm", "-f"]
+        EngineKind::Docker
+        | EngineKind::Orbstack
+        | EngineKind::Podman
+        | EngineKind::Nerdctl
+        | EngineKind::Sandbox => ["rm", "-f"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::service_command_with_nested_mode;
+    use crate::EngineKind;
+    use crate::model::ServiceSpec;
+    use std::collections::HashMap;
+
+    fn sample_service() -> ServiceSpec {
+        ServiceSpec {
+            image: "docker.io/library/alpine:3.19".to_string(),
+            aliases: Vec::new(),
+            docker_platform: None,
+            docker_user: None,
+            entrypoint: Vec::new(),
+            command: Vec::new(),
+            variables: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn podman_service_command_disables_cgroups_in_nested_mode() {
+        let command = service_command_with_nested_mode(EngineKind::Podman, &sample_service(), true);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--cgroups=disabled"));
+    }
+
+    #[test]
+    fn docker_service_command_never_sets_podman_cgroups_flag() {
+        let command = service_command_with_nested_mode(EngineKind::Docker, &sample_service(), true);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(!args.iter().any(|arg| arg == "--cgroups=disabled"));
     }
 }

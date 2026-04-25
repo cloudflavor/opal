@@ -597,6 +597,7 @@ impl<'a> ExecutionCoordinator<'a> {
         if self.running.is_empty()
             && self.ready.is_empty()
             && self.delayed_pending.is_empty()
+            && self.resource_groups.retry_pending_is_empty()
             && self.pipeline_failed
             && self.waiting_on_failure.is_empty()
             && self.manual_jobs.is_empty()
@@ -607,6 +608,7 @@ impl<'a> ExecutionCoordinator<'a> {
         if self.running.is_empty()
             && self.ready.is_empty()
             && self.delayed_pending.is_empty()
+            && self.resource_groups.retry_pending_is_empty()
             && !self.pipeline_failed
             && self.waiting_on_failure.is_empty()
             && self.manual_jobs.is_empty()
@@ -629,6 +631,7 @@ impl<'a> ExecutionCoordinator<'a> {
         self.running.is_empty()
             && self.ready.is_empty()
             && self.delayed_pending.is_empty()
+            && self.resource_groups.retry_pending_is_empty()
             && !self.pipeline_failed
             && !self.waiting_on_failure.is_empty()
             && self.manual_jobs.is_empty()

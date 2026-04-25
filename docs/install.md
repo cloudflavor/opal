@@ -102,10 +102,12 @@ Supported local engines:
   - Docker CLI
   - Podman CLI
   - OrbStack/Docker-compatible CLI
+  - Anthropic Sandbox Runtime (`srt`) CLI
 - Linux:
   - Docker CLI
   - Podman CLI
   - Nerdctl CLI
+  - Anthropic Sandbox Runtime (`srt`) CLI
 
 `nerdctl` is Linux-oriented rather than a first-class macOS host engine.
 
@@ -128,6 +130,7 @@ In practice, that means:
 - `--engine podman` expects Podman
 - `--engine orbstack` expects an OrbStack-backed Docker-compatible CLI
 - `--engine nerdctl` expects Nerdctl
+- `--engine sandbox` expects Anthropic Sandbox Runtime (`srt`)
 
 If you want the Apple engine specifically, install it from:
 

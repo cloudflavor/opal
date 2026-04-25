@@ -1,4 +1,5 @@
 use super::ExecutorCore;
+use crate::app::context::resolve_engine;
 use crate::display::{self, indent_block};
 use crate::env::expand_value;
 use crate::execution_plan::ExecutableJob;
@@ -73,8 +74,22 @@ pub(super) fn log_job_start(
         }
     }
 
-    exec.runtime_state
-        .track_running_container(&planned.instance.job.name, &container_name);
+    let job_override = exec
+        .config
+        .settings
+        .job_override_for(&planned.instance.job.name);
+    let job_engine = job_override
+        .as_ref()
+        .and_then(|cfg| cfg.engine)
+        .map(resolve_engine)
+        .unwrap_or(exec.config.engine);
+    if !matches!(job_engine, crate::EngineKind::Sandbox) {
+        exec.runtime_state.track_running_container(
+            &planned.instance.job.name,
+            &container_name,
+            job_engine,
+        );
+    }
     Ok(JobRunInfo { container_name })
 }
 
@@ -119,18 +134,41 @@ pub(super) fn resolve_job_image_with_env(
         ));
     };
 
-    if !image.name.contains('$') {
-        return Ok(image);
+    let owned_lookup;
+    let lookup = if let Some(map) = env_lookup {
+        map
+    } else {
+        owned_lookup = exec.job_env(job).into_iter().collect();
+        &owned_lookup
+    };
+
+    if image.name.contains('$') {
+        image.name = expand_value(&image.name, lookup);
+    }
+    if let Some(user) = image
+        .docker_user
+        .as_ref()
+        .filter(|value| value.contains('$'))
+    {
+        image.docker_user = Some(expand_value(user, lookup));
+    }
+    if image.docker_user.is_none()
+        && exec.config.settings.map_host_user()
+        && let Some(mapped_user) = host_user_from_lookup(lookup)
+    {
+        image.docker_user = Some(mapped_user);
     }
 
-    if let Some(map) = env_lookup {
-        image.name = expand_value(&image.name, map);
-        Ok(image)
-    } else {
-        let owned_lookup: HashMap<String, String> = exec.job_env(job).into_iter().collect();
-        image.name = expand_value(&image.name, &owned_lookup);
-        Ok(image)
+    Ok(image)
+}
+
+fn host_user_from_lookup(lookup: &HashMap<String, String>) -> Option<String> {
+    let uid = lookup.get("OPAL_HOST_UID").map(String::as_str)?.trim();
+    let gid = lookup.get("OPAL_HOST_GID").map(String::as_str)?.trim();
+    if uid.is_empty() || gid.is_empty() {
+        return None;
     }
+    Some(format!("{uid}:{gid}"))
 }
 
 fn job_container_name(run_id: &str, stage_name: &str, job: &JobSpec, attempt: usize) -> String {
@@ -204,6 +242,60 @@ mod tests {
         .expect("image resolves");
 
         assert_eq!(image.name, "registry.example.com/linux:latest");
+    }
+
+    #[test]
+    fn resolve_job_image_expands_docker_user_from_lookup() {
+        let exec = test_core();
+        let job = JobSpec {
+            image: Some(crate::model::ImageSpec {
+                name: "alpine:3.20".into(),
+                docker_platform: None,
+                docker_user: Some("${OPAL_HOST_UID}:${OPAL_HOST_GID}".into()),
+                entrypoint: Vec::new(),
+            }),
+            ..job("build")
+        };
+
+        let image = resolve_job_image_with_env(
+            &exec,
+            &job,
+            Some(&HashMap::from([
+                ("OPAL_HOST_UID".into(), "1000".into()),
+                ("OPAL_HOST_GID".into(), "1001".into()),
+            ])),
+        )
+        .expect("image resolves");
+
+        assert_eq!(image.docker_user.as_deref(), Some("1000:1001"));
+    }
+
+    #[test]
+    fn resolve_job_image_maps_host_user_when_enabled_and_unset() {
+        let mut exec = test_core();
+        exec.config.settings = toml::from_str(
+            r#"
+[engine]
+map_host_user = true
+"#,
+        )
+        .expect("parse config");
+        let job = JobSpec {
+            image: Some("alpine:3.20".into()),
+            ..job("build")
+        };
+
+        let image = resolve_job_image_with_env(
+            &exec,
+            &job,
+            Some(&HashMap::from([
+                ("OPAL_HOST_UID".into(), "501".into()),
+                ("OPAL_HOST_GID".into(), "20".into()),
+            ])),
+        )
+        .expect("image resolves");
+
+        assert_eq!(image.docker_user.as_deref(), Some("501:20"));
     }
 
     #[test]

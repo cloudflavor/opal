@@ -56,7 +56,6 @@ pub fn spawn_job(
         let plan_clone = plan.clone();
         let planned_job = planned;
         let run_info = run_info;
-        let kill_info = run_info.container_name.clone();
         let ui_clone = ui.clone();
         let runtime_handle = tokio::runtime::Handle::current();
         let blocking = task::spawn_blocking(move || {
@@ -86,7 +85,7 @@ pub fn spawn_job(
                     },
                 },
                 Err(_) => {
-                    exec.kill_container(&job_name, &kill_info);
+                    let _ = exec.cancel_running_job(&job_name);
                     JobEvent {
                         name: job_name.clone(),
                         stage_name: stage_name.clone(),

@@ -56,11 +56,23 @@ Behavior summary:
 ## Scheduling
 
 - The executor keeps a ready queue and launches up to `--max-parallel-jobs` at a time.
-- Jobs run in containers using the selected engine:
-  - `docker`, `podman`, `container`, or `orbstack` for the supported local engine set.
+- Jobs run through the selected local engine:
+  - `docker`, `podman`, `container`, `orbstack`, or `sandbox` for the supported local engine set.
   - `nerdctl` remains available as a Linux-oriented option when the underlying `containerd` environment is directly usable.
   - `auto` picks a sane default for the current platform.
+  - `sandbox` uses the local Anthropic `srt` CLI path, so container-image-specific runtime flags are not applied directly by Opal for that job execution path.
+  - `sandbox` network/filesystem/policy behavior is controlled via `.opal/config.toml` sandbox settings, including per-job generated `srt` settings profiles.
+- For sandbox jobs that launch nested containerized runs, expected sandbox privileges usually include:
+  - outbound domains for dependency/image pulls (for example `crates.io`, `index.crates.io`, `static.crates.io`, `docker.io`, `registry-1.docker.io`, `ghcr.io`, `quay.io`, plus org registries)
+  - unix socket access for the engine backends in use (for example `/var/run/docker.sock`, `$HOME/.docker/run/docker.sock`, `$HOME/.orbstack/run/docker.sock`, `$HOME/.local/share/containers/podman/machine/podman.sock`, `$HOME/.containerd-rootless/grpc.sock`)
+  - write access to workspace, temp, and runtime state paths (for example `.`, `/tmp/**`, `$HOME/.local/share/opal`, engine state/cache directories under `$HOME`)
+  - `allow_local_binding = true` when local bind/listen is required for service checks or runtime probes
+  - `enable_weaker_nested_sandbox = true` when sandboxed jobs invoke nested sandboxed tooling
+- Use home-relative patterns (`$HOME/...` or `~...`) and engine-specific globs instead of machine-specific absolute user paths in shared docs/config examples.
+- If Apple `container` networking in your environment needs a custom resolver, set `[container].dns` so Opal forwards `--dns` on container runs.
 - Job services start as sibling containers on a per-job network, and Opal performs a readiness gate before running the job script when service inspection is available. On Apple’s `container` engine, Opal now fails fast if the underlying `container network create` call stalls instead of hanging indefinitely.
+  - Services still run on the run/global engine even when a job-level `.opal/config.toml` engine override is set.
+  - Jobs that use the `sandbox` engine and also declare services fail fast today because that cross-engine connectivity path is not wired yet.
 - Manual jobs (`when: manual`) appear in the UI and can be started interactively.
 - `resource_group` serializes matching jobs within a local run.
 - When a job fails, downstream jobs that depend on it are cancelled, and no new work starts (`fail-fast` semantics). Use `r` to restart a failed job after fixing the issue.
@@ -72,6 +84,8 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 - Opal does not do a fresh Git clone/fetch for every local job the way GitLab Runner normally does.
 - Instead, Opal prepares a per-job workspace snapshot from your current working tree so local development can run against dirty tracked edits and in-progress source changes.
 - The snapshot includes the repository's `.git` directory so Git-aware local behavior still works inside jobs and during local rule/ref evaluation.
+- When the source checkout is a linked worktree (`.git` is a gitdir pointer file), Opal does not copy that pointer into the snapshot.
+- Opal does not create synthetic Git commits while preparing job workspaces.
 - This is intentional: Opal is meant to help you debug the pipeline you are actively editing, not force a clean remote-style checkout before every job.
 - The snapshot is still Git-aware enough to avoid leaking obvious runtime/build garbage into jobs:
   - top-level and nested Git-ignored paths are excluded
@@ -83,10 +97,10 @@ This is intentionally a local-runner approximation, not a full reproduction of G
 
 ## Artifacts & logs
 
-- Each run gets a session directory under `$OPAL_HOME/<run-id>/` (default `~/.local/share/opal/<run-id>/`). Job artifacts are stored under `$OPAL_HOME/<run-id>/<job>/artifacts/`.
+- Each run gets a session directory under `$XDG_DATA_HOME/opal/<run-id>/` (default `~/.local/share/opal/<run-id>/`). Job artifacts are stored under `$XDG_DATA_HOME/opal/<run-id>/<job>/artifacts/`.
 - Declared `artifacts.paths` are copied into that directory and can be consumed by downstream jobs that request `needs: { artifacts: true }`. `artifacts:untracked` is also collected.
 - `dependencies:` can mount a narrower artifact subset from earlier jobs, and `needs:project` can fetch artifacts from GitLab when `--gitlab-token` is configured.
-- Logs are archived under `$OPAL_HOME/<run-id>/logs/`. The TUI also keeps an in-memory buffer and highlights diff-like lines (`+`/`-`).
+- Logs are archived under `$XDG_DATA_HOME/opal/<run-id>/logs/`. The TUI also keeps an in-memory buffer and highlights diff-like lines (`+`/`-`).
 
 ## Customization
 

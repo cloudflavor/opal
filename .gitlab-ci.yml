@@ -9,10 +9,10 @@ stages:
 default:
   image: docker.io/library/rust:1.90
   before_script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
     - rustc --version
     - cargo --version
-    - rustup component add rustfmt clippy
-    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_PIPELINE_ID:-local}/${CI_JOB_NAME_SLUG:-job}"
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
@@ -23,9 +23,17 @@ variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_BUILD_JOBS: "1"
+  RUSTC_WRAPPER: ""
+  SCCACHE_DISABLE: "1"
 
 fetch-sources:
   stage: deps
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull-push
+    paths:
+      - .cargo/
+      - target/
   script:
     - cargo fetch --locked
 
@@ -34,8 +42,20 @@ rust-checks:
   needs:
     - job: fetch-sources
       artifacts: false
+  before_script:
+    - rustc --version
+    - cargo --version
+    - rustup component add rustfmt clippy
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
   variables:
     CARGO_INCREMENTAL: "0"
+    CARGO_NET_OFFLINE: "true"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
   script:
     - cargo check --workspace --all-targets --locked
     - cargo fmt --all -- --check
@@ -63,21 +83,46 @@ unit-tests:
     - job: rust-checks
       artifacts: false
   cache:
-    key: "$CI_COMMIT_REF_SLUG-unit-tests-cargo"
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
     paths:
       - .cargo/
+  variables:
+    CARGO_NET_OFFLINE: "true"
   script:
-    - cargo test --workspace --all-targets --locked
+    - cargo test --workspace --lib --bins --locked
 
-opal-install-smoke:
+build-opal-bin:
   stage: test
   needs:
     - job: fetch-sources
       artifacts: false
+  variables:
+    CARGO_NET_OFFLINE: "true"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
   script:
-    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
-    - rm -rf "$CARGO_TARGET_DIR"
     - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
+  artifacts:
+    paths:
+      - .opal-installed/
+
+opal-install-smoke:
+  stage: test
+  needs:
+    - job: build-opal-bin
+      artifacts: true
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
+  script:
     - $CI_PROJECT_DIR/.opal-installed/bin/opal --version
 
 extended-tests:
@@ -89,14 +134,27 @@ extended-tests:
       artifacts: false
     - job: unit-tests
       artifacts: false
+    - job: build-opal-bin
+      artifacts: true
+  variables:
+    CARGO_NET_OFFLINE: "true"
+    OPAL_TMP_TEST_ROOT: "/tmp/opal-extended-tests"
+    OPAL_TEST_ARGS: "--no-tui"
+  before_script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+    - rustc --version
+    - cargo --version
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
   script:
-    - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
-    - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
-    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
-    - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
-      ./scripts/test-pipelines.sh
+      ./scripts/run-opal-suite-in-temp-workdir.sh
+      extended-tests
       needs-branch
       needs-optional
       needs-tag
@@ -122,21 +180,80 @@ e2e-tests:
       artifacts: false
     - job: unit-tests
       artifacts: false
+    - job: build-opal-bin
+      artifacts: true
+  variables:
+    CARGO_NET_OFFLINE: "true"
+    OPAL_TMP_TEST_ROOT: "/tmp/opal-e2e-tests"
+    OPAL_TEST_ARGS: "--no-tui"
+  before_script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+    - rustc --version
+    - cargo --version
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
   script:
-    - if [ -d "/opal/${CI_PIPELINE_ID:-}" ] || [ -d /opal ]; then echo "skipping nested opal fixture run"; exit 0; fi
-    - command -v jq >/dev/null || (apt-get update && apt-get install -y jq)
-    - export PATH="$CI_PROJECT_DIR/.opal-installed/bin:$PATH"
-    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
-    - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
     - >
-      ./scripts/test-pipelines.sh
-      resources-services
-      services-readiness-failure
+      ./scripts/run-opal-suite-in-temp-workdir.sh
+      e2e-tests
       cache-policies
       cache-fallback
       dotenv-reports
       bootstrap-runner
       secret-masking
+  artifacts:
+    when: always
+    paths:
+      - tests-temp/test-pipeline-logs/
+
+e2e-services:
+  stage: test
+  image:
+    name: docker.io/library/rust:1.90
+    docker:
+      user: "0:0"
+  needs:
+    - job: fetch-sources
+      artifacts: false
+    - job: rust-checks
+      artifacts: false
+    - job: unit-tests
+      artifacts: false
+    - job: build-opal-bin
+      artifacts: true
+  variables:
+    CARGO_NET_OFFLINE: "true"
+    OPAL_TEST_ARGS: "--no-tui"
+  before_script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update
+    - apt-get install -y --no-install-recommends podman nftables aardvark-dns
+    - rustc --version
+    - cargo --version
+    - podman --version
+    - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    policy: pull
+    paths:
+      - .cargo/
+      - target/
+  script:
+    - export OPAL_BIN="$CI_PROJECT_DIR/.opal-installed/bin/opal"
+    - export OPAL_TEST_SUITE="e2e-services"
+    - export OPAL_TEST_ARGS="--no-tui"
+    - export OPAL_HOST_UID="0"
+    - export OPAL_HOST_GID="0"
+    - >
+      ./scripts/test-pipelines.sh
+      resources-services
+      services-readiness-failure
   artifacts:
     when: always
     paths:
@@ -192,6 +309,8 @@ release-artifacts:arm64:
       artifacts: false
     - job: e2e-tests
       artifacts: false
+    - job: e2e-services
+      artifacts: false
     - job: ui-docs-check
       artifacts: false
   image:
@@ -223,6 +342,8 @@ release-artifacts:amd64:
     - job: extended-tests
       artifacts: false
     - job: e2e-tests
+      artifacts: false
+    - job: e2e-services
       artifacts: false
     - job: ui-docs-check
       artifacts: false
