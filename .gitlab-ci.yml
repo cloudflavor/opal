@@ -364,12 +364,45 @@ release-artifacts:amd64:
       - releases/*.tar.gz
       - releases/release-notes-*.txt
 
+release-artifacts:macos-aarch64:
+  stage: release
+  needs:
+    - job: rust-checks
+      artifacts: false
+    - job: opal-install-smoke
+      artifacts: false
+    - job: unit-tests
+      artifacts: false
+    - job: extended-tests
+      artifacts: false
+    - job: e2e-tests
+      artifacts: false
+    - job: e2e-services
+      artifacts: false
+    - job: ui-docs-check
+      artifacts: false
+  tags:
+    - macos-arm64
+  variables:
+    RELEASE_TARGETS: "macos-aarch64"
+  rules:
+    - if: "$CI_COMMIT_TAG"
+      when: on_success
+    - when: never
+  script:
+    - bash ./scripts/build-release-artifacts.sh
+  artifacts:
+    paths:
+      - releases/*.tar.gz
+      - releases/release-notes-*.txt
+
 publish-crate:
   stage: publish
   needs:
     - package-crate
     - release-artifacts:arm64
     - release-artifacts:amd64
+    - release-artifacts:macos-aarch64
   rules:
     - if: "$CI_COMMIT_TAG && $CARGO_REGISTRY_TOKEN"
       when: on_success
@@ -386,6 +419,7 @@ publish-github-release:
   needs:
     - release-artifacts:arm64
     - release-artifacts:amd64
+    - release-artifacts:macos-aarch64
   rules:
     - if: "$CI_COMMIT_TAG && $GITHUB_TOKEN && $GITHUB_REPOSITORY"
       when: on_success

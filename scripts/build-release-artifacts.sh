@@ -33,6 +33,42 @@ TARGET_MATRIX=(
   "x86_64-unknown-linux-gnu:linux:x86_64-unknown-linux-gnu"
 )
 
+target_filter_matches() {
+  local target="$1"
+  local label="$2"
+  local filter="$3"
+
+  if [[ "${filter}" == "${target}" || "${filter}" == "${label}" ]]; then
+    return 0
+  fi
+
+  case "${target}" in
+    x86_64-unknown-linux-gnu)
+      case "${filter}" in
+        amd64|linux-amd64|linux/amd64|x86_64-linux)
+          return 0
+          ;;
+      esac
+      ;;
+    aarch64-unknown-linux-gnu)
+      case "${filter}" in
+        arm64|linux-arm64|linux-aarch64|linux/arm64|aarch64-linux)
+          return 0
+          ;;
+      esac
+      ;;
+    aarch64-apple-darwin)
+      case "${filter}" in
+        macos-aarch64|macos-arm64|macos/arm64|darwin-arm64|darwin-aarch64|darwin/arm64)
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  return 1
+}
+
 target_selected() {
   local target="$1"
   local label="$2"
@@ -47,7 +83,7 @@ target_selected() {
     if [[ -z "${filter}" ]]; then
       continue
     fi
-    if [[ "${filter}" == "${target}" || "${filter}" == "${label}" ]]; then
+    if target_filter_matches "${target}" "${label}" "${filter}"; then
       return 0
     fi
   done

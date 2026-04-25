@@ -196,6 +196,7 @@ Tag-driven release publishing expectations:
 - release tags must match `crates/opal/Cargo.toml`'s package version, allowing an optional leading `v`
 - plain `opal run` does not turn into a tag pipeline just because `HEAD` is tagged; set `CI_COMMIT_TAG` or `GIT_COMMIT_TAG` explicitly when you want local tag-pipeline behavior
 - Linux release artifacts are split into separate `arm64` and `amd64` release jobs so each target runs in its own matching container image platform
+- macOS Apple Silicon release artifacts run in `release-artifacts:macos-aarch64` on runners tagged `macos-arm64`
 - `CARGO_REGISTRY_TOKEN` enables automatic crates.io publishing from the tag pipeline
 - `GITHUB_TOKEN` plus `GITHUB_REPOSITORY=owner/repo` enables automatic GitHub release publishing with the built tarballs and release notes
 - if `release/notes/<tag>.md` or `release/notes/<version>.md` exists, that file becomes the GitHub release body; otherwise the release job composes notes from the generated per-platform archive summaries
