@@ -247,12 +247,11 @@ fn inferred_ci_env(workdir: &Path, host_env: &HashMap<String, String>) -> Vec<(S
         })
     {
         inferred.push(("CI_COMMIT_TAG".into(), tag.clone()));
-    } else if host_env.contains_key("CI_COMMIT_TAG") {
-        if let Ok(tag) = git::current_tag(workdir)
-            && !tag.is_empty()
-        {
-            inferred.push(("CI_COMMIT_TAG".into(), tag));
-        }
+    } else if host_env.contains_key("CI_COMMIT_TAG")
+        && let Ok(tag) = git::current_tag(workdir)
+        && !tag.is_empty()
+    {
+        inferred.push(("CI_COMMIT_TAG".into(), tag));
     }
     insert_inferred_env(
         &mut inferred,
