@@ -1,7 +1,7 @@
 use super::manual::{ManualJobAction, ManualJobs, manual_skip_reason};
 use super::resource_groups::{ResourceAcquire, ResourceGroups};
 use super::retry::retry_allowed;
-use super::{interruptible_running_jobs, planned_summary, spawn_analysis, spawn_prompt_preview};
+use super::{planned_summary, running_jobs_in_plan_order, spawn_analysis, spawn_prompt_preview};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::executor::core::{
     ExecutionProgressCallback, ExecutionProgressEvent, ExecutorCore, ProgressJobStatus,
@@ -347,7 +347,7 @@ impl<'a> ExecutionCoordinator<'a> {
             UiCommand::AbortPipeline => {
                 self.abort_requested = true;
                 self.fail_pipeline(HaltKind::Aborted, anyhow!("pipeline aborted by user"));
-                for name in interruptible_running_jobs(self.plan.as_ref(), &self.running) {
+                for name in running_jobs_in_plan_order(self.plan.as_ref(), &self.running) {
                     self.exec.cancel_running_job(&name);
                 }
                 self.ready.clear();

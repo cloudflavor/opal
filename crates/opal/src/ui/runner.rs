@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -270,6 +271,16 @@ impl UiRunner {
 
     // TODO: does way too much, separate concerns
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.exit_requested = true;
+            self.request_abort();
+            return Ok(());
+        }
+        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.suspend_process();
+            return Ok(());
+        }
+
         let modifiers = key.modifiers;
         if self.state.help_visible() {
             match key.code {
@@ -312,11 +323,6 @@ impl UiRunner {
         }
         match key.code {
             KeyCode::Char('q') => {
-                self.exit_requested = true;
-                self.request_abort();
-                return Ok(());
-            }
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_requested = true;
                 self.request_abort();
                 return Ok(());
@@ -803,6 +809,23 @@ impl UiRunner {
         enable_raw_mode().ok();
         self.terminal.clear()?;
         result
+    }
+
+    fn suspend_process(&mut self) {
+        #[cfg(unix)]
+        {
+            let _ = self.suspend_terminal(|| {
+                let status = Command::new("kill")
+                    .arg("-TSTP")
+                    .arg(std::process::id().to_string())
+                    .status()
+                    .context("failed to invoke kill for SIGTSTP")?;
+                if !status.success() {
+                    return Err(anyhow::anyhow!("kill -TSTP exited with status {}", status));
+                }
+                Ok(())
+            });
+        }
     }
 }
 

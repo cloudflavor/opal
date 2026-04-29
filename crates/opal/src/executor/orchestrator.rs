@@ -18,17 +18,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::{sync::mpsc, task};
 
-fn interruptible_running_jobs(plan: &ExecutionPlan, running: &HashSet<String>) -> Vec<String> {
-    let mut names = running
-        .iter()
-        .filter(|name| {
-            plan.nodes
-                .get(*name)
-                .map(|planned| planned.instance.interruptible)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+fn running_jobs_in_plan_order(plan: &ExecutionPlan, running: &HashSet<String>) -> Vec<String> {
+    let mut names = running.iter().cloned().collect::<Vec<_>>();
     names.sort_by_key(|name| plan.order_index.get(name).copied().unwrap_or(usize::MAX));
     names
 }
@@ -234,7 +225,7 @@ fn update_summaries_from_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{interruptible_running_jobs, retry::retry_allowed};
+    use super::{retry::retry_allowed, running_jobs_in_plan_order};
     use crate::compiler::JobInstance;
     use crate::execution_plan::{ExecutableJob, ExecutionPlan};
     use crate::model::{ArtifactSpec, JobSpec, RetryPolicySpec};
@@ -331,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn interruptible_running_jobs_selects_only_interruptible_nodes() {
+    fn running_jobs_in_plan_order_includes_all_running_nodes() {
         let plan = ExecutionPlan {
             ordered: vec!["build".into(), "deploy".into()],
             nodes: HashMap::from([
@@ -347,11 +338,14 @@ mod tests {
         };
         let running = HashSet::from(["build".to_string(), "deploy".to_string()]);
 
-        assert_eq!(interruptible_running_jobs(&plan, &running), vec!["build"]);
+        assert_eq!(
+            running_jobs_in_plan_order(&plan, &running),
+            vec!["build", "deploy"]
+        );
     }
 
     #[test]
-    fn interruptible_running_jobs_respects_plan_order() {
+    fn running_jobs_in_plan_order_respects_plan_order() {
         let plan = ExecutionPlan {
             ordered: vec!["test".into(), "build".into()],
             nodes: HashMap::from([
@@ -365,7 +359,7 @@ mod tests {
         let running = HashSet::from(["build".to_string(), "test".to_string()]);
 
         assert_eq!(
-            interruptible_running_jobs(&plan, &running),
+            running_jobs_in_plan_order(&plan, &running),
             vec!["test", "build"]
         );
     }
