@@ -3935,7 +3935,7 @@ mod tests {
         matches_log_filter, render_markdown_for_pager,
     };
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus};
-    use crate::ui::types::{UiJobInfo, UiRunnerInfo};
+    use crate::ui::types::{UiJobInfo, UiJobStatus, UiRunnerInfo};
     use ratatui::style::{Color, Modifier};
     use std::collections::HashMap;
     use std::path::Path;
@@ -4165,6 +4165,49 @@ mod tests {
         );
 
         assert_eq!(state.current_log_path(), Some(log_path));
+    }
+
+    #[test]
+    fn restartable_job_name_allows_success_and_failed_jobs() {
+        let temp = tempdir().expect("tempdir");
+        let mut state = UiState::new(
+            vec![
+                UiJobInfo {
+                    name: "passed".to_string(),
+                    source_name: "passed".to_string(),
+                    stage: "test".to_string(),
+                    log_path: temp.path().join("passed.log"),
+                    log_hash: "passed123".to_string(),
+                    runner: UiRunnerInfo::default(),
+                },
+                UiJobInfo {
+                    name: "failed".to_string(),
+                    source_name: "failed".to_string(),
+                    stage: "test".to_string(),
+                    log_path: temp.path().join("failed.log"),
+                    log_hash: "failed123".to_string(),
+                    runner: UiRunnerInfo::default(),
+                },
+            ],
+            Vec::new(),
+            "run-1".to_string(),
+            HashMap::new(),
+            String::new(),
+            temp.path().to_path_buf(),
+            temp.path().join(".gitlab-ci.yml"),
+        );
+
+        state.finish_job("passed", UiJobStatus::Success, 1.0, None);
+        state.finish_job(
+            "failed",
+            UiJobStatus::Failed,
+            1.0,
+            Some("failed".to_string()),
+        );
+
+        assert_eq!(state.restartable_job_name(), Some("passed".to_string()));
+        state.next_job();
+        assert_eq!(state.restartable_job_name(), Some("failed".to_string()));
     }
 
     #[test]

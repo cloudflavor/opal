@@ -1,7 +1,10 @@
 use super::manual::{ManualJobAction, ManualJobs, manual_skip_reason};
 use super::resource_groups::{ResourceAcquire, ResourceGroups};
 use super::retry::retry_allowed;
-use super::{planned_summary, running_jobs_in_plan_order, spawn_analysis, spawn_prompt_preview};
+use super::{
+    planned_summary, running_jobs_in_plan_order, spawn_analysis, spawn_prompt_preview,
+    update_summaries_from_event,
+};
 use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::executor::core::{
     ExecutionProgressCallback, ExecutionProgressEvent, ExecutorCore, ProgressJobStatus,
@@ -34,6 +37,7 @@ pub(super) struct ExecutionCoordinator<'a> {
     waiting_on_failure: VecDeque<String>,
     delayed_pending: HashSet<String>,
     running: HashSet<String>,
+    restarting: HashSet<String>,
     manual_jobs: ManualJobs,
     resource_groups: ResourceGroups,
     attempts: HashMap<String, u32>,
@@ -87,6 +91,7 @@ impl<'a> ExecutionCoordinator<'a> {
             waiting_on_failure: VecDeque::new(),
             delayed_pending: HashSet::new(),
             running: HashSet::new(),
+            restarting: HashSet::new(),
             manual_jobs: ManualJobs::new(manual_input_available),
             resource_groups: ResourceGroups::new(runtime::resource_group_root()),
             attempts: HashMap::new(),
@@ -355,12 +360,50 @@ impl<'a> ExecutionCoordinator<'a> {
                 self.delayed_pending.clear();
                 self.manual_jobs.clear();
             }
-            UiCommand::RestartJob { .. } => {}
+            UiCommand::RestartJob { name } => {
+                let _ = self.start_restart_job(&name).await;
+            }
         }
+    }
+
+    async fn start_restart_job(&mut self, name: &str) -> Result<()> {
+        if self.running.contains(name) {
+            return Ok(());
+        }
+        let Some(planned) = self.plan.nodes.get(name).cloned() else {
+            return Ok(());
+        };
+
+        if let Some(ui_ref) = self.ui.as_deref() {
+            ui_ref.job_restarted(name);
+        }
+
+        let run_info = self.exec.log_job_start(&planned, self.ui.as_deref())?;
+        self.running.insert(name.to_string());
+        self.restarting.insert(name.to_string());
+        pipeline::spawn_job(
+            self.exec.clone(),
+            self.plan.clone(),
+            planned,
+            run_info,
+            self.semaphore.clone(),
+            self.tx.clone(),
+            self.ui.clone(),
+        );
+        Ok(())
     }
 
     async fn handle_job_event(&mut self, event: JobEvent) {
         self.running.remove(&event.name);
+        if self.restarting.remove(&event.name) {
+            update_summaries_from_event(
+                self.exec.as_ref(),
+                self.plan.as_ref(),
+                event,
+                &mut self.summaries,
+            );
+            return;
+        }
 
         let Some(planned) = self.plan.nodes.get(&event.name).cloned() else {
             let message = format!(
