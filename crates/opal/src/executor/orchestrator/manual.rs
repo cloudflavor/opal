@@ -13,6 +13,7 @@ pub(super) enum ManualJobAction {
 #[derive(Debug, Default)]
 pub(super) struct ManualJobs {
     waiting: HashSet<String>,
+    approved: HashSet<String>,
     input_available: bool,
 }
 
@@ -20,6 +21,7 @@ impl ManualJobs {
     pub(super) fn new(input_available: bool) -> Self {
         Self {
             waiting: HashSet::new(),
+            approved: HashSet::new(),
             input_available,
         }
     }
@@ -35,8 +37,12 @@ impl ManualJobs {
             return ManualJobAction::NotManual;
         }
 
+        let name = planned.instance.job.name.clone();
+        if self.approved.contains(&name) {
+            return ManualJobAction::NotManual;
+        }
+
         if self.input_available {
-            let name = planned.instance.job.name.clone();
             if self.waiting.insert(name.clone())
                 && let Some(ui_ref) = ui
             {
@@ -51,7 +57,12 @@ impl ManualJobs {
     }
 
     pub(super) fn start(&mut self, name: &str) -> bool {
-        self.waiting.remove(name)
+        if self.waiting.remove(name) {
+            self.approved.insert(name.to_string());
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) fn close_input(&mut self) -> Vec<String> {
@@ -61,6 +72,7 @@ impl ManualJobs {
 
     pub(super) fn clear(&mut self) {
         self.waiting.clear();
+        self.approved.clear();
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -98,6 +110,22 @@ mod tests {
         ));
         assert!(manual.start("deploy"));
         assert!(manual.is_empty());
+    }
+
+    #[test]
+    fn manual_jobs_start_approves_next_classification() {
+        let mut manual = ManualJobs::new(true);
+        let planned = manual_job("deploy", None);
+
+        assert!(matches!(
+            manual.classify(&planned, None),
+            ManualJobAction::WaitForInput
+        ));
+        assert!(manual.start("deploy"));
+        assert!(matches!(
+            manual.classify(&planned, None),
+            ManualJobAction::NotManual
+        ));
     }
 
     #[test]
