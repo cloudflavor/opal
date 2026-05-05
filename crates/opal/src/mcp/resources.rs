@@ -6,11 +6,17 @@ use crate::app::view::{
 use crate::history::HistoryEntry;
 use crate::mcp::uri::{ResourceUri, encode_path_segment, parse_resource_uri};
 use anyhow::{Context, Result};
+use include_dir::{Dir, File, include_dir};
 use serde_json::{Value, json};
+use std::path::Path;
+
+static EMBEDDED_DOCS: Dir<'static> = include_dir!("$OPAL_EMBEDDED_DOCS_DIR");
 
 pub(crate) async fn list_resources(app: &OpalApp) -> Result<Value> {
     let history = load_history_for_workdir(&app.resolve_workdir(None)).await?;
     let mut resources = Vec::new();
+    resources.push(docs_index_resource());
+    resources.extend(doc_files().into_iter().filter_map(doc_resource));
     resources.push(json!({
         "uri": "opal://history",
         "name": "Opal history",
@@ -65,6 +71,12 @@ pub(crate) async fn list_resources(app: &OpalApp) -> Result<Value> {
 pub(crate) async fn read_resource(app: &OpalApp, uri: &str) -> Result<Value> {
     let workdir = app.resolve_workdir(None);
     match parse_resource_uri(uri)? {
+        ResourceUri::DocsIndex => text_resource(
+            uri,
+            "application/json",
+            serde_json::to_string_pretty(&embedded_docs_index())?,
+        ),
+        ResourceUri::Doc { path } => text_resource(uri, "text/markdown", read_embedded_doc(&path)?),
         ResourceUri::History => {
             let history = load_history_for_workdir(&workdir).await?;
             text_resource(
@@ -107,6 +119,105 @@ pub(crate) async fn read_resource(app: &OpalApp, uri: &str) -> Result<Value> {
     }
 }
 
+fn docs_index_resource() -> Value {
+    json!({
+        "uri": "opal://docs",
+        "name": "Opal embedded docs",
+        "title": "Opal embedded documentation",
+        "description": "Index of markdown documentation embedded in the Opal binary",
+        "mimeType": "application/json"
+    })
+}
+
+fn doc_resource(file: &'static File<'static>) -> Option<Value> {
+    let path = file.path();
+    let contents = file.contents_utf8()?;
+    let uri = doc_uri(path)?;
+    Some(json!({
+        "uri": uri,
+        "name": path.display().to_string(),
+        "title": extract_doc_title(contents).unwrap_or_else(|| doc_title_from_path(path)),
+        "description": "Embedded Opal documentation",
+        "mimeType": "text/markdown",
+        "size": file.contents().len()
+    }))
+}
+
+pub(crate) fn embedded_docs_index() -> Value {
+    let docs = doc_files()
+        .into_iter()
+        .filter_map(doc_resource)
+        .collect::<Vec<_>>();
+    json!({ "docs": docs })
+}
+
+pub(crate) fn read_embedded_doc(path: &Path) -> Result<String> {
+    let file = find_doc_file(path)
+        .with_context(|| format!("embedded doc '{}' not found", path.display()))?;
+    let contents = file
+        .contents_utf8()
+        .with_context(|| format!("embedded doc '{}' is not valid UTF-8", path.display()))?;
+    Ok(contents.to_string())
+}
+
+fn doc_files() -> Vec<&'static File<'static>> {
+    let mut files = Vec::new();
+    collect_doc_files(&EMBEDDED_DOCS, &mut files);
+    files.sort_by_key(|file| file.path().display().to_string());
+    files
+}
+
+fn collect_doc_files(dir: &'static Dir<'static>, files: &mut Vec<&'static File<'static>>) {
+    for file in dir.files() {
+        if is_markdown_path(file.path()) {
+            files.push(file);
+        }
+    }
+    for dir in dir.dirs() {
+        collect_doc_files(dir, files);
+    }
+}
+
+fn find_doc_file(path: &Path) -> Option<&'static File<'static>> {
+    doc_files().into_iter().find(|file| file.path() == path)
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("md"))
+        == Some(true)
+}
+
+fn doc_uri(path: &Path) -> Option<String> {
+    let encoded_path = path
+        .iter()
+        .map(|segment| segment.to_str().map(encode_path_segment))
+        .collect::<Option<Vec<_>>>()?
+        .join("/");
+    Some(format!("opal://docs/{encoded_path}"))
+}
+
+fn extract_doc_title(contents: &str) -> Option<String> {
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let title = trimmed.trim_start_matches('#').trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn doc_title_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Document")
+        .replace('_', " ")
+}
+
 fn run_resource(entry: &HistoryEntry) -> Value {
     json!({
         "uri": format!("opal://runs/{}", encode_path_segment(&entry.run_id)),
@@ -145,6 +256,7 @@ mod tests {
     use crate::runtime;
     use std::env;
     use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -221,5 +333,45 @@ mod tests {
         unsafe {
             env::remove_var("XDG_DATA_HOME");
         }
+    }
+
+    #[test]
+    fn lists_embedded_doc_resources() {
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let resources = runtime
+            .block_on(list_resources(&app))
+            .expect("list resources");
+        let entries = resources["resources"].as_array().expect("resource array");
+        assert!(entries.iter().any(|entry| entry["uri"] == "opal://docs"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["uri"] == "opal://docs/index.md")
+        );
+    }
+
+    #[test]
+    fn reads_embedded_doc_resource() {
+        let app = OpalApp::from_current_dir().expect("app");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let resource = runtime
+            .block_on(read_resource(&app, "opal://docs/index.md"))
+            .expect("read doc");
+        assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
+        assert!(
+            resource["contents"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("# Opal Documentation")
+        );
+    }
+
+    #[test]
+    fn doc_uri_encodes_path_segments() {
+        assert_eq!(
+            super::doc_uri(Path::new("nested/help file.md")).expect("uri"),
+            "opal://docs/nested/help%20file.md"
+        );
     }
 }

@@ -211,6 +211,14 @@ impl ExecutorCore {
         &self,
         progress: Option<ExecutionProgressCallback>,
     ) -> ExecutionOutcome {
+        self.run_with_progress_and_commands(progress, None).await
+    }
+
+    pub(crate) async fn run_with_progress_and_commands(
+        &self,
+        progress: Option<ExecutionProgressCallback>,
+        commands: Option<mpsc::UnboundedReceiver<crate::ui::UiCommand>>,
+    ) -> ExecutionOutcome {
         let plan = match self.plan_jobs() {
             Ok(plan) => Arc::new(plan),
             Err(err) => {
@@ -277,7 +285,7 @@ impl ExecutorCore {
         } else {
             None
         };
-        let mut owned_command_rx = if !self.config.enable_tui {
+        let mut owned_command_rx = if !self.config.enable_tui && commands.is_none() {
             let (tx, rx) = mpsc::unbounded_channel();
             if let Ok(raw) = env::var("OPAL_ABORT_AFTER_SECS")
                 && let Ok(seconds) = raw.parse::<u64>()
@@ -292,10 +300,14 @@ impl ExecutorCore {
         } else {
             None
         };
+        let mut external_command_rx = commands;
         let mut ui_command_rx = ui_handle
             .as_ref()
             .and_then(|handle| handle.command_receiver());
-        let command_rx = ui_command_rx.as_mut().or(owned_command_rx.as_mut());
+        let command_rx = ui_command_rx
+            .as_mut()
+            .or(external_command_rx.as_mut())
+            .or(owned_command_rx.as_mut());
         let ui_bridge = ui_handle.as_ref().map(|handle| Arc::new(handle.bridge()));
 
         let (mut summaries, result) = orchestrator::execute_plan(

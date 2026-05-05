@@ -1,7 +1,9 @@
+use super::resources::{embedded_docs_index, read_embedded_doc};
+use super::uri::{ResourceUri, decode_relative_path, parse_resource_uri};
 use crate::app::OpalApp;
 use crate::app::context::{resolve_engine_choice, resolve_pipeline_path};
 use crate::app::plan::{explain as explain_plan, render as render_plan};
-use crate::app::run::{RunCapture, execute_and_capture_with_progress};
+use crate::app::run::{RunCapture, execute_and_capture_with_progress_and_commands};
 use crate::app::view::{
     find_history_entry_for_workdir, find_job, latest_history_entry_for_workdir,
     load_history_for_workdir, read_job_log, read_runtime_summary,
@@ -9,6 +11,7 @@ use crate::app::view::{
 use crate::config::OpalConfig;
 use crate::executor::core::{ExecutionProgressCallback, ExecutionProgressEvent, ProgressJobStatus};
 use crate::history::{HistoryEntry, HistoryStatus};
+use crate::ui::UiCommand;
 use crate::{EngineChoice, EngineKind, PlanArgs, RunArgs, ViewArgs};
 use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
@@ -19,10 +22,25 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use time::OffsetDateTime;
+use tokio::sync::mpsc;
 
 pub(crate) fn list_tools() -> Value {
     json!({
         "tools": [
+            {
+                "name": "opal_docs",
+                "title": "Read embedded Opal documentation",
+                "description": "Returns the embedded documentation index, or one embedded markdown document when path is provided.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Embedded doc path such as index.md, or an opal://docs/... resource URI."
+                        }
+                    }
+                }
+            },
             {
                 "name": "opal_plan",
                 "title": "Render an Opal pipeline plan",
@@ -60,9 +78,21 @@ pub(crate) fn list_tools() -> Value {
                 }
             },
             {
+                "name": "opal_cancel",
+                "title": "Cancel a background Opal operation",
+                "description": "Requests cancellation for a running Opal MCP operation. Pipeline runs receive an abort command so active job containers are stopped.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation_id": { "type": "string" }
+                    },
+                    "required": ["operation_id"]
+                }
+            },
+            {
                 "name": "opal_run_status",
                 "title": "Inspect a background Opal operation",
-                "description": "Returns the current or final status for a background Opal MCP operation, including run, rerun, and log-search requests.",
+                "description": "Returns the current or final status for a background Opal MCP operation, including run, rerun, cancellation, and log-search requests.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -78,7 +108,7 @@ pub(crate) fn list_tools() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "status": { "type": "string", "enum": ["running", "succeeded", "failed"] },
+                        "status": { "type": "string", "enum": ["running", "succeeded", "failed", "cancelled"] },
                         "active_only": { "type": "boolean" },
                         "limit": { "type": "integer", "minimum": 1 }
                     }
@@ -224,6 +254,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     match name {
+        "opal_docs" => docs_tool(arguments),
         "opal_plan" => {
             let rendered = render_plan(app, plan_args_from_value(arguments)?).await?;
             Ok(tool_result(
@@ -235,6 +266,7 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
             ))
         }
         "opal_run" => Ok(run_tool(app, arguments).await),
+        "opal_cancel" => Ok(cancel_tool(arguments).await?),
         "opal_run_status" => Ok(run_status_tool(arguments).await?),
         "opal_operations_list" => Ok(operations_list_tool(arguments).await?),
         "opal_view" => Ok(view_tool(app, arguments).await),
@@ -250,6 +282,52 @@ pub(crate) async fn call_tool(app: &OpalApp, params: Value) -> Result<Value> {
             Value::Null,
         )),
     }
+}
+
+fn docs_tool(arguments: Value) -> Result<Value> {
+    let Some(path) = arguments.get("path").and_then(Value::as_str) else {
+        let index = embedded_docs_index();
+        return Ok(tool_result(
+            serde_json::to_string_pretty(&index)?,
+            index,
+            false,
+        ));
+    };
+
+    if path == "opal://docs" {
+        let index = embedded_docs_index();
+        return Ok(tool_result(
+            serde_json::to_string_pretty(&index)?,
+            index,
+            false,
+        ));
+    }
+
+    let doc_path = if path.starts_with("opal://") {
+        match parse_resource_uri(path)? {
+            ResourceUri::Doc { path } => path,
+            ResourceUri::DocsIndex => {
+                let index = embedded_docs_index();
+                return Ok(tool_result(
+                    serde_json::to_string_pretty(&index)?,
+                    index,
+                    false,
+                ));
+            }
+            _ => anyhow::bail!("unsupported docs resource URI '{path}'"),
+        }
+    } else {
+        decode_relative_path(path)?
+    };
+    let text = read_embedded_doc(&doc_path)?;
+    Ok(tool_result(
+        text,
+        json!({
+            "path": doc_path.display().to_string(),
+            "mimeType": "text/markdown"
+        }),
+        false,
+    ))
 }
 
 async fn run_tool(app: &OpalApp, arguments: Value) -> Value {
@@ -280,13 +358,22 @@ async fn run_tool(app: &OpalApp, arguments: Value) -> Value {
         requested_job: None,
         source_run_id: None,
     };
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
     let operations = run_operations();
-    let start = operations.start_with_operation_id(operation_request, {
+    let start = operations.start_with_operation_id_and_control(operation_request, command_tx, {
         let app = app.clone();
         let operations = operations.clone();
         move |operation_id| {
             let progress = operation_progress_callback(operations, operation_id);
-            async move { execute_and_capture_with_progress(&app, args, Some(progress)).await }
+            async move {
+                execute_and_capture_with_progress_and_commands(
+                    &app,
+                    args,
+                    Some(progress),
+                    Some(command_rx),
+                )
+                .await
+            }
         }
     });
     let operation = start.operation;
@@ -345,6 +432,25 @@ async fn run_status_tool(arguments: Value) -> Result<Value> {
     Ok(tool_result(
         render_run_operation_summary(&operation),
         structured,
+        false,
+    ))
+}
+
+async fn cancel_tool(arguments: Value) -> Result<Value> {
+    let operation_id = arguments
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .context("missing operation_id")?;
+    let operation = run_operations()
+        .cancel(operation_id)
+        .await
+        .with_context(|| format!("background operation '{operation_id}' not found"))?;
+    Ok(tool_result(
+        format!(
+            "Cancellation requested for background Opal operation {}.",
+            operation.operation_id
+        ),
+        json!({ "operation": operation }),
         false,
     ))
 }
@@ -813,38 +919,45 @@ async fn job_rerun_tool(app: &OpalApp, arguments: Value) -> Value {
     let source_run_id = request.source_run.run_id.clone();
     let resolved_engine = resolved_engine_label(&resolved_workdir, run_args.engine).await;
     let operations = run_operations();
-    let start =
-        operations.start_with_operation_id(
-            RunOperationRequest {
-                tool: "opal_job_rerun",
-                dedupe_key: Some(operation_dedupe_key(
-                    "opal_job_rerun",
-                    [
-                        ("workdir", Some(resolved_workdir.display().to_string())),
-                        ("pipeline", Some(resolved_pipeline.display().to_string())),
-                        ("job", Some(requested_job.clone())),
-                        ("source_run_id", Some(source_run_id.clone())),
-                    ],
-                )),
-                workdir: Some(resolved_workdir.display().to_string()),
-                pipeline: Some(resolved_pipeline.display().to_string()),
-                resolved_engine,
-                run_id: Some(source_run_id.clone()),
-                requested_jobs: vec![requested_job.clone()],
-                requested_job: Some(requested_job.clone()),
-                source_run_id: Some(source_run_id.clone()),
-            },
-            {
-                let app = app.clone();
-                let operations = operations.clone();
-                move |operation_id| {
-                    let progress = operation_progress_callback(operations, operation_id);
-                    async move {
-                        execute_and_capture_with_progress(&app, run_args, Some(progress)).await
-                    }
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let start = operations.start_with_operation_id_and_control(
+        RunOperationRequest {
+            tool: "opal_job_rerun",
+            dedupe_key: Some(operation_dedupe_key(
+                "opal_job_rerun",
+                [
+                    ("workdir", Some(resolved_workdir.display().to_string())),
+                    ("pipeline", Some(resolved_pipeline.display().to_string())),
+                    ("job", Some(requested_job.clone())),
+                    ("source_run_id", Some(source_run_id.clone())),
+                ],
+            )),
+            workdir: Some(resolved_workdir.display().to_string()),
+            pipeline: Some(resolved_pipeline.display().to_string()),
+            resolved_engine,
+            run_id: Some(source_run_id.clone()),
+            requested_jobs: vec![requested_job.clone()],
+            requested_job: Some(requested_job.clone()),
+            source_run_id: Some(source_run_id.clone()),
+        },
+        command_tx,
+        {
+            let app = app.clone();
+            let operations = operations.clone();
+            move |operation_id| {
+                let progress = operation_progress_callback(operations, operation_id);
+                async move {
+                    execute_and_capture_with_progress_and_commands(
+                        &app,
+                        run_args,
+                        Some(progress),
+                        Some(command_rx),
+                    )
+                    .await
                 }
-            },
-        );
+            }
+        },
+    );
     let operation = start.operation;
     tool_result(
         if start.reused_existing {
@@ -1019,7 +1132,9 @@ struct RunOperationJobSummary {
 struct RunOperationState {
     operation: RunOperation,
     dedupe_key: Option<String>,
+    command_tx: Option<mpsc::UnboundedSender<UiCommand>>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
+    cancel_requested: bool,
 }
 
 enum InsertStartOperation {
@@ -1052,6 +1167,32 @@ impl RunOperations {
         F: std::future::Future<Output = RunCapture> + Send + 'static,
         B: FnOnce(String) -> F,
     {
+        self.start_with_optional_control(request, None, future_builder)
+    }
+
+    fn start_with_operation_id_and_control<F, B>(
+        &self,
+        request: RunOperationRequest,
+        command_tx: mpsc::UnboundedSender<UiCommand>,
+        future_builder: B,
+    ) -> RunOperationStart
+    where
+        F: std::future::Future<Output = RunCapture> + Send + 'static,
+        B: FnOnce(String) -> F,
+    {
+        self.start_with_optional_control(request, Some(command_tx), future_builder)
+    }
+
+    fn start_with_optional_control<F, B>(
+        &self,
+        request: RunOperationRequest,
+        command_tx: Option<mpsc::UnboundedSender<UiCommand>>,
+        future_builder: B,
+    ) -> RunOperationStart
+    where
+        F: std::future::Future<Output = RunCapture> + Send + 'static,
+        B: FnOnce(String) -> F,
+    {
         let (operation, operation_id) = match self.insert_start_operation(request) {
             InsertStartOperation::Started {
                 operation,
@@ -1065,6 +1206,9 @@ impl RunOperations {
             }
         };
 
+        if let Some(command_tx) = command_tx {
+            self.set_command_tx(&operation_id, command_tx);
+        }
         let future = future_builder(operation_id.clone());
         let operations = self.clone();
         let operation_id_for_task = operation_id.clone();
@@ -1133,7 +1277,9 @@ impl RunOperations {
             RunOperationState {
                 operation: operation.clone(),
                 dedupe_key: request.dedupe_key,
+                command_tx: None,
                 task_handle: None,
+                cancel_requested: false,
             },
         );
         InsertStartOperation::Started {
@@ -1181,6 +1327,46 @@ impl RunOperations {
         views
     }
 
+    async fn cancel(&self, operation_id: &str) -> Option<RunOperation> {
+        let (command_tx, task_handle) = {
+            let Ok(mut operations) = self.inner.lock() else {
+                return None;
+            };
+            let state = operations.get_mut(operation_id)?;
+            if state.operation.status != "running" {
+                return Some(state.operation.clone());
+            }
+            state.cancel_requested = true;
+            let now = now_rfc3339();
+            let now_unix = now_unix_seconds();
+            state.operation.phase = "cancelling";
+            state.operation.last_update_at = now;
+            state.operation.last_update_at_unix = now_unix;
+            if let Some(command_tx) = state.command_tx.clone() {
+                (Some(command_tx), None)
+            } else {
+                (None, state.task_handle.take())
+            }
+        };
+
+        if let Some(command_tx) = command_tx {
+            if command_tx.send(UiCommand::AbortPipeline).is_err() {
+                self.cancel_without_command(operation_id);
+            }
+        } else if let Some(handle) = task_handle {
+            handle.abort();
+            if let Err(error) = handle.await
+                && !error.is_cancelled()
+                && !error.is_panic()
+            {
+                self.fail_operation(operation_id, format!("background task failed: {error}"));
+            }
+            self.mark_cancelled(operation_id);
+        }
+
+        self.get(operation_id)
+    }
+
     fn get(&self, operation_id: &str) -> Option<RunOperation> {
         self.inner.lock().ok().and_then(|operations| {
             operations
@@ -1197,6 +1383,7 @@ impl RunOperations {
             return;
         };
         state.task_handle = None;
+        let cancel_requested = state.cancel_requested;
         let operation = &mut state.operation;
         let now = now_rfc3339();
         let now_unix = now_unix_seconds();
@@ -1204,7 +1391,9 @@ impl RunOperations {
         operation.last_update_at = now;
         operation.last_update_at_unix = now_unix;
         operation.phase = "completed";
-        operation.status = if capture.error.is_some() {
+        operation.status = if cancel_requested {
+            "cancelled"
+        } else if capture.error.is_some() {
             "failed"
         } else {
             "succeeded"
@@ -1228,11 +1417,15 @@ impl RunOperations {
             operation.total_jobs =
                 (!operation.requested_jobs.is_empty()).then_some(operation.requested_jobs.len());
             operation.completed_jobs = operation.total_jobs.unwrap_or_default();
-            operation.failed_jobs = usize::from(capture.error.is_some());
+            operation.failed_jobs = usize::from(capture.error.is_some() && !cancel_requested);
         }
         operation.result = capture.result;
         operation.result_summary = capture.result_summary;
-        operation.error = capture.error;
+        operation.error = if cancel_requested {
+            Some("operation cancelled by user".to_string())
+        } else {
+            capture.error
+        };
     }
 
     fn find_running_duplicate(&self, dedupe_key: Option<&str>) -> Option<RunOperation> {
@@ -1262,6 +1455,16 @@ impl RunOperations {
             return;
         };
         state.task_handle = Some(handle);
+    }
+
+    fn set_command_tx(&self, operation_id: &str, command_tx: mpsc::UnboundedSender<UiCommand>) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        state.command_tx = Some(command_tx);
     }
 
     fn update_phase(&self, operation_id: &str, phase: &'static str) {
@@ -1414,6 +1617,46 @@ impl RunOperations {
         operation.failed_jobs = usize::max(operation.failed_jobs, 1);
     }
 
+    fn cancel_without_command(&self, operation_id: &str) {
+        let handle = {
+            let Ok(mut operations) = self.inner.lock() else {
+                return;
+            };
+            let Some(state) = operations.get_mut(operation_id) else {
+                return;
+            };
+            state.task_handle.take()
+        };
+        if let Some(handle) = handle {
+            handle.abort();
+        }
+        self.mark_cancelled(operation_id);
+    }
+
+    fn mark_cancelled(&self, operation_id: &str) {
+        let Ok(mut operations) = self.inner.lock() else {
+            return;
+        };
+        let Some(state) = operations.get_mut(operation_id) else {
+            return;
+        };
+        if state.operation.status != "running" {
+            return;
+        }
+        state.task_handle = None;
+        state.cancel_requested = true;
+        let operation = &mut state.operation;
+        let now = now_rfc3339();
+        let now_unix = now_unix_seconds();
+        operation.status = "cancelled";
+        operation.phase = "completed";
+        operation.finished_at = Some(now.clone());
+        operation.last_update_at = now;
+        operation.last_update_at_unix = now_unix;
+        operation.active_job = None;
+        operation.error = Some("operation cancelled by user".to_string());
+    }
+
     #[cfg(test)]
     fn clear(&self) {
         if let Ok(mut operations) = self.inner.lock() {
@@ -1475,6 +1718,7 @@ enum OperationStatusFilter {
     Running,
     Succeeded,
     Failed,
+    Cancelled,
 }
 
 impl OperationStatusFilter {
@@ -1483,6 +1727,7 @@ impl OperationStatusFilter {
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -1496,8 +1741,9 @@ fn parse_operation_status_filter(value: &str) -> Result<OperationStatusFilter> {
         "running" => Ok(OperationStatusFilter::Running),
         "succeeded" => Ok(OperationStatusFilter::Succeeded),
         "failed" => Ok(OperationStatusFilter::Failed),
+        "cancelled" => Ok(OperationStatusFilter::Cancelled),
         other => anyhow::bail!(
-            "unsupported operation status filter '{other}'; expected running, succeeded, or failed"
+            "unsupported operation status filter '{other}'; expected running, succeeded, failed, or cancelled"
         ),
     }
 }
@@ -2499,6 +2745,7 @@ mod tests {
     use crate::history::{HistoryEntry, HistoryJob, HistoryStatus, save};
     use crate::mcp::TEST_ENV_LOCK;
     use crate::runtime;
+    use crate::ui::UiCommand;
     use serde_json::{Value, json};
     use std::env;
     use std::ffi::OsString;
@@ -2570,7 +2817,9 @@ mod tests {
         let response = list_tools();
         let tools = response["tools"].as_array().expect("tool array");
         assert!(tools.iter().any(|tool| tool["name"] == "opal_plan"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_docs"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run"));
+        assert!(tools.iter().any(|tool| tool["name"] == "opal_cancel"));
         assert!(tools.iter().any(|tool| tool["name"] == "opal_run_status"));
         assert!(
             tools
@@ -2589,6 +2838,34 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "opal_engine_status")
         );
+    }
+
+    #[test]
+    fn docs_tool_returns_embedded_doc_markdown() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let app = OpalApp::from_current_dir().expect("app");
+            let result = call_tool(
+                &app,
+                json!({
+                    "name": "opal_docs",
+                    "arguments": {
+                        "path": "index.md"
+                    }
+                }),
+            )
+            .await
+            .expect("docs tool");
+
+            assert_eq!(result["isError"], false);
+            assert_eq!(result["structuredContent"]["mimeType"], "text/markdown");
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .expect("doc text")
+                    .contains("# Opal Documentation")
+            );
+        });
     }
 
     #[test]
@@ -2913,6 +3190,109 @@ mod tests {
                     .as_deref()
                     .unwrap_or_default()
                     .contains("panicked")
+            );
+        });
+    }
+
+    #[test]
+    fn cancel_tool_marks_plain_background_operation_cancelled() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let started = run_operations().start(test_request("cancel-plain"), async move {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                RunCapture {
+                    history_entry: None,
+                    result: None,
+                    result_summary: Some("done".to_string()),
+                    error: None,
+                }
+            });
+
+            let app = OpalApp::from_current_dir().expect("app");
+            let cancelled = call_tool(
+                &app,
+                json!({
+                    "name": "opal_cancel",
+                    "arguments": {
+                        "operation_id": started.operation.operation_id
+                    }
+                }),
+            )
+            .await
+            .expect("cancel");
+
+            assert_eq!(
+                cancelled["structuredContent"]["operation"]["status"],
+                "cancelled"
+            );
+            assert_eq!(
+                cancelled["structuredContent"]["operation"]["error"],
+                "operation cancelled by user"
+            );
+        });
+    }
+
+    #[test]
+    fn cancel_sends_abort_command_to_controlled_operation() {
+        let _guard = TEST_ENV_LOCK.lock().expect("lock env");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            run_operations().clear();
+            let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+            let started = run_operations().start_with_operation_id_and_control(
+                test_request("cancel-controlled"),
+                command_tx,
+                move |_| async move {
+                    let aborted = matches!(command_rx.recv().await, Some(UiCommand::AbortPipeline));
+                    RunCapture {
+                        history_entry: None,
+                        result: None,
+                        result_summary: None,
+                        error: aborted.then_some("pipeline aborted by user".to_string()),
+                    }
+                },
+            );
+
+            let requested = run_operations()
+                .cancel(&started.operation.operation_id)
+                .await
+                .expect("operation");
+            assert_eq!(requested.phase, "cancelling");
+
+            let app = OpalApp::from_current_dir().expect("app");
+            let operation_id = started.operation.operation_id.clone();
+            let mut terminal = None;
+            for _ in 0..50 {
+                let status = call_tool(
+                    &app,
+                    json!({
+                        "name": "opal_run_status",
+                        "arguments": {
+                            "operation_id": operation_id
+                        }
+                    }),
+                )
+                .await
+                .expect("status");
+                let state = status["structuredContent"]["operation"]["status"]
+                    .as_str()
+                    .expect("status");
+                if state != "running" {
+                    terminal = Some(status);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let terminal = terminal.expect("terminal status");
+            assert_eq!(
+                terminal["structuredContent"]["operation"]["status"],
+                "cancelled"
+            );
+            assert_eq!(
+                terminal["structuredContent"]["operation"]["error"],
+                "operation cancelled by user"
             );
         });
     }

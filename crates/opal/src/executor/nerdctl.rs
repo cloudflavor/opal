@@ -27,6 +27,16 @@ impl NerdctlExecutor {
         self.core.run_with_progress(progress).await
     }
 
+    pub(crate) async fn run_with_progress_and_commands(
+        &self,
+        progress: Option<super::core::ExecutionProgressCallback>,
+        commands: Option<tokio::sync::mpsc::UnboundedReceiver<crate::ui::UiCommand>>,
+    ) -> ExecutionOutcome {
+        self.core
+            .run_with_progress_and_commands(progress, commands)
+            .await
+    }
+
     pub fn build_command(ctx: &EngineCommandContext<'_>) -> Command {
         NerdctlCommandBuilder::new(ctx)
             .with_workspace_volume()

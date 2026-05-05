@@ -78,7 +78,9 @@ fn opal_mcp_subcommand_supports_initialize_and_tools() {
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"opal_plan"));
+    assert!(tool_names.contains(&"opal_docs"));
     assert!(tool_names.contains(&"opal_run"));
+    assert!(tool_names.contains(&"opal_cancel"));
     assert!(tool_names.contains(&"opal_run_status"));
     assert!(tool_names.contains(&"opal_view"));
 
@@ -87,6 +89,33 @@ fn opal_mcp_subcommand_supports_initialize_and_tools() {
         json!({
             "jsonrpc": "2.0",
             "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "opal_docs",
+                "arguments": {
+                    "path": "index.md"
+                }
+            }
+        }),
+    );
+    let docs = parse_line(&mut reader);
+    assert_eq!(docs["result"]["isError"], false);
+    assert_eq!(
+        docs["result"]["structuredContent"]["mimeType"],
+        "text/markdown"
+    );
+    assert!(
+        docs["result"]["content"][0]["text"]
+            .as_str()
+            .expect("doc text")
+            .contains("# Opal Documentation")
+    );
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
             "method": "shutdown",
             "params": {}
         }),
@@ -169,6 +198,8 @@ fn opal_mcp_subcommand_supports_resources_and_background_run_status() {
         .iter()
         .filter_map(|entry| entry["uri"].as_str())
         .collect::<Vec<_>>();
+    assert!(uris.contains(&"opal://docs"));
+    assert!(uris.contains(&"opal://docs/index.md"));
     assert!(uris.contains(&"opal://history"));
 
     send_json(
@@ -193,6 +224,26 @@ fn opal_mcp_subcommand_supports_resources_and_background_run_status() {
         json!({
             "jsonrpc": "2.0",
             "id": 4,
+            "method": "resources/read",
+            "params": {
+                "uri": "opal://docs/index.md"
+            }
+        }),
+    );
+    let docs = parse_line(&mut reader);
+    assert_eq!(docs["result"]["contents"][0]["mimeType"], "text/markdown");
+    assert!(
+        docs["result"]["contents"][0]["text"]
+            .as_str()
+            .expect("doc text")
+            .contains("# Opal Documentation")
+    );
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
             "method": "tools/call",
             "params": {
                 "name": "opal_run",
@@ -210,7 +261,7 @@ fn opal_mcp_subcommand_supports_resources_and_background_run_status() {
         .to_string();
 
     let mut terminal = None;
-    for request_id in 5..45 {
+    for request_id in 6..46 {
         send_json(
             &mut stdin,
             json!({

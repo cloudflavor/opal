@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResourceUri {
+    DocsIndex,
+    Doc { path: PathBuf },
     History,
     LatestRun,
     Run { run_id: String },
@@ -42,6 +45,13 @@ pub(crate) fn decode_path_segment(input: &str) -> Result<String> {
 }
 
 pub(crate) fn parse_resource_uri(uri: &str) -> Result<ResourceUri> {
+    if uri == "opal://docs" {
+        return Ok(ResourceUri::DocsIndex);
+    }
+    if let Some(rest) = uri.strip_prefix("opal://docs/") {
+        let path = decode_relative_path(rest)?;
+        return Ok(ResourceUri::Doc { path });
+    }
     if uri == "opal://history" {
         return Ok(ResourceUri::History);
     }
@@ -68,6 +78,25 @@ pub(crate) fn parse_resource_uri(uri: &str) -> Result<ResourceUri> {
     }
 }
 
+pub(crate) fn decode_relative_path(input: &str) -> Result<PathBuf> {
+    if input.is_empty() {
+        bail!("missing embedded docs path");
+    }
+
+    let mut path = PathBuf::new();
+    for segment in input.split('/') {
+        if segment.is_empty() {
+            bail!("invalid empty embedded docs path segment");
+        }
+        let decoded = decode_path_segment(segment)?;
+        if decoded == "." || decoded == ".." || decoded.contains('/') || decoded.contains('\\') {
+            bail!("invalid embedded docs path segment '{decoded}'");
+        }
+        path.push(decoded);
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ResourceUri, decode_path_segment, encode_path_segment, parse_resource_uri};
@@ -90,6 +119,26 @@ mod tests {
                 run_id: "run-1".to_string(),
                 job_name: "build:linux".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn parses_embedded_doc_uri() {
+        let parsed = parse_resource_uri("opal://docs/quickstart.md").expect("parse uri");
+        assert_eq!(
+            parsed,
+            ResourceUri::Doc {
+                path: "quickstart.md".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_embedded_doc_path_segments() {
+        let err = parse_resource_uri("opal://docs/%2E%2E/secret.md").expect_err("reject path");
+        assert!(
+            err.to_string()
+                .contains("invalid embedded docs path segment")
         );
     }
 }

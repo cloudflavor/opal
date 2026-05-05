@@ -11,13 +11,15 @@ use crate::executor::{
     core::{ExecutionOutcome, ExecutionProgressCallback},
 };
 use crate::history::HistoryEntry;
+use crate::ui::UiCommand;
 use crate::{EngineKind, ExecutorConfig, RunArgs};
 use anyhow::{Context, Result};
+use tokio::sync::mpsc;
 
 pub(crate) async fn execute(app: &OpalApp, args: RunArgs) -> Result<()> {
     let prepared_args = prepare_run_args(app, args).await?;
     let config = build_executor_config(app, prepared_args, true).await?;
-    execute_with_config(config, None).await.result
+    execute_with_config(config, None, None).await.result
 }
 
 #[derive(Debug, Clone)]
@@ -28,10 +30,11 @@ pub(crate) struct RunCapture {
     pub error: Option<String>,
 }
 
-pub(crate) async fn execute_and_capture_with_progress(
+pub(crate) async fn execute_and_capture_with_progress_and_commands(
     app: &OpalApp,
     args: RunArgs,
     progress: Option<ExecutionProgressCallback>,
+    commands: Option<mpsc::UnboundedReceiver<UiCommand>>,
 ) -> RunCapture {
     let prepared_args = match prepare_run_args(app, args).await {
         Ok(args) => args,
@@ -55,7 +58,7 @@ pub(crate) async fn execute_and_capture_with_progress(
             };
         }
     };
-    run_capture_from_outcome(execute_with_config(prepared, progress).await)
+    run_capture_from_outcome(execute_with_config(prepared, progress, commands).await)
 }
 
 async fn prepare_run_args(app: &OpalApp, mut args: RunArgs) -> Result<RunArgs> {
@@ -135,6 +138,7 @@ async fn build_executor_config(
 async fn execute_with_config(
     config: ExecutorConfig,
     progress: Option<ExecutionProgressCallback>,
+    commands: Option<mpsc::UnboundedReceiver<UiCommand>>,
 ) -> ExecutionOutcome {
     let engine_kind = config.engine;
     let run_result = match engine_kind {
@@ -143,7 +147,11 @@ async fn execute_with_config(
                 .await
                 .with_context(|| "failed create container executor");
             match executor {
-                Ok(executor) => executor.run_with_progress(progress.clone()).await,
+                Ok(executor) => {
+                    executor
+                        .run_with_progress_and_commands(progress.clone(), commands)
+                        .await
+                }
                 Err(err) => {
                     return ExecutionOutcome {
                         history_entry: None,
@@ -157,7 +165,11 @@ async fn execute_with_config(
                 .await
                 .with_context(|| "failed create docker executor");
             match executor {
-                Ok(executor) => executor.run_with_progress(progress.clone()).await,
+                Ok(executor) => {
+                    executor
+                        .run_with_progress_and_commands(progress.clone(), commands)
+                        .await
+                }
                 Err(err) => {
                     return ExecutionOutcome {
                         history_entry: None,
@@ -171,7 +183,11 @@ async fn execute_with_config(
                 .await
                 .with_context(|| "failed create podman executor");
             match executor {
-                Ok(executor) => executor.run_with_progress(progress.clone()).await,
+                Ok(executor) => {
+                    executor
+                        .run_with_progress_and_commands(progress.clone(), commands)
+                        .await
+                }
                 Err(err) => {
                     return ExecutionOutcome {
                         history_entry: None,
@@ -185,7 +201,11 @@ async fn execute_with_config(
                 .await
                 .with_context(|| "failed create nerdctl executor");
             match executor {
-                Ok(executor) => executor.run_with_progress(progress.clone()).await,
+                Ok(executor) => {
+                    executor
+                        .run_with_progress_and_commands(progress.clone(), commands)
+                        .await
+                }
                 Err(err) => {
                     return ExecutionOutcome {
                         history_entry: None,
@@ -199,7 +219,11 @@ async fn execute_with_config(
                 .await
                 .with_context(|| "failed create orbstack executor");
             match executor {
-                Ok(executor) => executor.run_with_progress(progress).await,
+                Ok(executor) => {
+                    executor
+                        .run_with_progress_and_commands(progress, commands)
+                        .await
+                }
                 Err(err) => {
                     return ExecutionOutcome {
                         history_entry: None,

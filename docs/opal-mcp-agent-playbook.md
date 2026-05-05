@@ -73,12 +73,18 @@ In the current Opal implementation, the most important parts are:
 - `opal_plan`
   - evaluates a local `.gitlab-ci.yml`
   - returns either a formatted plan or JSON plan
+- `opal_docs`
+  - returns the embedded documentation index, or a selected embedded markdown document
+  - accepts paths such as `index.md` and resource URIs such as `opal://docs/index.md`
 - `opal_run`
   - starts a local pipeline run without the TUI
   - returns a background operation handle
+- `opal_cancel`
+  - requests cancellation for a running background operation by `operation_id`
+  - pipeline runs receive an abort command so active job containers are stopped before the operation settles as `cancelled`
 - `opal_run_status`
   - polls a background run or rerun operation
-  - returns `running`, `succeeded`, or `failed` plus the final recorded run when available
+  - returns `running`, `succeeded`, `failed`, or `cancelled` plus the final recorded run when available
 - `opal_view`
   - inspects the latest or a selected recorded run for the current checkout
   - can include job logs and runtime summaries
@@ -107,13 +113,17 @@ In the current Opal implementation, the most important parts are:
 
 ### Resources
 
-Opal also exposes history and run resources that are ideal for browsing prior state:
+Opal also exposes embedded documentation, history, and run resources that are ideal for browsing reference material and prior state:
 
+- `opal://docs`
+- `opal://docs/<doc-path>`
 - `opal://history`
 - `opal://runs/latest`
 - `opal://runs/<run_id>`
 - `opal://runs/<run_id>/jobs/<job>/log`
 - `opal://runs/<run_id>/jobs/<job>/runtime-summary`
+
+The `opal://docs` resource returns an index of markdown docs embedded in the Opal binary. Individual `opal://docs/<doc-path>` resources return the embedded markdown text, which lets an agent inspect Opal's packaged documentation without reading repository files directly.
 
 These resources are scoped to the current checkout, so agents do not accidentally inspect runs from other repositories that share the same `$XDG_DATA_HOME/opal` tree.
 
