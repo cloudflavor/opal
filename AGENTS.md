@@ -65,8 +65,6 @@
 
 ## Validation Workflow
 
-- Validate repository changes with Opal MCP against the local `.gitlab-ci.yml`, not only with ad hoc direct commands.
-- Use Opal MCP only for CI/CD pipeline planning and execution. Do not run the repository pipeline directly through `opal plan` or `opal run` when MCP is available.
 - After each meaningful change, rerun the relevant Opal MCP validation step for the affected pipeline slice instead of batching all pipeline validation until the end.
 - Prefer the Opal MCP plan step first to confirm the affected job closure, then the Opal MCP run step for the narrowest relevant pipeline slice.
 - When a change affects repository-wide Rust buildability or shared pipeline behavior, rerun at least the `rust-checks` Opal MCP slice immediately after the change lands.

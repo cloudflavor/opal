@@ -4,10 +4,10 @@ use crate::naming::job_name_slug;
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::fmt::Write as _;
-use std::fs;
-use std::process::Command;
+use tokio::fs;
+use tokio::process::Command;
 
-pub(super) fn write_runtime_summary(
+pub(super) async fn write_runtime_summary(
     exec: &ExecutorCore,
     job_name: &str,
     container_name: &str,
@@ -25,11 +25,7 @@ pub(super) fn write_runtime_summary(
     lines.push(String::new());
 
     lines.push("Main container".to_string());
-    lines.push(format_container_summary(
-        job_engine,
-        container_name,
-        service_network,
-    )?);
+    lines.push(format_container_summary(job_engine, container_name, service_network).await?);
 
     if let Some(network) = service_network {
         lines.push(String::new());
@@ -40,11 +36,7 @@ pub(super) fn write_runtime_summary(
         lines.push(String::new());
         lines.push("Service containers".to_string());
         for name in service_containers {
-            lines.push(format_container_summary(
-                service_engine,
-                name,
-                service_network,
-            )?);
+            lines.push(format_container_summary(service_engine, name, service_network).await?);
         }
     }
 
@@ -53,24 +45,25 @@ pub(super) fn write_runtime_summary(
         .join(job_name_slug(job_name))
         .join("runtime");
     fs::create_dir_all(&runtime_dir)
+        .await
         .with_context(|| format!("failed to create {}", runtime_dir.display()))?;
     let summary_path = runtime_dir.join("inspect.txt");
     fs::write(&summary_path, lines.join("\n\n"))
+        .await
         .with_context(|| format!("failed to write {}", summary_path.display()))?;
     Ok(Some(summary_path.display().to_string()))
 }
 
-fn format_container_summary(
+async fn format_container_summary(
     engine: EngineKind,
     container_name: &str,
     service_network: Option<&str>,
 ) -> Result<String> {
     let mut out = String::new();
     writeln!(&mut out, "- name: {container_name}")?;
-    let value = match inspect_container(engine, container_name) {
+    let value = match inspect_container(engine, container_name).await {
         Ok(value) => value,
         Err(err) => {
-            // Runtime metadata should not flip a job result to failed; keep best-effort diagnostics.
             writeln!(&mut out, "  inspect_error: {err}")?;
             return Ok(out.trim_end().to_string());
         }
@@ -124,11 +117,12 @@ fn format_container_summary(
     Ok(out.trim_end().to_string())
 }
 
-fn inspect_container(engine: EngineKind, container_name: &str) -> Result<Value> {
+async fn inspect_container(engine: EngineKind, container_name: &str) -> Result<Value> {
     let output = Command::new(engine_binary(engine))
         .arg("inspect")
         .arg(container_name)
         .output()
+        .await
         .with_context(|| format!("failed to inspect container '{container_name}'"))?;
     if !output.status.success() {
         return Err(anyhow!(
@@ -261,8 +255,8 @@ mod tests {
     use crate::EngineKind;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn format_container_summary_is_best_effort_when_inspect_fails() {
+    #[tokio::test]
+    async fn format_container_summary_is_best_effort_when_inspect_fails() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should be monotonic enough for test")
@@ -270,6 +264,7 @@ mod tests {
         let container_name = format!("opal-runtime-summary-missing-{nanos}");
 
         let summary = format_container_summary(EngineKind::Docker, &container_name, None)
+            .await
             .expect("runtime summary formatting should not fail on inspect errors");
 
         assert!(summary.contains(&format!("- name: {container_name}")));

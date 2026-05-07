@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as FmtWrite;
+use std::process::Stdio;
 use tokio::process::Command as TokioCommand;
 use tracing::warn;
 
@@ -75,7 +76,7 @@ impl ServiceRuntime {
                 .await
             {
                 if !preserve_runtime_objects {
-                    runtime.cleanup().await;
+                    let _ = runtime.cleanup().await;
                 }
                 return Err(err);
             }
@@ -84,7 +85,7 @@ impl ServiceRuntime {
                 .await
             {
                 if !preserve_runtime_objects {
-                    runtime.cleanup().await;
+                    let _ = runtime.cleanup().await;
                 }
                 return Err(err);
             }
@@ -113,8 +114,8 @@ impl ServiceRuntime {
         self.lifecycle.container_names()
     }
 
-    pub async fn cleanup(&mut self) {
-        self.lifecycle.cleanup().await;
+    pub async fn cleanup(&mut self) -> Vec<String> {
+        self.lifecycle.cleanup().await
     }
 
     pub fn link_env(&self) -> &[(String, String)] {
@@ -215,15 +216,27 @@ impl ServiceLifecycle {
         Ok(())
     }
 
-    async fn cleanup(&mut self) {
+    async fn cleanup(&mut self) -> Vec<String> {
+        let mut messages = Vec::new();
         for name in self.containers.drain(..).rev() {
-            let _ = TokioCommand::from(force_remove_container_command(self.engine, &name))
-                .status()
-                .await;
+            let mut cmd = TokioCommand::from(force_remove_container_command(self.engine, &name));
+            cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+            match cmd.output().await {
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    if !stderr.is_empty() {
+                        messages.push(stderr);
+                    }
+                }
+                Err(err) => {
+                    messages.push(format!("failed to remove service container {name}: {err}"));
+                }
+            }
         }
         let _ = ServiceNetworkManager::new(self.engine)
             .remove(&self.network)
             .await;
+        messages
     }
 }
 

@@ -1,33 +1,52 @@
+use std::process::Stdio;
+
 use super::ExecutorCore;
 use crate::EngineKind;
-use std::process::{Command, Stdio};
+use tokio::process::Command;
 use tracing::warn;
 
-pub(super) fn kill_container(
+pub(super) async fn kill_container(
     _exec: &ExecutorCore,
     engine: EngineKind,
     job_name: &str,
     container_name: &str,
-) {
+) -> Option<String> {
     let mut command = force_remove_container_command(engine, container_name);
-    if let Err(err) = command.status() {
-        warn!(
-            job = job_name,
-            container = container_name,
-            error = %err,
-            "failed to terminate container after timeout"
-        );
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    match command.output().await {
+        Ok(output) => stderr_message(&output.stderr),
+        Err(err) => {
+            warn!(
+                job = job_name,
+                container = container_name,
+                error = %err,
+                "failed to terminate container after timeout"
+            );
+            Some(format!(
+                "failed to remove container {container_name}: {err}"
+            ))
+        }
     }
 }
 
-pub(super) fn cleanup_finished_container(
+pub(super) async fn cleanup_finished_container(
     _exec: &ExecutorCore,
     engine: EngineKind,
     container_name: &str,
-) {
+) -> Option<String> {
     let mut command = force_remove_container_command(engine, container_name);
-    command.stdout(Stdio::null()).stderr(Stdio::null());
-    let _ = command.status();
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    match command.output().await {
+        Ok(output) => stderr_message(&output.stderr),
+        Err(err) => Some(format!(
+            "failed to remove container {container_name}: {err}"
+        )),
+    }
+}
+
+fn stderr_message(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn force_remove_container_command(engine: EngineKind, container_name: &str) -> Command {
