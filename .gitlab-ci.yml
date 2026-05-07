@@ -224,20 +224,17 @@ e2e-services:
       artifacts: false
     - job: unit-tests
       artifacts: false
-    - job: build-opal-bin
-      artifacts: true
   variables:
     CARGO_NET_OFFLINE: "true"
     OPAL_TEST_ARGS: "--no-tui"
   before_script:
     - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
     - export DEBIAN_FRONTEND=noninteractive
-    - apt-get update
-    - apt-get install -y --no-install-recommends podman nftables aardvark-dns
     - rustc --version
     - cargo --version
     - podman --version
     - export CARGO_TARGET_DIR="$CI_PROJECT_DIR/target/${CI_JOB_NAME_SLUG:-job}"
+    - cargo install --path crates/opal --locked --root "$CI_PROJECT_DIR/.opal-installed"
   cache:
     key: "$CI_COMMIT_REF_SLUG"
     policy: pull
