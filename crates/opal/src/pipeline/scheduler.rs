@@ -10,7 +10,6 @@ use tokio::time;
 
 use super::planner::{JobEvent, JobFailureKind, JobRunInfo};
 
-// TODO: jesus fucking christ - this does too much, this should be part of the pipeline scheduler.
 pub fn spawn_job(
     exec: Arc<ExecutorCore>,
     plan: Arc<ExecutionPlan>,
@@ -25,6 +24,7 @@ pub fn spawn_job(
     let log_path = planned.log_path.clone();
     let log_hash = planned.log_hash.clone();
     let timeout = planned.instance.timeout;
+
     task::spawn(async move {
         let permit = match semaphore.acquire_owned().await {
             Ok(permit) => permit,
@@ -52,40 +52,22 @@ pub fn spawn_job(
             }
         };
 
-        let exec_clone = exec.clone();
-        let plan_clone = plan.clone();
-        let planned_job = planned;
-        let run_info = run_info;
-        let ui_clone = ui.clone();
-        let runtime_handle = tokio::runtime::Handle::current();
-        let blocking = task::spawn_blocking(move || {
-            job_runner::run_planned_job(
-                exec_clone.as_ref(),
-                &runtime_handle,
-                plan_clone,
-                planned_job,
-                run_info,
-                ui_clone,
-            )
-        });
         let event = if let Some(limit) = timeout {
-            match time::timeout(limit, blocking).await {
-                Ok(result) => match result {
-                    Ok(event) => event,
-                    Err(err) => JobEvent {
-                        name: job_name.clone(),
-                        stage_name: stage_name.clone(),
-                        duration: 0.0,
-                        log_path: Some(log_path.clone()),
-                        log_hash: log_hash.clone(),
-                        result: Err(anyhow!("job task panicked: {err}")),
-                        failure_kind: Some(JobFailureKind::RunnerSystemFailure),
-                        exit_code: None,
-                        cancelled: false,
-                    },
-                },
+            match time::timeout(
+                limit,
+                job_runner::run_planned_job(
+                    exec.as_ref(),
+                    plan.clone(),
+                    planned,
+                    run_info,
+                    ui.clone(),
+                ),
+            )
+            .await
+            {
+                Ok(event) => event,
                 Err(_) => {
-                    let _ = exec.cancel_running_job(&job_name);
+                    let _ = exec.cancel_running_job(&job_name).await;
                     JobEvent {
                         name: job_name.clone(),
                         stage_name: stage_name.clone(),
@@ -103,21 +85,10 @@ pub fn spawn_job(
                 }
             }
         } else {
-            match blocking.await {
-                Ok(event) => event,
-                Err(err) => JobEvent {
-                    name: job_name.clone(),
-                    stage_name: stage_name.clone(),
-                    duration: 0.0,
-                    log_path: Some(log_path.clone()),
-                    log_hash: log_hash.clone(),
-                    result: Err(anyhow!("job task panicked: {err}")),
-                    failure_kind: Some(JobFailureKind::RunnerSystemFailure),
-                    exit_code: None,
-                    cancelled: false,
-                },
-            }
+            job_runner::run_planned_job(exec.as_ref(), plan.clone(), planned, run_info, ui.clone())
+                .await
         };
+
         if let Some(ui) = &ui
             && event.result.is_err()
             && !event.cancelled

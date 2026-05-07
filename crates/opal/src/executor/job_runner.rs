@@ -4,15 +4,13 @@ use crate::pipeline::{JobEvent, JobFailureKind, JobRunInfo};
 use crate::runner::ExecuteContext;
 use crate::ui::{UiBridge, UiJobStatus};
 use anyhow::{Result, anyhow};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::runtime::Handle;
+use tokio::fs;
 
 struct JobRunRequest<'a> {
     exec: &'a ExecutorCore,
-    runtime_handle: &'a Handle,
     plan: &'a ExecutionPlan,
     job: &'a crate::model::JobSpec,
     stage_name: &'a str,
@@ -28,9 +26,8 @@ struct RuntimeObjectsData {
     service_containers: Vec<String>,
 }
 
-pub(crate) fn run_planned_job(
+pub(crate) async fn run_planned_job(
     exec: &ExecutorCore,
-    runtime_handle: &Handle,
     plan: Arc<ExecutionPlan>,
     planned: ExecutableJob,
     run_info: JobRunInfo,
@@ -49,7 +46,6 @@ pub(crate) fn run_planned_job(
 
     let result = execute_job_run(JobRunRequest {
         exec,
-        runtime_handle,
         plan: plan.as_ref(),
         job: &job,
         stage_name: &stage_name,
@@ -57,11 +53,12 @@ pub(crate) fn run_planned_job(
         run_info: &run_info,
         job_start,
         ui: ui_ref,
-    });
+    })
+    .await;
 
     let duration = job_start.elapsed().as_secs_f32();
     let cancelled = exec.take_cancelled_job(&job_name);
-    let final_result = completion_result(result, cancelled, &log_path);
+    let final_result = completion_result(result, cancelled, &log_path).await;
     report_ui_completion(ui_ref, &job_name, &final_result, cancelled, duration);
 
     exec.clear_running_container(&job_name);
@@ -77,10 +74,9 @@ pub(crate) fn run_planned_job(
     )
 }
 
-fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
+async fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
     let JobRunRequest {
         exec,
-        runtime_handle,
         plan,
         job,
         stage_name,
@@ -90,7 +86,7 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         ui,
     } = request;
 
-    let mut prepared = match runtime_handle.block_on(exec.prepare_job_run(plan, job)) {
+    let mut prepared = match exec.prepare_job_run(plan, job).await {
         Ok(prepared) => prepared,
         Err(err) => {
             let mut diagnostics = vec![format!("job setup failed before container start: {err}")];
@@ -104,18 +100,20 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         }
     };
     let container_name = run_info.container_name.clone();
-    let exec_result = runtime_handle.block_on(exec.execute(execute_context(
-        &prepared,
-        job,
-        &container_name,
-        log_path,
-        ui,
-        exec.config.settings.preserve_runtime_objects(),
-    )));
+    let exec_result = exec
+        .execute(execute_context(
+            &prepared,
+            job,
+            &container_name,
+            log_path,
+            ui,
+            exec.config.settings.preserve_runtime_objects(),
+        ))
+        .await;
 
-    record_runtime_objects(exec, job, &container_name, &prepared)?;
-    cleanup_runtime(exec, runtime_handle, &container_name, &mut prepared);
-    collect_job_artifacts(exec, job, &prepared)?;
+    record_runtime_objects(exec, job, &container_name, &prepared).await?;
+    cleanup_runtime(exec, &container_name, &mut prepared, ui, &job.name).await;
+    collect_job_artifacts(exec, job, &prepared).await?;
     exec_result?;
     exec.print_job_completion(
         stage_name,
@@ -123,6 +121,96 @@ fn execute_job_run(request: JobRunRequest<'_>) -> Result<()> {
         log_path,
         job_start.elapsed().as_secs_f32(),
     );
+    Ok(())
+}
+
+async fn record_runtime_objects(
+    exec: &ExecutorCore,
+    job: &crate::model::JobSpec,
+    container_name: &str,
+    prepared: &crate::executor::core::PreparedJobRun,
+) -> Result<()> {
+    let runtime_data = runtime_objects_data(
+        prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.network_name()),
+        prepared
+            .service_runtime
+            .as_ref()
+            .map(|runtime| runtime.container_names()),
+    );
+    let runtime_summary_path = if matches!(prepared.job_engine, crate::EngineKind::Sandbox) {
+        None
+    } else {
+        exec.write_runtime_summary(
+            &job.name,
+            container_name,
+            prepared.job_engine,
+            exec.config.engine,
+            runtime_data.service_network.as_deref(),
+            &runtime_data.service_containers,
+        )
+        .await?
+    };
+    exec.record_runtime_objects(
+        &job.name,
+        container_name.to_string(),
+        runtime_data.service_network,
+        runtime_data.service_containers,
+        runtime_summary_path,
+    );
+    Ok(())
+}
+
+fn runtime_objects_data(
+    service_network: Option<&str>,
+    service_containers: Option<&[String]>,
+) -> RuntimeObjectsData {
+    RuntimeObjectsData {
+        service_network: service_network.map(str::to_string),
+        service_containers: service_containers.map_or_else(Vec::new, |names| names.to_vec()),
+    }
+}
+
+async fn cleanup_runtime(
+    exec: &ExecutorCore,
+    container_name: &str,
+    prepared: &mut crate::executor::core::PreparedJobRun,
+    ui: Option<&UiBridge>,
+    job_name: &str,
+) {
+    if !exec.config.settings.preserve_runtime_objects()
+        && !matches!(prepared.job_engine, crate::EngineKind::Sandbox)
+        && let Some(msg) = exec
+            .cleanup_finished_container(prepared.job_engine, container_name)
+            .await
+        && let Some(bridge) = ui
+    {
+        bridge.job_log_line(job_name, &msg);
+    }
+    if let Some(mut runtime) = prepared.service_runtime.take()
+        && !exec.config.settings.preserve_runtime_objects()
+    {
+        for msg in runtime.cleanup().await {
+            if let Some(bridge) = ui {
+                bridge.job_log_line(job_name, &msg);
+            }
+        }
+    }
+}
+
+async fn collect_job_artifacts(
+    exec: &ExecutorCore,
+    job: &crate::model::JobSpec,
+    prepared: &crate::executor::core::PreparedJobRun,
+) -> Result<()> {
+    exec.collect_declared_artifacts(job, &prepared.host_workdir, &prepared.mounts)
+        .await?;
+    exec.collect_untracked_artifacts(job, &prepared.host_workdir)
+        .await?;
+    exec.collect_dotenv_artifacts(job, &prepared.host_workdir, &prepared.mounts)
+        .await?;
     Ok(())
 }
 
@@ -165,83 +253,6 @@ fn execute_context<'a>(
         sandbox_settings: prepared.sandbox_settings_path.as_deref(),
         sandbox_debug: prepared.sandbox_debug,
     }
-}
-
-fn record_runtime_objects(
-    exec: &ExecutorCore,
-    job: &crate::model::JobSpec,
-    container_name: &str,
-    prepared: &crate::executor::core::PreparedJobRun,
-) -> Result<()> {
-    let runtime_data = runtime_objects_data(
-        prepared
-            .service_runtime
-            .as_ref()
-            .map(|runtime| runtime.network_name()),
-        prepared
-            .service_runtime
-            .as_ref()
-            .map(|runtime| runtime.container_names()),
-    );
-    let runtime_summary_path = if matches!(prepared.job_engine, crate::EngineKind::Sandbox) {
-        None
-    } else {
-        exec.write_runtime_summary(
-            &job.name,
-            container_name,
-            prepared.job_engine,
-            exec.config.engine,
-            runtime_data.service_network.as_deref(),
-            &runtime_data.service_containers,
-        )?
-    };
-    exec.record_runtime_objects(
-        &job.name,
-        container_name.to_string(),
-        runtime_data.service_network,
-        runtime_data.service_containers,
-        runtime_summary_path,
-    );
-    Ok(())
-}
-
-fn runtime_objects_data(
-    service_network: Option<&str>,
-    service_containers: Option<&[String]>,
-) -> RuntimeObjectsData {
-    RuntimeObjectsData {
-        service_network: service_network.map(str::to_string),
-        service_containers: service_containers.map_or_else(Vec::new, |names| names.to_vec()),
-    }
-}
-
-fn cleanup_runtime(
-    exec: &ExecutorCore,
-    runtime_handle: &Handle,
-    container_name: &str,
-    prepared: &mut crate::executor::core::PreparedJobRun,
-) {
-    if !exec.config.settings.preserve_runtime_objects()
-        && !matches!(prepared.job_engine, crate::EngineKind::Sandbox)
-    {
-        exec.cleanup_finished_container(prepared.job_engine, container_name);
-    }
-    if let Some(mut runtime) = prepared.service_runtime.take()
-        && !exec.config.settings.preserve_runtime_objects()
-    {
-        runtime_handle.block_on(runtime.cleanup());
-    }
-}
-
-fn collect_job_artifacts(
-    exec: &ExecutorCore,
-    job: &crate::model::JobSpec,
-    prepared: &crate::executor::core::PreparedJobRun,
-) -> Result<()> {
-    exec.collect_declared_artifacts(job, &prepared.host_workdir, &prepared.mounts)?;
-    exec.collect_untracked_artifacts(job, &prepared.host_workdir)?;
-    exec.collect_dotenv_artifacts(job, &prepared.host_workdir, &prepared.mounts)?;
-    Ok(())
 }
 
 fn report_ui_completion(
@@ -296,15 +307,15 @@ fn build_job_event(
     }
 }
 
-fn completion_result(result: Result<()>, cancelled: bool, log_path: &Path) -> Result<()> {
+async fn completion_result(result: Result<()>, cancelled: bool, log_path: &Path) -> Result<()> {
     if cancelled {
         Err(anyhow!("job cancelled by user"))
     } else {
-        enrich_failure_with_log_hint(result, log_path)
+        enrich_failure_with_log_hint(result, log_path).await
     }
 }
 
-fn enrich_failure_with_log_hint(result: Result<()>, log_path: &Path) -> Result<()> {
+async fn enrich_failure_with_log_hint(result: Result<()>, log_path: &Path) -> Result<()> {
     let err = match result {
         Ok(()) => return Ok(()),
         Err(err) => err,
@@ -313,14 +324,14 @@ fn enrich_failure_with_log_hint(result: Result<()>, log_path: &Path) -> Result<(
     if !message.contains("container command exited with status") {
         return Err(err);
     }
-    let Some(hint) = failure_hint_from_log(log_path) else {
+    let Some(hint) = failure_hint_from_log(log_path).await else {
         return Err(err);
     };
     Err(anyhow!("{message}; hint: {hint}"))
 }
 
-fn failure_hint_from_log(log_path: &Path) -> Option<&'static str> {
-    let tail = read_log_tail(log_path, 32 * 1024)?;
+async fn failure_hint_from_log(log_path: &Path) -> Option<&'static str> {
+    let tail = read_log_tail(log_path, 32 * 1024).await?;
     failure_hint_from_text(&tail)
 }
 
@@ -335,8 +346,8 @@ fn failure_hint_from_text(tail: &str) -> Option<&'static str> {
     None
 }
 
-fn read_log_tail(log_path: &Path, max_bytes: usize) -> Option<String> {
-    let bytes = fs::read(log_path).ok()?;
+async fn read_log_tail(log_path: &Path, max_bytes: usize) -> Option<String> {
+    let bytes = fs::read(log_path).await.ok()?;
     let start = bytes.len().saturating_sub(max_bytes);
     Some(String::from_utf8_lossy(&bytes[start..]).into_owned())
 }
@@ -477,11 +488,12 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn completion_result_prefers_cancelled_state() {
+    #[tokio::test]
+    async fn completion_result_prefers_cancelled_state() {
         let log_path = temp_path("job-run-cancelled").join("job.log");
-        let result =
-            completion_result(Ok(()), true, &log_path).expect_err("cancelled job should fail");
+        let result = completion_result(Ok(()), true, &log_path)
+            .await
+            .expect_err("cancelled job should fail");
         assert_eq!(result.to_string(), "job cancelled by user");
     }
 

@@ -12,11 +12,11 @@ use crate::execution_plan::{ExecutableJob, ExecutionPlan};
 use crate::model::ArtifactSourceOutcome;
 use crate::pipeline::{JobEvent, JobStatus, JobSummary};
 use crate::ui::{UiBridge, UiCommand};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::{sync::mpsc, task};
+use tokio::sync::mpsc;
 
 fn running_jobs_in_plan_order(plan: &ExecutionPlan, running: &HashSet<String>) -> Vec<String> {
     let mut names = running.iter().cloned().collect::<Vec<_>>();
@@ -68,23 +68,9 @@ pub(crate) async fn handle_restart_commands(
                         return Err(err);
                     }
                 };
-                let restart_exec = exec.clone();
-                let ui_clone = ui.clone();
-                let run_info_clone = run_info.clone();
-                let job_plan = plan.clone();
-                let runtime_handle = tokio::runtime::Handle::current();
-                let event = task::spawn_blocking(move || {
-                    job_runner::run_planned_job(
-                        &restart_exec,
-                        &runtime_handle,
-                        job_plan,
-                        planned,
-                        run_info_clone,
-                        ui_clone,
-                    )
-                })
-                .await
-                .context("job restart task failed")?;
+                let event =
+                    job_runner::run_planned_job(exec, plan.clone(), planned, run_info, ui.clone())
+                        .await;
                 update_summaries_from_event(exec, plan.as_ref(), event, summaries);
             }
             UiCommand::AnalyzeJob { name, source_name } => {

@@ -41,7 +41,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
 use tokio::sync::mpsc;
@@ -143,7 +142,7 @@ impl ExecutorCore {
             verbose_scripts,
             env_vars,
             mut shared_env,
-        } = build_executor_env(&config)?;
+        } = build_executor_env(&config).await?;
         let stage_specs: Vec<(String, usize)> = pipeline
             .stages
             .iter()
@@ -541,7 +540,7 @@ impl ExecutorCore {
         );
     }
 
-    pub(crate) fn write_runtime_summary(
+    pub(crate) async fn write_runtime_summary(
         &self,
         job_name: &str,
         container_name: &str,
@@ -559,6 +558,7 @@ impl ExecutorCore {
             service_network,
             service_containers,
         )
+        .await
     }
 
     pub(crate) fn log_job_start(
@@ -577,15 +577,15 @@ impl ExecutorCore {
         preparer::prepare_job_run(self, plan, job).await
     }
 
-    pub(crate) fn collect_untracked_artifacts(
+    pub(crate) async fn collect_untracked_artifacts(
         &self,
         job: &JobSpec,
         workspace: &Path,
     ) -> Result<()> {
-        self.artifacts.collect_untracked(job, workspace)
+        self.artifacts.collect_untracked(job, workspace).await
     }
 
-    pub(crate) fn collect_declared_artifacts(
+    pub(crate) async fn collect_declared_artifacts(
         &self,
         job: &JobSpec,
         workspace: &Path,
@@ -593,9 +593,10 @@ impl ExecutorCore {
     ) -> Result<()> {
         self.artifacts
             .collect_declared(job, workspace, mounts, &self.container_workdir)
+            .await
     }
 
-    pub(crate) fn collect_dotenv_artifacts(
+    pub(crate) async fn collect_dotenv_artifacts(
         &self,
         job: &JobSpec,
         workspace: &Path,
@@ -603,6 +604,7 @@ impl ExecutorCore {
     ) -> Result<()> {
         self.artifacts
             .collect_dotenv_report(job, workspace, mounts, &self.container_workdir)
+            .await
     }
 
     pub(crate) fn clear_running_container(&self, job_name: &str) {
@@ -621,14 +623,16 @@ impl ExecutorCore {
         self.runtime_state.take_cancelled_job(job_name)
     }
 
-    pub(crate) fn cancel_running_job(&self, job_name: &str) -> bool {
+    pub(crate) async fn cancel_running_job(&self, job_name: &str) -> (bool, Option<String>) {
         let container = self.runtime_state.running_container(job_name);
         if let Some(container) = container {
             self.runtime_state.mark_job_cancelled(job_name);
-            self.kill_container(job_name, container.engine, &container.container_name);
-            true
+            let stderr = self
+                .kill_container(job_name, container.engine, &container.container_name)
+                .await;
+            (true, stderr)
         } else {
-            false
+            (false, None)
         }
     }
 
@@ -666,12 +670,21 @@ impl ExecutorCore {
         logging::append_diagnostic_log_lines(log_path, &formatter, lines)
     }
 
-    pub(crate) fn kill_container(&self, job_name: &str, engine: EngineKind, container_name: &str) {
-        lifecycle::kill_container(self, engine, job_name, container_name);
+    pub(crate) async fn kill_container(
+        &self,
+        job_name: &str,
+        engine: EngineKind,
+        container_name: &str,
+    ) -> Option<String> {
+        lifecycle::kill_container(self, engine, job_name, container_name).await
     }
 
-    pub(crate) fn cleanup_finished_container(&self, engine: EngineKind, container_name: &str) {
-        lifecycle::cleanup_finished_container(self, engine, container_name);
+    pub(crate) async fn cleanup_finished_container(
+        &self,
+        engine: EngineKind,
+        container_name: &str,
+    ) -> Option<String> {
+        lifecycle::cleanup_finished_container(self, engine, container_name).await
     }
 
     fn resolve_job_image_with_env(
@@ -1220,7 +1233,7 @@ async fn prepare_executor_directories_at(
     })
 }
 
-fn build_executor_env(config: &ExecutorConfig) -> Result<ExecutorEnvState> {
+async fn build_executor_env(config: &ExecutorConfig) -> Result<ExecutorEnvState> {
     let use_color = should_use_color();
     let env_verbose = env::var_os("OPAL_DEBUG")
         .map(|val| {
@@ -1229,13 +1242,13 @@ fn build_executor_env(config: &ExecutorConfig) -> Result<ExecutorEnvState> {
         })
         .unwrap_or(false);
     let shared_env: HashMap<String, String> = env::vars().collect();
-    build_executor_env_from(config, use_color, env_verbose, shared_env)
+    build_executor_env_from(config, use_color, env_verbose, shared_env).await
 }
 
 const OPAL_HOST_UID_KEY: &str = "OPAL_HOST_UID";
 const OPAL_HOST_GID_KEY: &str = "OPAL_HOST_GID";
 
-fn build_executor_env_from(
+async fn build_executor_env_from(
     config: &ExecutorConfig,
     use_color: bool,
     env_verbose: bool,
@@ -1273,7 +1286,7 @@ fn build_executor_env_from(
         }
     }
     if config.settings.map_host_user() {
-        inject_host_user_mapping(&mut env_vars, &mut shared_env);
+        inject_host_user_mapping(&mut env_vars, &mut shared_env).await;
     }
 
     Ok(ExecutorEnvState {
@@ -1284,21 +1297,21 @@ fn build_executor_env_from(
     })
 }
 
-fn inject_host_user_mapping(
+async fn inject_host_user_mapping(
     env_vars: &mut Vec<(String, String)>,
     shared_env: &mut HashMap<String, String>,
 ) {
-    let Some(uid) = resolve_host_user_id(shared_env, OPAL_HOST_UID_KEY, "UID", "-u") else {
+    let Some(uid) = resolve_host_user_id(shared_env, OPAL_HOST_UID_KEY, "UID", "-u").await else {
         return;
     };
-    let Some(gid) = resolve_host_user_id(shared_env, OPAL_HOST_GID_KEY, "GID", "-g") else {
+    let Some(gid) = resolve_host_user_id(shared_env, OPAL_HOST_GID_KEY, "GID", "-g").await else {
         return;
     };
     upsert_executor_env_var(env_vars, shared_env, OPAL_HOST_UID_KEY, uid);
     upsert_executor_env_var(env_vars, shared_env, OPAL_HOST_GID_KEY, gid);
 }
 
-fn resolve_host_user_id(
+async fn resolve_host_user_id(
     shared_env: &HashMap<String, String>,
     mapped_key: &str,
     legacy_key: &str,
@@ -1318,11 +1331,17 @@ fn resolve_host_user_id(
     {
         return Some(value.to_string());
     }
-    detect_unix_id(id_flag).filter(|value| is_numeric_id(value))
+    detect_unix_id(id_flag)
+        .await
+        .filter(|value| is_numeric_id(value))
 }
 
-fn detect_unix_id(flag: &str) -> Option<String> {
-    let output = Command::new("id").arg(flag).output().ok()?;
+async fn detect_unix_id(flag: &str) -> Option<String> {
+    let output = tokio::process::Command::new("id")
+        .arg(flag)
+        .output()
+        .await
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1422,8 +1441,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_executor_env_uses_explicit_host_variables() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_uses_explicit_host_variables() -> Result<()> {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
         config.trace_scripts = true;
@@ -1438,7 +1457,7 @@ mod tests {
             verbose_scripts,
             env_vars,
             shared_env,
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert!(!use_color);
         assert!(verbose_scripts);
@@ -1453,8 +1472,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_executor_env_expands_selected_values_in_place() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_expands_selected_values_in_place() -> Result<()> {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
         config.settings.engines.map_host_user = false;
@@ -1467,7 +1486,7 @@ mod tests {
             env_vars,
             shared_env,
             ..
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert_eq!(
             env_vars,
@@ -1480,8 +1499,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_executor_env_injects_root_config_env_entries() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_injects_root_config_env_entries() -> Result<()> {
         let mut config = test_config();
         config.settings = OpalConfig {
             env: BTreeMap::from([
@@ -1499,7 +1518,7 @@ mod tests {
             env_vars,
             shared_env,
             ..
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert!(env_vars.contains(&("RUNNER_BOOTSTRAP".to_string(), "enabled".to_string())));
         assert!(env_vars.contains(&(
@@ -1513,8 +1532,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_executor_env_prefers_explicit_env_includes_over_config_env() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_prefers_explicit_env_includes_over_config_env() -> Result<()> {
         let mut config = test_config();
         config.env_includes = vec!["APP_*".to_string()];
         config.settings.engines.map_host_user = false;
@@ -1532,7 +1551,7 @@ mod tests {
             env_vars,
             shared_env,
             ..
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert_eq!(
             env_vars,
@@ -1545,8 +1564,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn build_executor_env_injects_host_uid_gid_when_enabled() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_injects_host_uid_gid_when_enabled() -> Result<()> {
         let mut config = test_config();
         config.settings = toml::from_str(
             r#"
@@ -1564,7 +1583,7 @@ map_host_user = true
             env_vars,
             shared_env,
             ..
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert!(
             env_vars.contains(&("OPAL_HOST_UID".to_string(), "501".to_string())),
@@ -1585,8 +1604,8 @@ map_host_user = true
         Ok(())
     }
 
-    #[test]
-    fn build_executor_env_preserves_explicit_host_uid_gid_values() -> Result<()> {
+    #[tokio::test]
+    async fn build_executor_env_preserves_explicit_host_uid_gid_values() -> Result<()> {
         let mut config = test_config();
         config.settings = toml::from_str(
             r#"
@@ -1606,7 +1625,7 @@ map_host_user = true
             env_vars,
             shared_env,
             ..
-        } = build_executor_env_from(&config, false, false, host_env)?;
+        } = build_executor_env_from(&config, false, false, host_env).await?;
 
         assert!(
             env_vars.contains(&("OPAL_HOST_UID".to_string(), "1000".to_string())),

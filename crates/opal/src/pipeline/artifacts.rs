@@ -5,10 +5,9 @@ use crate::pipeline::VolumeMount;
 use anyhow::{Context, Result, anyhow};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
+use tokio::fs;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -21,7 +20,7 @@ impl ArtifactManager {
         Self { root }
     }
 
-    pub fn prepare_targets(&self, job: &JobSpec) -> Result<()> {
+    pub async fn prepare_targets(&self, job: &JobSpec) -> Result<()> {
         if job.artifacts.paths.is_empty()
             && !job.artifacts.untracked
             && job.artifacts.report_dotenv.is_none()
@@ -30,19 +29,20 @@ impl ArtifactManager {
         }
         let root = self.job_artifacts_root(&job.name);
         fs::create_dir_all(&root)
+            .await
             .with_context(|| format!("failed to prepare artifacts for {}", job.name))?;
 
         for relative in &job.artifacts.paths {
             let host = self.job_artifact_host_path(&job.name, relative);
             match artifact_kind(relative) {
                 ArtifactPathKind::Directory => {
-                    fs::create_dir_all(&host).with_context(|| {
+                    fs::create_dir_all(&host).await.with_context(|| {
                         format!("failed to prepare artifact directory {}", host.display())
                     })?;
                 }
                 ArtifactPathKind::File => {
                     if let Some(parent) = host.parent() {
-                        fs::create_dir_all(parent).with_context(|| {
+                        fs::create_dir_all(parent).await.with_context(|| {
                             format!("failed to prepare artifact parent {}", parent.display())
                         })?;
                     }
@@ -53,7 +53,7 @@ impl ArtifactManager {
         if let Some(relative) = &job.artifacts.report_dotenv {
             let host = self.job_artifact_host_path(&job.name, relative);
             if let Some(parent) = host.parent() {
-                fs::create_dir_all(parent).with_context(|| {
+                fs::create_dir_all(parent).await.with_context(|| {
                     format!(
                         "failed to prepare dotenv artifact parent {}",
                         parent.display()
@@ -89,7 +89,7 @@ impl ArtifactManager {
         specs
     }
 
-    pub fn collect_declared(
+    pub async fn collect_declared(
         &self,
         job: &JobSpec,
         workspace: &Path,
@@ -103,13 +103,13 @@ impl ArtifactManager {
                 resolve_declared_artifact_sources(workspace, mounts, container_root, relative)?
             {
                 let dest = self.job_artifact_host_path(&job.name, &matched_relative);
-                copy_declared_path(&src, &dest, &matched_relative, exclude.as_ref())?;
+                copy_declared_path(&src, &dest, &matched_relative, exclude.as_ref()).await?;
                 collected.push(matched_relative);
             }
         }
         collected.sort();
         collected.dedup();
-        self.write_declared_manifest(&job.name, &collected)
+        self.write_declared_manifest(&job.name, &collected).await
     }
 
     pub fn dependency_mount_specs(
@@ -163,7 +163,7 @@ impl ArtifactManager {
             .join(artifact_relative_path(artifact))
     }
 
-    pub fn collect_dotenv_report(
+    pub async fn collect_dotenv_report(
         &self,
         job: &JobSpec,
         workspace: &Path,
@@ -180,9 +180,11 @@ impl ArtifactManager {
         let dest = self.job_artifact_host_path(&job.name, relative);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
+                .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         fs::copy(&src, &dest)
+            .await
             .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
         Ok(())
     }
@@ -200,7 +202,7 @@ impl ArtifactManager {
             .join(artifact_relative_path(artifact))
     }
 
-    pub fn collect_untracked(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
+    pub async fn collect_untracked(&self, job: &JobSpec, workspace: &Path) -> Result<()> {
         if !job.artifacts.untracked {
             return Ok(());
         }
@@ -228,18 +230,20 @@ impl ArtifactManager {
                 &relative,
                 exclude.as_ref(),
                 &mut collected,
-            )?;
+            )
+            .await?;
         }
 
         collected.sort();
         collected.dedup();
-        self.write_untracked_manifest(&job.name, &collected)
+        self.write_untracked_manifest(&job.name, &collected).await
     }
 
-    fn write_declared_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
+    async fn write_declared_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
         let manifest = self.job_declared_manifest_path(job_name);
         if let Some(parent) = manifest.parent() {
             fs::create_dir_all(parent)
+                .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let content = if paths.is_empty() {
@@ -254,12 +258,13 @@ impl ArtifactManager {
             body
         };
         fs::write(&manifest, content)
+            .await
             .with_context(|| format!("failed to write {}", manifest.display()))
     }
 
     fn read_declared_manifest(&self, job_name: &str) -> Vec<PathBuf> {
         let manifest = self.job_declared_manifest_path(job_name);
-        let Ok(contents) = fs::read_to_string(&manifest) else {
+        let Ok(contents) = std::fs::read_to_string(&manifest) else {
             return Vec::new();
         };
         contents
@@ -269,10 +274,11 @@ impl ArtifactManager {
             .collect()
     }
 
-    fn write_untracked_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
+    async fn write_untracked_manifest(&self, job_name: &str, paths: &[PathBuf]) -> Result<()> {
         let manifest = self.job_untracked_manifest_path(job_name);
         if let Some(parent) = manifest.parent() {
             fs::create_dir_all(parent)
+                .await
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let content = if paths.is_empty() {
@@ -287,12 +293,13 @@ impl ArtifactManager {
             body
         };
         fs::write(&manifest, content)
+            .await
             .with_context(|| format!("failed to write {}", manifest.display()))
     }
 
     fn read_untracked_manifest(&self, job_name: &str) -> Vec<PathBuf> {
         let manifest = self.job_untracked_manifest_path(job_name);
-        let Ok(contents) = fs::read_to_string(&manifest) else {
+        let Ok(contents) = std::fs::read_to_string(&manifest) else {
             return Vec::new();
         };
         contents
@@ -434,24 +441,36 @@ fn resolve_mount_source(mount: &VolumeMount, container_path: &Path) -> Option<(u
     None
 }
 
-fn copy_declared_path(
+async fn copy_declared_path(
     src: &Path,
     dest: &Path,
     relative: &Path,
     exclude: Option<&GlobSet>,
 ) -> Result<()> {
-    let metadata =
-        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    let metadata = fs::symlink_metadata(src)
+        .await
+        .with_context(|| format!("failed to stat {}", src.display()))?;
     if metadata.is_dir() {
-        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
-        for entry in
-            fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
-        {
-            let entry = entry?;
-            let child_src = entry.path();
-            let child_rel = relative.join(entry.file_name());
-            let child_dest = dest.join(entry.file_name());
-            copy_declared_path(&child_src, &child_dest, &child_rel, exclude)?;
+        fs::create_dir_all(dest)
+            .await
+            .with_context(|| format!("failed to create {}", dest.display()))?;
+        let mut entries = fs::read_dir(src)
+            .await
+            .with_context(|| format!("failed to read {}", src.display()))?;
+        let mut children = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            children.push((entry.path(), entry.file_name()));
+        }
+        for (child_src, file_name) in children {
+            let child_rel = relative.join(&file_name);
+            let child_dest = dest.join(&file_name);
+            Box::pin(copy_declared_path(
+                &child_src,
+                &child_dest,
+                &child_rel,
+                exclude,
+            ))
+            .await?;
         }
         return Ok(());
     }
@@ -460,9 +479,11 @@ fn copy_declared_path(
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
+            .await
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     fs::copy(src, dest)
+        .await
         .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
     Ok(())
 }
@@ -477,9 +498,9 @@ fn artifact_kind(path: &Path) -> ArtifactPathKind {
 }
 
 fn artifact_path_has_content(path: &Path) -> bool {
-    match fs::metadata(path) {
+    match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => true,
-        Ok(metadata) if metadata.is_dir() => fs::read_dir(path)
+        Ok(metadata) if metadata.is_dir() => std::fs::read_dir(path)
             .ok()
             .and_then(|mut entries| entries.next())
             .is_some(),
@@ -523,7 +544,7 @@ fn path_is_covered_by_explicit_artifacts(path: &Path, explicit_paths: &[PathBuf]
     })
 }
 
-fn copy_untracked_entry(
+async fn copy_untracked_entry(
     workspace: &Path,
     src: &Path,
     dest: PathBuf,
@@ -531,27 +552,32 @@ fn copy_untracked_entry(
     exclude: Option<&GlobSet>,
     collected: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    let metadata =
-        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    let metadata = fs::symlink_metadata(src)
+        .await
+        .with_context(|| format!("failed to stat {}", src.display()))?;
     if metadata.is_dir() {
-        for entry in
-            fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))?
-        {
-            let entry = entry?;
-            let child_src = entry.path();
+        let mut entries = fs::read_dir(src)
+            .await
+            .with_context(|| format!("failed to read {}", src.display()))?;
+        let mut children = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            children.push((entry.path(), entry.file_name()));
+        }
+        for (child_src, file_name) in children {
             let child_relative = match child_src.strip_prefix(workspace) {
                 Ok(rel) => rel.to_path_buf(),
                 Err(_) => continue,
             };
-            let child_dest = dest.join(entry.file_name());
-            copy_untracked_entry(
+            let child_dest = dest.join(&file_name);
+            Box::pin(copy_untracked_entry(
                 workspace,
                 &child_src,
                 child_dest,
                 &child_relative,
                 exclude,
                 collected,
-            )?;
+            ))
+            .await?;
         }
         return Ok(());
     }
@@ -561,9 +587,11 @@ fn copy_untracked_entry(
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
+            .await
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     fs::copy(src, &dest)
+        .await
         .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
     collected.push(relative.to_path_buf());
     Ok(())
@@ -606,15 +634,15 @@ impl ExternalArtifactsManager {
 
         let target = self.external_root(project, job, reference);
         if target.exists() {
-            fs::remove_dir_all(&target)
+            std::fs::remove_dir_all(&target)
                 .with_context(|| format!("failed to clear {}", target.display()))?;
         }
-        fs::create_dir_all(&target)
+        std::fs::create_dir_all(&target)
             .with_context(|| format!("failed to create {}", target.display()))?;
         let archive_path = target.join("artifacts.zip");
         self.download_artifacts(project, job, reference, &archive_path)?;
         self.extract_artifacts(&archive_path, &target)?;
-        let _ = fs::remove_file(&archive_path);
+        let _ = std::fs::remove_file(&archive_path);
 
         if let Ok(mut cache) = self.inner.cache.lock() {
             cache.insert(key, target.clone());
@@ -648,7 +676,7 @@ impl ExternalArtifactsManager {
         let url = format!(
             "{base}/api/v4/projects/{project_id}/jobs/artifacts/{ref_id}/download?job={job_name}"
         );
-        let status = Command::new("curl")
+        let status = std::process::Command::new("curl")
             .arg("--fail")
             .arg("-sS")
             .arg("-L")
@@ -670,7 +698,7 @@ impl ExternalArtifactsManager {
     }
 
     fn extract_artifacts(&self, archive: &Path, dest: &Path) -> Result<()> {
-        let unzip_status = Command::new("unzip")
+        let unzip_status = std::process::Command::new("unzip")
             .arg("-q")
             .arg("-o")
             .arg(archive)
@@ -680,10 +708,9 @@ impl ExternalArtifactsManager {
         match unzip_status {
             Ok(status) if status.success() => return Ok(()),
             Ok(_) | Err(_) => {
-                // fallback to python's zipfile
                 let script =
                     "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])";
-                let status = Command::new("python3")
+                let status = std::process::Command::new("python3")
                     .arg("-c")
                     .arg(script)
                     .arg(archive)
@@ -834,12 +861,17 @@ mod tests {
             ArtifactWhenSpec::OnSuccess,
         );
 
-        manager
-            .prepare_targets(&job)
-            .expect("prepare artifact targets");
-        manager
-            .collect_untracked(&job, &workspace)
-            .expect("collect untracked artifacts");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            manager
+                .prepare_targets(&job)
+                .await
+                .expect("prepare artifact targets");
+            manager
+                .collect_untracked(&job, &workspace)
+                .await
+                .expect("collect untracked artifacts");
+        });
 
         let manifest = manager.read_untracked_manifest("build");
         assert!(manifest.iter().any(|path| path == Path::new("scratch.txt")));
@@ -922,9 +954,13 @@ mod tests {
             ArtifactWhenSpec::OnSuccess,
         );
 
-        manager
-            .collect_declared(&job, &workspace, &[], Path::new("/builds/opal"))
-            .expect("collect declared artifacts");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            manager
+                .collect_declared(&job, &workspace, &[], Path::new("/builds/opal"))
+                .await
+                .expect("collect declared artifacts");
+        });
 
         let declared = manager.read_declared_manifest("build");
         assert_eq!(

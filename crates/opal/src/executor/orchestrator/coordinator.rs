@@ -329,7 +329,10 @@ impl<'a> ExecutionCoordinator<'a> {
                 }
             }
             UiCommand::CancelJob { name } => {
-                self.exec.cancel_running_job(&name);
+                let (_cancelled, stderr) = self.exec.cancel_running_job(&name).await;
+                if let (Some(msg), Some(ui)) = (stderr, self.ui.as_deref()) {
+                    ui.job_log_line(&name, &msg);
+                }
             }
             UiCommand::AnalyzeJob { name, source_name } => {
                 spawn_analysis(
@@ -353,7 +356,10 @@ impl<'a> ExecutionCoordinator<'a> {
                 self.abort_requested = true;
                 self.fail_pipeline(HaltKind::Aborted, anyhow!("pipeline aborted by user"));
                 for name in running_jobs_in_plan_order(self.plan.as_ref(), &self.running) {
-                    self.exec.cancel_running_job(&name);
+                    let (_cancelled, stderr) = self.exec.cancel_running_job(&name).await;
+                    if let (Some(msg), Some(ui)) = (stderr, self.ui.as_deref()) {
+                        ui.job_log_line(&name, &msg);
+                    }
                 }
                 self.ready.clear();
                 self.waiting_on_failure.clear();

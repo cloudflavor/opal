@@ -45,7 +45,7 @@ pub(super) async fn prepare_job_run(
     plan: &ExecutionPlan,
     job: &JobSpec,
 ) -> Result<PreparedJobRun> {
-    exec.artifacts.prepare_targets(job)?;
+    exec.artifacts.prepare_targets(job).await?;
     let workspace = super::workspace::prepare_job_workspace(exec, job)?;
     let mut env_vars = exec.job_env(job);
     let job_override = exec.config.settings.job_override_for(&job.name);
