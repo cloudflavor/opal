@@ -270,10 +270,8 @@ fn stage_dependency_mount(
     }
 
     let any_dir = mounts.iter().any(|mount| mount.host.is_dir());
-    // TODO: why's there a random fs::create_dir_all inside here?
     if any_dir {
-        fs::create_dir_all(&staged)
-            .with_context(|| format!("failed to create {}", staged.display()))?;
+        ensure_dir(&staged)?;
         for mount in mounts {
             let exclude = build_exclude_matcher(&mount.exclude)?;
             if mount.host.is_dir() {
@@ -288,10 +286,7 @@ fn stage_dependency_mount(
             }
         }
     } else {
-        if let Some(parent) = staged.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
+        ensure_parent_dirs(&staged)?;
         for mount in mounts {
             let exclude = build_exclude_matcher(&mount.exclude)?;
             copy_dependency_file(&mount.host, &staged, relative, exclude.as_ref())?;
@@ -329,11 +324,24 @@ fn copy_dependency_file(
     copy_path(src, dest, relative, exclude)
 }
 
+fn ensure_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    Ok(())
+}
+
+fn ensure_parent_dirs(dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        ensure_dir(parent)?;
+    }
+    Ok(())
+}
+
 fn copy_path(src: &Path, dest: &Path, relative: &Path, exclude: Option<&GlobSet>) -> Result<()> {
     let metadata =
         fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
     if metadata.is_dir() {
-        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        ensure_dir(dest)?;
         copy_dir_contents(src, dest, relative, exclude)?;
         return Ok(());
     }
@@ -341,12 +349,7 @@ fn copy_path(src: &Path, dest: &Path, relative: &Path, exclude: Option<&GlobSet>
         return Ok(());
     }
 
-    // TODO: random fs::create_dir_all, refactor, separate concern here so you can test the functions
-
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
+    ensure_parent_dirs(dest)?;
     fs::copy(src, dest)
         .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
     Ok(())

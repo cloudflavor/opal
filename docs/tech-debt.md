@@ -72,8 +72,6 @@ Triple-nested for loops throughout the compile pipeline, self-identified as need
 | Line | Issue |
 |------|-------|
 | 55 | `collect_volume_mounts` does too much — dependency resolution, variant iteration, and artifact mount collection all in one function |
-| 273 | Stray `fs::create_dir_all` inside `stage_dependency_mount` |
-| 344 | Another `fs::create_dir_all` in `copy_path` — side effect mixed with copy logic |
 
 ### Other
 
