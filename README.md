@@ -1,6 +1,6 @@
 # opal
 
-[![Docs](https://img.shields.io/badge/docs-opal.cloudflavor.io-0ea5e9)](https://opal.cloudflavor.io)
+[![Docs](https://img.shields.io/badge/docs-cloudflavor.io/opal-0ea5e9)](https://cloudflavor.io/opal/)
 
 Opal is a terminal-first, AI-capable GitLab pipeline runner for local debugging. It parses `.gitlab-ci.yml`, evaluates a practical local-runner subset of GitLab filters/rules, executes jobs in local containers, and provides a keyboard-driven UI for run history, logs, artifacts, docs, and job analysis.
 
@@ -220,7 +220,7 @@ Release-candidate preparation notes live in `release/rc-checklist.md`.
 
 Read the hosted docs at:
 
-- `https://opal.cloudflavor.io`
+- `https://cloudflavor.io/opal/`
 
 Key references in the repo docs set:
 
