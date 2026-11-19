@@ -1595,7 +1595,7 @@ impl UiState {
 
     fn with_footer_brand(&self, mut lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
         let brand = [
-            "opal.cloudflavor.io",
+            "cloudflavor.io/opal",
             concat!("opal ", env!("OPAL_BUILD_VERSION")),
         ];
         for (idx, text) in brand.into_iter().enumerate() {
