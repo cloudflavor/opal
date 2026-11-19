@@ -17,7 +17,8 @@
   let pendingAnchorRefresh = false;
 
   const docs = $derived((data.docs ?? []) as DocPage[]);
-  const SITE_URL = 'https://opal.cloudflavor.io';
+  const SITE_ORIGIN = 'https://cloudflavor.io';
+  const SITE_BASE = '/opal';
   const SITE_NAME = 'Opal Docs';
   const DEFAULT_DESCRIPTION =
     'Run and debug GitLab-style CI pipelines locally with Opal. Learn install, quickstart, pipeline planning, and UI workflows.';
@@ -130,10 +131,10 @@
   });
   const canonicalUrl = $derived.by(() => {
     const path = page.url.pathname || '/';
-    return new URL(path, SITE_URL).toString();
+    return new URL(path === '/' ? `${SITE_BASE}/` : `${SITE_BASE}${path.replace(/\/$/, '')}/`, SITE_ORIGIN).toString();
   });
   const ogType = $derived.by(() => (isHomePage ? 'website' : 'article'));
-  const ogImageUrl = new URL('/favicon.svg', SITE_URL).toString();
+  const ogImageUrl = new URL('/favicon.svg', SITE_ORIGIN).toString();
   const jsonLd = $derived.by(() => {
     if (isHomePage) {
       return JSON.stringify(
@@ -141,7 +142,7 @@
           '@context': 'https://schema.org',
           '@type': 'WebSite',
           name: SITE_NAME,
-          url: SITE_URL,
+          url: `${SITE_ORIGIN}${SITE_BASE}/`,
           publisher: {
             '@type': 'Organization',
             name: 'Cloudflavor',

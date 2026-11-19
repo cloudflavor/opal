@@ -1,7 +1,13 @@
 import docs from '$lib/generated/docs.json';
 import type { RequestHandler } from './$types';
 
-const SITE_URL = 'https://opal.cloudflavor.io';
+const SITE_ORIGIN = 'https://cloudflavor.io';
+const SITE_BASE = '/opal';
+
+/** Where this app's own path now lives on the consolidated site. */
+function consolidated(path: string): string {
+  return path === '/' ? `${SITE_BASE}/` : `${SITE_BASE}${path.replace(/\/$/, '')}/`;
+}
 
 export const prerender = true;
 
@@ -12,7 +18,7 @@ export const GET: RequestHandler = async () => {
 
   const urlset = uniquePaths
     .map((path) => {
-      const loc = new URL(path, SITE_URL).toString();
+      const loc = new URL(consolidated(path), SITE_ORIGIN).toString();
       const priority = path === '/' ? '1.0' : '0.8';
       return [
         '<url>',
