@@ -6,12 +6,10 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "opal",
 	"main": ".svelte-kit/cloudflare/_worker.js",
-	"routes": [
-		{
-			"pattern": "opal.cloudflavor.io",
-			"custom_domain": true
-		}
-	],
+	// opal.cloudflavor.io is retired: its Bunny pull zone 301s to
+	// https://cloudflavor.io/opal/. Re-binding the hostname here would shadow
+	// those redirects, so deploys stay on workers.dev.
+	"routes": [],
 	"compatibility_date": "2026-03-17",
 	"compatibility_flags": [
 		"nodejs_compat",

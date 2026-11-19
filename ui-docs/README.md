@@ -37,8 +37,9 @@ https://cloudflavor.io/opal/
 ```
 
 The Worker's custom domain is retired: `opal.cloudflavor.io` is a Bunny pull
-zone that 301s to `/opal/`. Deploying this Worker no longer serves the product
-docs, and `wrangler.jsonc` still claims the retired hostname as a custom domain.
+zone that 301s to `/opal/`, so `wrangler.jsonc` no longer binds it and deploys
+stay on workers.dev. Canonical, Open Graph, JSON-LD and the generated sitemap
+point at the consolidated site.
 
 ## Generated content
 
