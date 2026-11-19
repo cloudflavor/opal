@@ -30,11 +30,16 @@ npm run build
 npm run deploy
 ```
 
-The Worker is configured for the custom domain:
+The docs live on the main site:
 
 ```text
-opal.cloudflavor.io
+https://cloudflavor.io/opal/
 ```
+
+The Worker's custom domain is retired: `opal.cloudflavor.io` is a Bunny pull
+zone that 301s to `/opal/`, so `wrangler.jsonc` no longer binds it and deploys
+stay on workers.dev. Canonical, Open Graph, JSON-LD and the generated sitemap
+point at the consolidated site.
 
 ## Generated content
 
